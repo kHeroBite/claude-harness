@@ -84,7 +84,7 @@ bash -c 'REPO="<REPO>";
 | 1 | `plugin.json` JSON 파싱 성공 | `python3 -m json.tool` |
 | 2 | `marketplace.json` JSON 파싱 성공 | `python3 -m json.tool` |
 | 3 | `hooks/hooks.json` JSON 파싱 성공 | `python3 -m json.tool` |
-| 4 | 전 hook shebang 이 `#!/bin/bash` | 아래 명령 |
+| 4 | 전 hook shebang 이 bash 계열 | 아래 명령 |
 | 5 | `rules/harness.md` 존재 | `[ -f ... ]` |
 | 6 | `bin/` 3종 존재 | `ls bin/` |
 
@@ -100,7 +100,7 @@ bash -c 'REPO="<REPO>";
 ```bash
 bash -c 'REPO="<REPO>"; BAD=0;
   for f in "$REPO"/plugins/harness/hooks/*.sh; do
-    head -1 "$f" | grep -q "^#!/bin/bash" || { echo "SHEBANG_BAD $f"; BAD=1; }
+    head -1 "$f" | grep -qE "^#!(/bin/bash|/usr/bin/env bash)" || { echo "SHEBANG_BAD $f"; BAD=1; }
   done; [ "$BAD" -eq 0 ] && echo SHEBANG_ALL_OK'
 ```
 
