@@ -1,6 +1,6 @@
 ---
 name: oUpload
-description: 하네스 배포 repo를 안전하게 publish하는 배포자 전용 스킬. 자격증명 스캔 게이트 통과 → plugin.json version 범프 → 커밋 → push 순서로 진행한다. version 범프가 수신자 자동갱신의 유일한 트리거이므로 생략 금지. 사용자가 '/oUpload', '하네스 배포', '배포본 올려', '플러그인 배포' 요청 시 사용.
+description: 하네스 배포 repo를 안전하게 publish하는 배포자 전용 스킬. 자격증명 스캔 게이트 통과 → plugin.json + marketplace.json 2파일 동기 version 범프 → 커밋 → push 순서로 진행한다. 두 파일의 version이 일치해야 하며, 한쪽만 올리면 불일치가 남아 수신자 자동갱신이 깨진다. 사용자가 '/oUpload', '하네스 배포', '배포본 올려', '플러그인 배포' 요청 시 사용.
 ---
 
 # oUpload — 하네스 배포 publish (배포자 전용)
@@ -108,9 +108,15 @@ bash -c 'REPO="<REPO>"; BAD=0;
 
 ---
 
-## Step 4. version 범프  ★자동갱신의 유일한 트리거★
+## Step 4. version 범프  ★자동갱신의 유일한 트리거 — 2파일 동기 필수★
 
-`plugins/harness/.claude-plugin/plugin.json` 의 `version` 을 semver 로 증가시킨다.
+**두 파일을 반드시 함께 올린다.**
+
+- `plugins/harness/.claude-plugin/plugin.json` 의 `version`
+- `.claude-plugin/marketplace.json` 의 `plugins[0].version`
+
+이 두 값은 항상 같아야 한다. 한쪽만 올리면 불일치가 남고 수신자 자동갱신 판정이 어긋난다.
+(2026-09-15 실측: 수동 배포 v1.1.0 시점에 marketplace.json 누락이 발견되어 본 스킬에 동기화 단계를 추가함.)
 
 | 인자 | 증가 방식 | 예 |
 |---|---|---|
@@ -118,30 +124,53 @@ bash -c 'REPO="<REPO>"; BAD=0;
 | `minor` | minor 증가, patch=0 | 0.1.3 → 0.2.0 |
 | `major` | major 증가, minor=patch=0 | 0.1.3 → 1.0.0 |
 
-권장 절차는 다음 2단계다. 셸 안에 파이썬 코드를 인라인으로 밀어넣지 않는다 (인용 파괴 위험).
+권장 절차는 다음 4단계다. 셸 안에 파이썬 코드를 인라인으로 밀어넣지 않는다 (인용 파괴 위험).
 
-1) 현재 버전 확인.
+1) 현재 두 버전을 확인하고 일치 여부를 먼저 검사한다.
 
 ```bash
-bash -c 'python3 -c "import json;print(json.load(open(\"<REPO>/plugins/harness/.claude-plugin/plugin.json\",encoding=\"utf-8\"))[\"version\"])"'
+bash -c 'REPO="<REPO>";
+  V1=$(python3 -c "import json;print(json.load(open(\"$REPO/plugins/harness/.claude-plugin/plugin.json\",encoding=\"utf-8\"))[\"version\"])");
+  V2=$(python3 -c "import json;print(json.load(open(\"$REPO/.claude-plugin/marketplace.json\",encoding=\"utf-8\"))[\"plugins\"][0][\"version\"])");
+  echo "plugin.json=$V1 marketplace.json=$V2";
+  [ "$V1" = "$V2" ] && echo PRE_BUMP_MATCH || echo "PRE_BUMP_MISMATCH — 범프 전부터 불일치, 사용자 보고 필요"'
 ```
 
-2) `file_edit` 으로 version 한 줄만 치환한다.
+범프 전부터 불일치이면 즉시 사용자에게 보고하고 어느 값을 기준으로 맞출지 확인 후 진행한다.
+
+2) `file_edit` 으로 **두 파일 모두** version 한 줄씩 치환한다. 이 방식은 JSON 의 나머지 필드·포매팅·주석 순서를 건드리지 않으므로 가장 안전하다.
 
 ```
+# plugin.json
+old_string:  "version": "0.1.3",
+new_string:  "version": "0.1.4",
+
+# marketplace.json (plugins[0].version)
 old_string:  "version": "0.1.3",
 new_string:  "version": "0.1.4",
 ```
 
-이 방식은 JSON 의 나머지 필드·포매팅·주석 순서를 건드리지 않으므로 가장 안전하다.
-치환 후 반드시 JSON 파싱을 재확인한다.
+3) 치환 후 반드시 JSON 파싱을 재확인한다.
 
 ```bash
-bash -c 'python3 -m json.tool "<REPO>/plugins/harness/.claude-plugin/plugin.json" >/dev/null && echo JSON_OK'
+bash -c 'REPO="<REPO>";
+  python3 -m json.tool "$REPO/plugins/harness/.claude-plugin/plugin.json" >/dev/null && echo PLUGIN_JSON_OK;
+  python3 -m json.tool "$REPO/.claude-plugin/marketplace.json" >/dev/null && echo MARKETPLACE_JSON_OK'
 ```
 
-**절대 규칙**: 범프하지 않으면 수신자에게 갱신이 **전파되지 않는다.** 생략 금지다.
-범프 전후 값을 사용자에게 반드시 보고한다.
+4) 두 값이 실제로 동일한 새 버전으로 일치하는지 최종 검증한다.
+
+```bash
+bash -c 'REPO="<REPO>";
+  V1=$(python3 -c "import json;print(json.load(open(\"$REPO/plugins/harness/.claude-plugin/plugin.json\",encoding=\"utf-8\"))[\"version\"])");
+  V2=$(python3 -c "import json;print(json.load(open(\"$REPO/.claude-plugin/marketplace.json\",encoding=\"utf-8\"))[\"plugins\"][0][\"version\"])");
+  [ "$V1" = "$V2" ] && echo "POST_BUMP_MATCH $V1" || echo "POST_BUMP_MISMATCH plugin=$V1 marketplace=$V2 — 중단 필요"'
+```
+
+`POST_BUMP_MISMATCH` 이면 커밋하지 말고 즉시 중단, 사용자에게 보고한다.
+
+**절대 규칙**: 두 파일 중 하나라도 범프하지 않으면 수신자에게 갱신이 **전파되지 않거나 불일치가 남는다.** 생략 금지다.
+범프 전후 값(양쪽 파일 모두)을 사용자에게 반드시 보고한다.
 
 ---
 
@@ -170,7 +199,7 @@ bash -c 'REPO="<REPO>"; cd "$REPO" && git push'
 
 다음 항목을 사용자에게 보고한다.
 - 스캔 결과 (통과 / 발견 0건)
-- version: 이전 → 새 버전
+- version: 이전 → 새 버전 (plugin.json / marketplace.json 양쪽 모두 명시, 일치 확인 포함)
 - 커밋 해시 + 변경 파일 수
 - push 대상 원격/브랜치
 - **수신자 전파 안내**: "플러그인 본체(스킬/hook/규칙/oio)는 마켓플레이스가 자동갱신하며,
@@ -183,7 +212,8 @@ bash -c 'REPO="<REPO>"; cd "$REPO" && git push'
 
 - 자격증명 스캔 실패 상태에서의 push (예외 없음).
 - `--no-verify` 로 pre-commit 우회.
-- version 범프 생략.
+- version 범프 생략 (plugin.json 또는 marketplace.json 어느 한쪽이라도).
+- 두 파일 version 불일치 상태에서의 커밋/push.
 - 자격증명 값 화면 출력.
 - 스캔 화이트리스트를 넓혀 게이트 통과시키기.
 - 무결성 검증 실패 항목을 임의 판단으로 무시하고 진행.
