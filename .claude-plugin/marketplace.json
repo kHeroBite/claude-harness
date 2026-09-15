@@ -1,0 +1,15 @@
+{
+  "name": "harness-marketplace",
+  "owner": {
+    "name": "kHeroBite"
+  },
+  "description": "WSL2 전용 Claude Code 오케스트레이션 하네스 배포 마켓플레이스",
+  "plugins": [
+    {
+      "name": "harness",
+      "source": "./plugins/harness",
+      "description": "o시리즈 파이프라인(oplan/odev/otest/odone/ofinish) + 물리 차단 hook 65개 + oio 파일 I/O MCP 서버",
+      "version": "1.0.0"
+    }
+  ]
+}

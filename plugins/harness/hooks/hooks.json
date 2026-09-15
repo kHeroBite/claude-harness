@@ -1,0 +1,687 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/UserPromptSubmit.sh"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Read|mcp__oio__file_read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/PreToolUse_Read_image.sh"
+            ],
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "SendMessage",
+        "hooks": [
+          {
+            "type": "command",
+            "command": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/sendmessage_guard.sh"
+            ],
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/ui_test_guard.sh"
+            ],
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/PreToolUse_SendMessage_otest.sh"
+            ],
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Skill",
+        "hooks": [
+          {
+            "type": "command",
+            "command": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/rollback_checkpoint.sh"
+            ],
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/oinfra_main_guard.sh"
+            ],
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/oi_route_guard.sh"
+            ],
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/ofinish_recurse_guard.sh"
+            ],
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/PreToolUse_Skill_ogrill_main_guard.sh"
+            ],
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/PreToolUse_Skill_ointaug_gate.sh"
+            ],
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/PreToolUse_session_path_guard.sh"
+            ],
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__mysql__query|mcp__mysql__execute",
+        "hooks": [
+          {
+            "type": "command",
+            "command": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/mysql_korean_guard.sh"
+            ],
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|Notebookedit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/write_guard.sh"
+            ],
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/inline_sql_guard.sh"
+            ],
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/phase_batches_immutable_guard.sh"
+            ],
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Read|Grep|Glob|mcp__oio__file_read|mcp__oio__find|mcp__oio__list_dir|mcp__plugin_serena_serena__find_file|mcp__plugin_serena_serena__find_symbol|mcp__plugin_serena_serena__get_symbols_overview|mcp__plugin_serena_serena__search_for_pattern|mcp__plugin_serena_serena__find_referencing_symbols|mcp__plugin_serena_serena__list_dir|mcp__plugin_serena_serena__read_file|mcp__serena__find_file|mcp__serena__find_symbol|mcp__serena__get_symbols_overview|mcp__serena__search_for_pattern|mcp__serena__find_referencing_symbols|mcp__serena__list_dir|mcp__serena__read_file",
+        "hooks": [
+          {
+            "type": "command",
+            "command": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/write_guard.sh"
+            ],
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/shutdown_guard.sh"
+            ],
+            "timeout": 15
+          },
+          {
+            "type": "command",
+            "command": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/session_guard.sh"
+            ],
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/write_guard.sh"
+            ],
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Bash|mcp__oio__bash_exec",
+        "hooks": [
+          {
+            "type": "command",
+            "command": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/PreToolUse_Bash_git_quotepath_warn.sh"
+            ],
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__oio__file_edit|mcp__oio__file_write|mcp__oio__file_delete|mcp__oio__file_rename|mcp__oio__file_move|mcp__oio__file_copy|mcp__oio__dir_create|mcp__oio__dir_delete|mcp__oio__dir_move|mcp__oio__dir_rename|mcp__oio__bash_exec|mcp__oio__file_symlink|mcp__plugin_serena_serena__replace_content|mcp__plugin_serena_serena__replace_symbol_body|mcp__plugin_serena_serena__insert_after_symbol|mcp__plugin_serena_serena__insert_before_symbol|mcp__plugin_serena_serena__safe_delete_symbol|mcp__plugin_serena_serena__rename_symbol|mcp__plugin_serena_serena__create_text_file|mcp__serena__replace_content|mcp__serena__replace_symbol_body|mcp__serena__insert_after_symbol|mcp__serena__insert_before_symbol|mcp__serena__safe_delete_symbol|mcp__serena__rename_symbol|mcp__serena__create_text_file",
+        "hooks": [
+          {
+            "type": "command",
+            "command": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/write_guard.sh"
+            ],
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/phase_batches_immutable_guard.sh"
+            ],
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__oio__file_write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/PreToolUse_goal_autoscript_guard.sh"
+            ],
+            "timeout": 30
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|mcp__oio__file_write|mcp__oio__file_edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/lock_order_audit.sh"
+            ],
+            "timeout": 60
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|mcp__oio__file_edit|mcp__oio__file_write|mcp__oio__file_delete",
+        "hooks": [
+          {
+            "type": "command",
+            "command": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/PreToolUse_main_direct_edit_guard.sh"
+            ]
+          }
+        ]
+      },
+      {
+        "matcher": "Agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/autoloop_bypass_guard.sh"
+            ],
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/PreToolUse_Agent_team_param_guard.sh"
+            ],
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/full_task_team_guard.sh"
+            ],
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/pipeline_order_guard.sh"
+            ],
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/otest_done_guard.sh"
+            ],
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/otest_user_evidence_guard.sh"
+            ],
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/ui_test_done_guard.sh"
+            ],
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/agent_lifecycle.sh"
+            ],
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/team_agent_env_guard.sh"
+            ],
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "TeamCreate",
+        "hooks": [
+          {
+            "type": "command",
+            "command": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/team_create_guard.sh"
+            ],
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__oio__session_state",
+        "hooks": [
+          {
+            "type": "command",
+            "command": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/PreToolUse_oto_entry_guard.sh"
+            ],
+            "timeout": 15
+          },
+          {
+            "type": "command",
+            "command": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/PreToolUse_oto_completion_guard.sh"
+            ],
+            "timeout": 15
+          },
+          {
+            "type": "command",
+            "command": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/PreToolUse_done_gate.sh"
+            ],
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|mcp__oio__file_edit|mcp__oio__file_write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/PostToolUse_docker_compose_scripts_mount.sh"
+            ],
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Skill",
+        "hooks": [
+          {
+            "type": "command",
+            "command": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/phase_guard.sh"
+            ],
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/PostToolUse_Skill_ointaug_format.sh"
+            ]
+          }
+        ]
+      },
+      {
+        "matcher": "Agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/agent_lifecycle.sh"
+            ],
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/post_agent_shutdown_enforce.sh"
+            ],
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/agent_completion_guard.sh"
+            ],
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/PostToolUse_Agent_inprocess_detect.sh"
+            ]
+          },
+          {
+            "type": "command",
+            "command": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/PostToolUse_agent_bind_check.sh"
+            ]
+          }
+        ]
+      },
+      {
+        "matcher": "TeamCreate",
+        "hooks": [
+          {
+            "type": "command",
+            "command": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/agent_lifecycle.sh"
+            ],
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/PostToolUse_TeamCreate_poller.sh"
+            ],
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "TeamDelete",
+        "hooks": [
+          {
+            "type": "command",
+            "command": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/team_delete_sweep.sh"
+            ],
+            "timeout": 15
+          },
+          {
+            "type": "command",
+            "command": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/team_delete_followup_guard.sh"
+            ],
+            "timeout": 3
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__oio__session_state",
+        "hooks": [
+          {
+            "type": "command",
+            "command": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/cleanup_verify.sh"
+            ],
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Bash|Edit|Write|Agent|SendMessage|mcp__oio__bash_exec|mcp__oio__file_edit|mcp__oio__file_write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/error_tracker.sh"
+            ],
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/mcp_disconnect_guard.sh"
+            ],
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__oio__file_write|mcp__oio__file_edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/guards/readback_guard.sh"
+            ],
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "SendMessage",
+        "hooks": [
+          {
+            "type": "command",
+            "command": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/sendmessage_ack_write.sh"
+            ],
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/sendmessage_shutdown_sweep.sh"
+            ],
+            "timeout": 15
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__oio__bash_exec",
+        "hooks": [
+          {
+            "type": "command",
+            "command": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/oio_fallback_guard.sh"
+            ],
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__oio__file_edit|mcp__oio__file_write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/PostToolUse_const_reload.sh"
+            ],
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__oio__file_edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/edit_loop_guard.sh"
+            ],
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__oio__bash_exec|mcp__oio__file_read|mcp__oio__file_write|mcp__oio__file_edit|mcp__oio__file_delete|mcp__oio__file_rename|mcp__oio__file_move|mcp__oio__file_copy|mcp__oio__dir_create|mcp__oio__dir_delete|mcp__oio__dir_rename|mcp__oio__dir_move|mcp__oio__list_dir|mcp__oio__find",
+        "hooks": [
+          {
+            "type": "command",
+            "command": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/PostToolUse_oio_invalid_params.sh"
+            ],
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Agent|SendMessage",
+        "hooks": [
+          {
+            "type": "command",
+            "command": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/PostToolUse_observation_checkpoint.sh"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/PreCompact.sh"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/SessionStart.sh"
+            ],
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/SessionStart_path_unify.sh"
+            ],
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": [
+              "${CLAUDE_PLUGIN_ROOT}/scripts/sync_rules.sh"
+            ],
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/SessionStart_compact.sh"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/SubagentStop_report_guard.sh"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/Stop.sh"
+            ]
+          },
+          {
+            "type": "command",
+            "command": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/Stop_askq_guard.sh"
+            ],
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/Stop_observation_guard.sh"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

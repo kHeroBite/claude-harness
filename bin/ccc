@@ -1,0 +1,5 @@
+#!/bin/bash
+# ccc — Claude Code 재개 (cc --continue 래퍼)
+# 버전: 3.0 (cc 위임)
+# 변경: 2.0(독립 구현) → 3.0(cc --continue 래퍼)
+exec cc "$@" --continue

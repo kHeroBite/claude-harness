@@ -1,0 +1,43 @@
+#!/bin/bash
+# 커밋 직전 자격증명 스캔을 실행해 유출 발견 시 커밋을 물리 차단하는 git pre-commit hook
+#
+# 배선 방법 (둘 중 하나 — install.sh 또는 수동):
+#   ln -sfn "$(git rev-parse --show-toplevel)/scripts/pre-commit" \
+#           "$(git rev-parse --git-dir)/hooks/pre-commit"
+#   또는  git config core.hooksPath scripts
+#
+# ★.git/hooks 는 clone 으로 전파되지 않는다★
+#   → oUpload 스킬이 매 실행마다 배선 여부를 확인하고, 미배선 시 즉시 배선한 후 진행한다.
+#
+# 우회는 금지다. --no-verify 로 이 hook 을 건너뛰지 말 것 (재발방지 정책).
+
+set -uo pipefail
+
+_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || {
+  echo "[pre-commit] git repo 루트를 찾을 수 없어 스캔을 건너뜁니다." >&2
+  exit 0
+}
+
+_SCAN="${_ROOT}/scripts/credential_scan.sh"
+
+if [ ! -f "$_SCAN" ]; then
+  echo "🚫 [pre-commit] credential_scan.sh 가 없습니다: ${_SCAN}"
+  echo "   스캔 스크립트 부재는 게이트 무력화이므로 커밋을 차단합니다 (fail-closed)."
+  exit 1
+fi
+
+if [ ! -x "$_SCAN" ]; then
+  chmod +x "$_SCAN" 2>/dev/null || true
+fi
+
+bash "$_SCAN" "$_ROOT"
+_RC=$?
+
+if [ "$_RC" -ne 0 ]; then
+  echo ""
+  echo "🚫 [pre-commit] 자격증명 스캔 실패로 커밋이 차단되었습니다."
+  echo "   위 파일:줄번호를 수정한 후 다시 커밋하십시오."
+  exit 1
+fi
+
+exit 0

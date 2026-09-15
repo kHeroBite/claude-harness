@@ -1,0 +1,6 @@
+# 공유 SQL 테이블의 화면별 소유 열 대장 (F-SQL-OWN-1, inline_sql_guard.sh 참조)
+# 형식: 테이블명<TAB>소유자(화면ID)<TAB>소유 열(콤마구분, 공백없음)
+# 등재 원칙: 사고가 실제로 난 테이블만 등재한다(오탐 억제). 단독 소유 테이블은 등재하지 않는다.
+# 2026-09-15 사이클131/132 신설 (L-1066 — 공유 테이블 소유 열 미분리 재발방지, reviewer-A ③ 설계)
+t_setMenu	1009	PID,MenuName,IsActive,Bypass
+t_setMenu	1050	AI,AIModel

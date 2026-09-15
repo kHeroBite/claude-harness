@@ -1,0 +1,1334 @@
+#!/usr/bin/env bash
+# =============================================================================
+# claude-as — Claude Code multi-account profile launcher
+# -----------------------------------------------------------------------------
+# 위치: ~/.local/bin/claude-as
+# 역할: per-session CLAUDE_CONFIG_DIR(/tmp/cc-${UUID}) + 단일원본
+#       (~/.claude-profiles/<name>/) 분리. 종료 시 trap으로 변경분 단일원본
+#       동기화. 데이터 경로 0건 공유(선언 B isolation)를 enforced.
+#
+# 의존: bash 5.0+ (associative arrays), mktemp 또는 /proc/sys/kernel/random/uuid
+#
+# 서브커맨드:
+#   claude-as <name> [args]   해당 프로파일로 Claude Code 진입
+#   claude-as create <name>   프로파일 skeleton 생성 + first-run 안내
+#   claude-as list            프로파일 목록 + 마지막 사용 시각
+#   claude-as remove <name>   프로파일 삭제 (확인 prompt) [alias: delete]
+#   claude-as current         현재 활성 프로파일 표시
+#
+# critic-B 결함 해결 매핑 (계획서 §5.3):
+#   C1 (skills 빈 dir) → ensure_link() 빈 dir 분기 + skills 별도 분기
+#   C2 (trap 부재)     → trap cleanup EXIT INT TERM HUP
+#   S1 (keybindings.json idempotent 함정) → 매 실행 ensure_link 호출
+#   S2 (settings.json 1회 cp) → trap에서 단일원본 동기화 (G5 양쪽 케이스 방어)
+#   S3 (ANTHROPIC_AUTH_TOKEN 누락) → 3변수 모두 unset
+#   S4 (chmod 600 미강제) → umask 077 + 명시 chmod
+#   L7 (flock 제거) → 다중 세션 동시 접근 허용, mtime 비교로 sync_back 경합 방어
+#
+# G5 (credentials atomic 모델 INCONCLUSIVE) 양쪽 케이스 방어:
+#   (a) 종료 시 sync_back: cp -p 사용 — symlink면 따라가서 단일원본 갱신,
+#       regular file이면 새로 복사. 어느 atomic 모델이든 안전.
+#   (b) launcher 시작 시 단일원본 → tmp dir 동기화는 항상 실제 파일 복사
+#       (symlink 아님 — 직접 cp -a). atomic 가정 단독 설계 금지.
+# =============================================================================
+
+set -euo pipefail
+umask 077    # S4: 자식 파일 0600/0700 기본 보장
+
+# =============================================================================
+# §1. 상수
+# =============================================================================
+readonly PROFILES_ROOT="${CLAUDE_PROFILES_ROOT:-$HOME/.claude-profiles}"
+readonly ORIGIN_HOME_CLAUDE="$HOME/.claude"
+
+# claude binary 자동 감지 — plan_3 메모-6 하드코딩 결함 보강
+# 우선순위: 환경변수 > command -v > 표준 fallback
+detect_claude_bin() {
+    if [[ -n "${CLAUDE_BIN:-}" && -x "${CLAUDE_BIN}" ]]; then
+        echo "${CLAUDE_BIN}"
+        return 0
+    fi
+    local found
+    found="$(command -v claude 2>/dev/null || true)"
+    if [[ -n "${found}" && -x "${found}" ]]; then
+        echo "${found}"
+        return 0
+    fi
+    if [[ -x "$HOME/.local/bin/claude" ]]; then
+        echo "$HOME/.local/bin/claude"
+        return 0
+    fi
+    echo "[claude-as] ERROR: claude 바이너리를 찾을 수 없습니다. CLAUDE_BIN 환경변수로 지정하세요." >&2
+    exit 127
+}
+
+# 코드 자산 (read-only symlink) — skills는 분기 처리하므로 여기서 제외
+readonly SHARED_LINKS=(hooks lib config scripts plugins keybindings.json projects)
+
+# 분리 대상 — 단일원본 → tmp 복사 + trap 동기화 (계획서 §4.1)
+readonly SYNC_FILES=(
+    .credentials.json
+    .claude.json
+    .account_email_cache
+    .statusline_state.json
+    .usage_cache.json
+    .mcp_status_cache
+    .mcp_disconnect
+    mcp-needs-auth-cache.json
+    settings.json
+    settings.local.json
+)
+readonly SYNC_FILES_OPTIONAL=(
+    history.jsonl
+    MEMORY
+    openai_cost.txt
+    stats-cache.json
+    task_start_time.txt
+)
+readonly SYNC_DIRS=(
+    sessions
+    plans
+    backups
+    downloads
+    telemetry
+    statusline_cache
+)
+
+# 휘발성 (tmp dir 안에서만 — 단일원본과 동기화 안 함)
+readonly EPHEMERAL_DIRS=(
+    session-env
+    teams
+    tasks
+    oio-locks
+    fio-locks
+    cache
+    shell-snapshots
+    file-history
+    paste-cache
+)
+
+# 권한 600 강제 대상 (S4)
+readonly CHMOD_600_FILES=(
+    .credentials.json
+    .account_email_cache
+    .statusline_state.json
+    .mcp_status_cache
+)
+
+# =============================================================================
+# §2. 유틸리티 함수
+# =============================================================================
+
+err() {
+    # 기본 quiet — CLAUDE_AS_VERBOSE=1일 때만 stderr 출력 (cc와 동일 동작)
+    # 이유: stderr 메시지가 PTY에 남으면 Claude Code 진입 직후 OSC 처리에 영향
+    # → Windows Terminal 탭 타이틀이 "✳ Claude Code"로 잔존하는 문제 발생
+    # cc는 grep -v로 필터링했지만, 모든 호출자(cas/cmon/직접)가 동일하게 깔끔한 진입 보장
+    [[ "${CLAUDE_AS_VERBOSE:-0}" = "1" ]] || return 0
+    echo "[claude-as] $*" >&2
+}
+
+die() {
+    err "$*"
+    exit 1
+}
+
+validate_name() {
+    local name="$1"
+    if ! [[ "${name}" =~ ^[A-Za-z0-9_-]+$ ]]; then
+        die "부적합 프로파일 이름: '${name}' (허용: 영숫자/_/-)"
+    fi
+    # 예약어 차단
+    case "${name}" in
+        create|list|remove|delete|current|monitor|help|"-h"|"--help")
+            die "예약어는 프로파일 이름으로 사용 불가: '${name}'"
+            ;;
+    esac
+}
+
+# unset_anthropic_envs — S3 보강 (3변수 모두 unset) + cas 격리 stale env 정리
+# 부모 셸에서 상속된 cas/CLAUDE 환경변수가 자식 cas로 전파되면 새 격리 안 만들고
+# 부모 격리 재사용 → 다른 프로파일의 statusline 컨텍스트 누락 → "✳ Claude Code" 폴백.
+# 진입 직후 stale env를 모두 unset하여 cas가 항상 새 격리(/tmp/cc-${UUID})를 생성하도록.
+unset_anthropic_envs() {
+    unset ANTHROPIC_API_KEY
+    unset ANTHROPIC_AUTH_TOKEN
+    unset CLAUDE_CODE_OAUTH_TOKEN
+    # cas 격리/세션 stale env — Claude Code REPL 안에서 cas 호출 시 부모로부터 상속됨
+    unset CLAUDE_AS_UUID
+    unset CLAUDE_CONFIG_DIR
+    unset CLAUDE_PROFILE_NAME
+    unset CLAUDE_PROJECT_DIR
+    unset CLAUDE_SESSION_ID
+}
+
+# generate_uuid — uuidgen 의존 회피
+generate_uuid() {
+    if [[ -r /proc/sys/kernel/random/uuid ]]; then
+        cat /proc/sys/kernel/random/uuid
+    elif command -v uuidgen >/dev/null 2>&1; then
+        uuidgen
+    else
+        # fallback: $$ + nanoseconds
+        echo "$$-$(date +%s%N)"
+    fi
+}
+
+# ensure_data_dir — 단일원본 디렉토리 생성 (0700)
+ensure_data_dir() {
+    local name="$1"
+    local d="${PROFILES_ROOT}/${name}"
+    mkdir -p "${d}"
+    chmod 700 "${d}"
+    echo "${d}"
+}
+
+# ensure_link — read-only 공유 자산 link 생성 (C1 빈 dir 분기 포함)
+# 인자: $1=item_name (예: hooks, skills, keybindings.json)
+#       $2=tmp_dir
+ensure_link() {
+    local name="$1"
+    local tmp_dir="$2"
+    local src="${ORIGIN_HOME_CLAUDE}/${name}"
+    local dst="${tmp_dir}/${name}"
+
+    # 이미 존재 (휘발성 dir 충돌 등)
+    if [[ -e "${dst}" || -L "${dst}" ]]; then
+        return 0
+    fi
+
+    # S1: src가 first-run 시점에 부재 — 매 실행 호출이므로 다음 실행에 link 됨
+    if [[ ! -e "${src}" && ! -L "${src}" ]]; then
+        err "정보: '${src}' 미존재 (link 스킵 — 사후 생성 시 다음 실행에 반영)"
+        return 0
+    fi
+
+    # symlink: target 존재 검증 후 절대경로로 link
+    if [[ -L "${src}" ]]; then
+        local tgt
+        tgt="$(readlink -f "${src}" 2>/dev/null || true)"
+        if [[ -n "${tgt}" && -e "${tgt}" ]]; then
+            ln -s "${tgt}" "${dst}"
+        else
+            err "경고: '${src}' symlink target 부재 (스킵)"
+        fi
+        return 0
+    fi
+
+    # 일반 디렉토리: C1 빈 dir 검증
+    if [[ -d "${src}" ]]; then
+        # 빈 dir 감지 (~/.claude/skills 케이스 — critic-B L2)
+        if [[ -z "$(ls -A "${src}" 2>/dev/null)" ]]; then
+            err "정보: '${src}'는 빈 일반 디렉토리 — link 스킵 (C1 분기)"
+            return 0
+        fi
+        ln -s "${src}" "${dst}"
+        return 0
+    fi
+
+    # 일반 파일
+    if [[ -f "${src}" ]]; then
+        ln -s "${src}" "${dst}"
+        return 0
+    fi
+
+    # 이외 (block/char/socket 등) — 스킵
+    err "경고: '${src}'는 일반 파일/디렉토리/심볼릭링크가 아님 (스킵)"
+    return 0
+}
+
+# sync_back — 종료 시 변경분 단일원본 동기화 (G5 양쪽 케이스 방어)
+# cp -p 사용 — symlink면 따라가서 단일원본 갱신, regular file이면 새로 복사.
+# 어느 atomic 모델(write+rename / in-place truncate)이든 안전.
+sync_back() {
+    local tmp_dir="$1"
+    local profile_dir="$2"
+    local f d
+    # DEBUG-MARKER M3 — Phase D 완료 후 제거
+    _cas_log M3 "sync_back 진입 tmp_dir=${tmp_dir} profile_dir=${profile_dir}"
+
+    # SYNC_FILES (필수)
+    for f in "${SYNC_FILES[@]}"; do
+        if [[ -f "${tmp_dir}/${f}" ]]; then
+            # mtime 비교 — PROFILE_DIR 파일이 TMP_CFG보다 최신이면 skip (다른 세션이 더 최근에 갱신)
+            if [[ -f "${profile_dir}/${f}" && "${profile_dir}/${f}" -nt "${tmp_dir}/${f}" ]]; then
+                continue
+            fi
+            # DEBUG-MARKER M4_pre — Phase D 완료 후 제거
+            _cas_log M4_pre "cp 직전 file=${f}"
+            cp -p "${tmp_dir}/${f}" "${profile_dir}/${f}" 2>/dev/null || true
+            # DEBUG-MARKER M4_post — Phase D 완료 후 제거
+            _cas_log M4_post "cp 완료 file=${f} cp_rc=$?"
+        fi
+    done
+
+    # SYNC_FILES_OPTIONAL
+    for f in "${SYNC_FILES_OPTIONAL[@]}"; do
+        if [[ -f "${tmp_dir}/${f}" ]]; then
+            # mtime 비교 — PROFILE_DIR 파일이 TMP_CFG보다 최신이면 skip
+            if [[ -f "${profile_dir}/${f}" && "${profile_dir}/${f}" -nt "${tmp_dir}/${f}" ]]; then
+                continue
+            fi
+            cp -p "${tmp_dir}/${f}" "${profile_dir}/${f}" 2>/dev/null || true
+        fi
+    done
+
+    # SYNC_DIRS (rsync 우선, 미설치 시 cp 폴백)
+    for d in "${SYNC_DIRS[@]}"; do
+        if [[ -d "${tmp_dir}/${d}" ]]; then
+            if command -v rsync >/dev/null 2>&1; then
+                rsync -a --update --delete "${tmp_dir}/${d}/" "${profile_dir}/${d}/" 2>/dev/null || true
+            else
+                rm -rf "${profile_dir}/${d}" 2>/dev/null || true
+                cp -a "${tmp_dir}/${d}" "${profile_dir}/${d}" 2>/dev/null || true
+            fi
+        fi
+    done
+
+    # 권한 600 재강제 (sync 도중 mode가 변동되었을 수도)
+    for f in "${CHMOD_600_FILES[@]}"; do
+        [[ -f "${profile_dir}/${f}" ]] && chmod 600 "${profile_dir}/${f}" 2>/dev/null || true
+    done
+}
+
+# cleanup — 실제 정리 작업 (idempotent — 이미 정리됐으면 no-op)
+# 전역: TMP_CFG, PROFILE_DIR (cmd_run에서 설정)
+# CLEANUP_DONE: 이미 1회 실행됐는지 추적 (옵션 A — 명시적 호출 + trap 동시 안전)
+# ── R12: .credentials.json flock 전역 변수
+CRED_FLOCK_HELD=0
+INOTIFY_PID=""
+
+# R12: .credentials.json flock 획득 (30s timeout, fail-soft)
+_r12_acquire_flock() {
+    # 단일원본 .credentials.json.lock 파일로 flock 보호 (fd 9)
+    CRED_LOCK_FILE="${PROFILE_DIR}/.credentials.json.lock"
+    exec 9>"${CRED_LOCK_FILE}" 2>/dev/null || { CRED_FLOCK_HELD=0; return 0; }
+    if flock -w 30 9 2>/dev/null; then
+        CRED_FLOCK_HELD=1
+    else
+        echo "[cas] 경고: .credentials.json flock 30s 타임아웃 — 잠금 없이 진행" >&2
+        exec 9>&- 2>/dev/null || true
+        CRED_FLOCK_HELD=0
+    fi
+} || true
+
+# R12: flock 해제 (중복 해제 안전)
+_r12_release_flock() {
+    # flock 획득 상태일 때만 해제 (중복 호출 안전)
+    if [[ "${CRED_FLOCK_HELD:-0}" -eq 1 ]]; then
+        exec 9>&- 2>/dev/null || true
+        CRED_FLOCK_HELD=0
+    fi
+} || true
+
+# R8: 비정상 종료 .bak 자동 복구 (mtime 비교 — prompt 없음)
+_r8_auto_recover() {
+    local cred_bak="${PROFILE_DIR}/.credentials.json.bak"
+    local cred_src="${PROFILE_DIR}/.credentials.json"
+    if [[ -f "${cred_bak}" ]]; then
+        if [[ "${cred_bak}" -nt "${cred_src}" ]]; then
+            cp -p "${cred_bak}" "${cred_src}" 2>/dev/null || true
+        fi
+        rm -f "${cred_bak}" 2>/dev/null || true
+    fi
+} || true
+
+# R8: .bak 생성 (flock 보유 중 단일원본 스냅샷)
+_r8_create_bak() {
+    # PROFILE_DIR의 .credentials.json을 .bak으로 스냅샷 저장
+    local cred_src="${PROFILE_DIR}/.credentials.json"
+    local cred_bak="${PROFILE_DIR}/.credentials.json.bak"
+    if [[ -f "${cred_src}" ]]; then
+        cp -p "${cred_src}" "${cred_bak}" 2>/dev/null || \
+            echo "[cas] 경고: .bak 생성 실패 — 정상 진행" >&2
+    fi
+} || true
+
+# R8: 정상 종료 시 .bak 삭제
+_r8_delete_bak() {
+    # 정상 종료 확인 후 .bak 제거 (비정상 종료 시에는 남겨둠)
+    local cred_bak="${PROFILE_DIR}/.credentials.json.bak"
+    rm -f "${cred_bak}" 2>/dev/null || true
+} || true
+
+# R7: stale inotify daemon PID 정리 (zombie 방지)
+_r7_clean_stale_daemons() {
+    # ~/.claude-as/inotify_pids/ 의 사망한 PID 파일 일괄 제거
+    local pid_dir="${HOME}/.claude-as/inotify_pids"
+    mkdir -p "${pid_dir}" 2>/dev/null || true
+    local pid_file pid
+    for pid_file in "${pid_dir}"/*.pid; do
+        [[ -f "${pid_file}" ]] || continue
+        pid="$(cat "${pid_file}" 2>/dev/null || echo '')"
+        if [[ -n "${pid}" ]] && ! kill -0 "${pid}" 2>/dev/null; then
+            rm -f "${pid_file}" 2>/dev/null || true
+        fi
+    done
+} || true
+
+# R7: inotifywait 백그라운드 daemon spawn (tmp .credentials.json → 단일원본 즉시 동기화)
+_r7_spawn_daemon() {
+    # inotify-tools 설치 시: tmp dir 변경 감지 → 단일원본 cp -p (fail-soft)
+    local tmp_dir="$1"
+    local profile_dir="$2"
+    local uuid="$3"
+    local pid_dir="${HOME}/.claude-as/inotify_pids"
+    local pid_file="${pid_dir}/${uuid}.pid"
+
+    if ! command -v inotifywait >/dev/null 2>&1; then
+        echo "[cas] 정보: inotify-tools 미설치 — 즉시 동기화 daemon 비활성 (R12 flock으로 보완)" >&2
+        return 0
+    fi
+
+    mkdir -p "${pid_dir}" 2>/dev/null || true
+
+    (
+        inotifywait -m -e close_write,moved_to \
+            "${tmp_dir}/.credentials.json" 2>/dev/null |
+        while read -r dir event file; do
+            if [[ -f "${profile_dir}/.credentials.json" ]] && \
+               [[ "${profile_dir}/.credentials.json" -nt "${tmp_dir}/.credentials.json" ]]; then
+                continue
+            fi
+            cp -p "${tmp_dir}/.credentials.json" \
+                  "${profile_dir}/.credentials.json" 2>/dev/null || true
+        done
+    ) &
+    INOTIFY_PID=$!
+    echo "${INOTIFY_PID}" > "${pid_file}" 2>/dev/null || true
+} || true
+
+# R7: inotify daemon 종료
+_r7_kill_daemon() {
+    # sync_back 전에 호출 — daemon이 살아있으면 kill
+    if [[ -n "${INOTIFY_PID:-}" ]]; then
+        kill "${INOTIFY_PID}" 2>/dev/null || true
+        INOTIFY_PID=""
+    fi
+    local pid_file="${HOME}/.claude-as/inotify_pids/${CLAUDE_AS_UUID:-_unknown}.pid"
+    rm -f "${pid_file}" 2>/dev/null || true
+} || true
+
+CLEANUP_DONE=0
+cleanup() {
+    [[ "${CLEANUP_DONE}" -eq 1 ]] && return 0
+    CLEANUP_DONE=1
+    # DEBUG-MARKER M2 — Phase D 완료 후 제거
+    _cas_log M2 "진입: CLEANUP_DONE=1 설정됨"
+    if [[ -n "${TMP_CFG:-}" && -d "${TMP_CFG:-}" && -n "${PROFILE_DIR:-}" ]]; then
+        # ── R7: inotify daemon 종료 (sync_back 전 — 경합 방지)
+        _r7_kill_daemon || true
+        sync_back "${TMP_CFG}" "${PROFILE_DIR}" || true
+        # ── R8: 정상 종료 → .bak 삭제
+        _r8_delete_bak || true
+        # ── R12: flock 해제 (중복 해제 안전)
+        _r12_release_flock || true
+        # DEBUG-MARKER M5_pre — Phase D 완료 후 제거
+        _cas_log M5_pre "rm -rf TMP_CFG 직전"
+        rm -rf "${TMP_CFG}" 2>/dev/null || true
+        # DEBUG-MARKER M5_post — Phase D 완료 후 제거
+        _cas_log M5_post "rm -rf TMP_CFG 완료"
+    fi
+}
+
+# cleanup_and_exit — 명시적 정리 후 exit (cmd_run 정상 종료 경로)
+cleanup_and_exit() {
+    local rc="${1:-$?}"
+    cleanup
+    # DEBUG-MARKER M5_exit — Phase D 완료 후 제거
+    _cas_log M5_exit "exit 직전 rc=${rc}"
+    exit "${rc}"
+}
+
+# cleanup_trap — trap 핸들러 (signal 또는 EXIT 트랩 시)
+# cleanup_and_exit가 이미 호출됐어도 CLEANUP_DONE 가드로 중복 방지
+cleanup_trap() {
+    local rc=$?
+    # DEBUG-MARKER MT0 — Phase D 완료 후 제거
+    _cas_log MT0 "signal=${signal:-EXIT} trap_rc=${rc}"
+    cleanup
+    exit "${rc}"
+}
+
+# =============================================================================
+# §3. 서브커맨드
+# =============================================================================
+
+cmd_create() {
+    local name="${1:-}"
+    [[ -n "${name}" ]] || die "사용법: claude-as create <name>"
+    validate_name "${name}"
+
+    local d="${PROFILES_ROOT}/${name}"
+    if [[ -e "${d}" ]]; then
+        die "이미 존재합니다: ${d}"
+    fi
+
+    mkdir -p "${PROFILES_ROOT}"
+    chmod 700 "${PROFILES_ROOT}"
+    ensure_data_dir "${name}" >/dev/null
+
+    echo "[claude-as] 프로파일 생성 완료: ${d}"
+    echo "[claude-as] first-run 로그인을 자동으로 시작합니다..."
+    cmd_run "${name}"
+}
+
+cmd_list() {
+    if [[ ! -d "${PROFILES_ROOT}" ]]; then
+        echo "[claude-as] 프로파일 없음. 'claude-as create <name>'으로 생성하세요."
+        return 0
+    fi
+    printf "%-20s  %-25s  %s\n" "NAME" "LAST USED (creds mtime)" "PATH"
+    printf "%-20s  %-25s  %s\n" "----" "-----------------------" "----"
+    local d name mt
+    local found=0
+    for d in "${PROFILES_ROOT}"/*/; do
+        [[ -d "${d}" ]] || continue
+        found=1
+        name="$(basename "${d}")"
+        if [[ -f "${d}.credentials.json" ]]; then
+            mt="$(stat -c '%y' "${d}.credentials.json" 2>/dev/null | cut -d. -f1)"
+        else
+            mt="(unauth)"
+        fi
+        printf "%-20s  %-25s  %s\n" "${name}" "${mt}" "${d}"
+    done
+    if [[ "${found}" -eq 0 ]]; then
+        echo "[claude-as] 프로파일 없음."
+    fi
+}
+
+cmd_remove() {
+    local name="${1:-}"
+    [[ -n "${name}" ]] || die "사용법: claude-as remove <name>"
+    validate_name "${name}"
+
+    local d="${PROFILES_ROOT}/${name}"
+    [[ -d "${d}" ]] || die "없는 프로파일: ${name}"
+
+    read -r -p "[claude-as] '${name}' 프로파일을 영구 제거합니다. 진행? (yes/no) " ans
+    if [[ "${ans}" != "yes" ]]; then
+        echo "[claude-as] 취소"
+        return 0
+    fi
+
+    # .credentials.json 우선 shred
+    if [[ -f "${d}/.credentials.json" ]] && command -v shred >/dev/null 2>&1; then
+        shred -u "${d}/.credentials.json" 2>/dev/null || true
+    fi
+    rm -rf "${d}"
+    echo "[claude-as] 제거 완료: ${name}"
+}
+
+cmd_current() {
+    if [[ -n "${CLAUDE_PROFILE_NAME:-}" ]]; then
+        echo "${CLAUDE_PROFILE_NAME}"
+        echo "  config_dir: ${CLAUDE_CONFIG_DIR:-(unset)}"
+        echo "  uuid:       ${CLAUDE_AS_UUID:-(unset)}"
+    else
+        echo "(none — launcher 미경유 또는 부모 셸 외부)"
+    fi
+}
+
+# _print_profile_usage — 프로파일 1개 사용량 1줄 출력 (monitor 공용 헬퍼)
+_print_profile_usage() {
+    local name="$1"
+    local profile_dir="$2"
+    # batch_cache 우선 + fallback PROFILE_DIR (oplan_v2)
+    local batch_cache="$HOME/.claude-as/batch_cache/${name}.json"
+    local self_cache="${profile_dir}/.usage_cache.json"
+    local cache="$self_cache"
+    if [ -f "$batch_cache" ] && [ -f "$self_cache" ]; then
+        # 두 출처 timestamp 비교 (payload 안의 "timestamp" 필드) — 더 큰 쪽 사용
+        if python3 -c "import json,sys; b=json.load(open(sys.argv[1])); s=json.load(open(sys.argv[2])); sys.exit(0 if int(b.get('timestamp',0)) >= int(s.get('timestamp',0)) else 1)" "$batch_cache" "$self_cache" 2>/dev/null; then
+            cache="$batch_cache"
+        fi
+    elif [ -f "$batch_cache" ]; then
+        cache="$batch_cache"
+    fi
+    local email=""
+    if [[ -f "${profile_dir}/.account_email_cache" ]]; then
+        email=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(d.get('email',''))" \
+                "${profile_dir}/.account_email_cache" 2>/dev/null || true)
+    fi
+    if [[ ! -f "${cache}" ]]; then
+        printf "  %-12s %-40s — (사용 이력 없음)\n" "${name}" "(${email})"
+        return
+    fi
+    python3 - "${name}" "${email}" "${cache}" <<'PYEOF'
+import json, os, sys, time
+name, email, cache = sys.argv[1], sys.argv[2], sys.argv[3]
+try:
+    d = json.load(open(cache))
+    ts = int(d.get("timestamp", 0))
+    rl = d.get("rate_limits", {})
+    sess = rl.get("five_hour", {}).get("used_percentage")
+    week = rl.get("seven_day", {}).get("used_percentage")
+    sess_rem = (100 - float(sess)) if sess is not None else None
+    week_rem = (100 - float(week)) if week is not None else None
+    age = int(time.time()) - ts
+    if age < 300:
+        age_str = "[방금]"
+    elif age < 3600:
+        age_str = f"[{age//60}분 전]"
+    elif age < 21600:
+        age_str = f"[⚠ {age//3600}시간 전]"
+    else:
+        age_str = f"[⚠ stale: {age//3600}시간 전]"
+    sess_s = f"{sess_rem:.0f}%" if sess_rem is not None else "?%"
+    week_s = f"{week_rem:.0f}%" if week_rem is not None else "?%"
+    print(f"  {name:<12} ({email})  세션 {sess_s} / 주간 {week_s}  {age_str}")
+except Exception as e:
+    print(f"  {name:<12} ({email})  (캐시 손상: {type(e).__name__})")
+PYEOF
+}
+
+# cmd_monitor — 모든 프로파일 사용량 5분 주기 표시
+cmd_monitor() {
+    local profiles_root="${CLAUDE_PROFILES_ROOT:-$HOME/.claude-profiles}"
+    if [[ ! -d "${profiles_root}" ]]; then
+        die "프로파일 디렉토리 없음: ${profiles_root}"
+    fi
+    # 커서 복구 + clear trap
+    trap 'tput cnorm 2>/dev/null; clear; exit 0' INT TERM EXIT
+    tput civis 2>/dev/null || true
+    while true; do
+        clear
+        printf '═══ Claude Code — 계정 사용량 모니터 ═══\n'
+        printf '갱신: 5분 주기 / 종료: Ctrl+C\n\n'
+        local d name
+        for d in "${profiles_root}"/*/; do
+            [[ -d "${d}" ]] || continue
+            name="$(basename "${d}")"
+            _print_profile_usage "${name}" "${d}"
+        done
+        printf '\n[갱신 대기 중... 5분]\n'
+        sleep 300
+    done
+}
+
+# =============================================================================
+# §2.95 cas-batch 통합 (oplan_v2 — daemon install/uninstall/status)
+# =============================================================================
+
+readonly CAS_BATCH_DIR="$HOME/.claude-as"
+readonly CAS_BATCH_SCRIPT="$HOME/.claude-as/cas-batch.sh"
+readonly CAS_BATCH_CACHE="$HOME/.claude-as/batch_cache"
+readonly CAS_BATCH_UNIT="$HOME/.config/systemd/user/cas-batch.service"
+readonly CAS_WARMUP_SCRIPT="$HOME/.claude-as/cas-warmup.sh"
+readonly CAS_WARMUP_UNIT="$HOME/.config/systemd/user/cas-warmup.service"
+
+# _emit_batch_script — heredoc로 ~/.claude-as/cas-batch.sh 동적 생성
+_emit_batch_script() {
+    mkdir -p "$CAS_BATCH_DIR" "$CAS_BATCH_CACHE"
+    chmod 700 "$CAS_BATCH_DIR" "$CAS_BATCH_CACHE"
+    cat >"$CAS_BATCH_SCRIPT" <<'BATCH_EOF'
+#!/bin/bash
+# cas-batch — 모든 프로파일 자가캐시 모음 → 중앙 batch_cache로 mirror
+# 위치: ~/.claude-as/cas-batch.sh (생성자: claude-as install-batch)
+# 기원: oplan_v2_conv_177747312977 (debate v1 통합)
+set -euo pipefail
+umask 077
+
+INTERVAL_SECONDS="${CAS_BATCH_INTERVAL:-60}"   # 1분 기본 (5분 → 1분 변경, cmon과 정합)
+PROFILES_ROOT="${CLAUDE_PROFILES_ROOT:-$HOME/.claude-profiles}"
+BATCH_DIR="$HOME/.claude-as/batch_cache"
+PID_FILE="$HOME/.claude-as/cas-batch.pid"
+LOG_FILE="$HOME/.claude-as/cas-batch.log"
+STATE_FILE="$HOME/.claude-as/cas-batch.state"   # 마지막 polling 시각
+
+mkdir -p "$BATCH_DIR"
+chmod 700 "$HOME/.claude-as" "$BATCH_DIR"
+
+# 단일 인스턴스 보장 (PROFILE_DIR 무관 위치 — 다중접속 정책 보존)
+exec 200>"$PID_FILE"
+if ! flock -n 200; then
+    echo "[cas-batch] 이미 실행 중" >&2
+    exit 0
+fi
+echo $$ >&200
+
+# 정리 trap
+cleanup() { rm -f "$PID_FILE" 2>/dev/null || true; }
+trap cleanup EXIT INT TERM HUP
+
+log() {
+    local ts msg
+    ts="$(date '+%Y-%m-%d %H:%M:%S')"
+    msg="[$ts] [pid=$$] $*"
+    echo "$msg"            # systemd journal로
+    echo "$msg" >>"$LOG_FILE" 2>/dev/null || true
+}
+
+log "시작 INTERVAL=$INTERVAL_SECONDS PROFILES_ROOT=$PROFILES_ROOT BATCH_DIR=$BATCH_DIR"
+
+# 1회 polling 함수 (테스트 시 단독 호출 가능)
+poll_once() {
+    local profile_dir name src dst tmp count_total count_synced
+    count_total=0
+    count_synced=0
+    for profile_dir in "$PROFILES_ROOT"/*/; do
+        [ -d "$profile_dir" ] || continue
+        name="$(basename "$profile_dir")"
+        count_total=$((count_total + 1))
+        src="$profile_dir.usage_cache.json"
+        dst="$BATCH_DIR/$name.json"
+
+        # 화이트리스트: .usage_cache.json만 read. 토큰 파일은 절대 read 금지 (보안).
+        if [ ! -f "$src" ]; then
+            continue
+        fi
+
+        # mtime 비교: dst 부재거나 src 더 최신일 때만 mirror
+        if [ -f "$dst" ] && [ ! "$src" -nt "$dst" ]; then
+            continue
+        fi
+
+        # atomic mirror (같은 EXT4 파일시스템 → mv -f atomic 보장)
+        tmp="$dst.tmp.$$"
+        if cp -p "$src" "$tmp" 2>/dev/null; then
+            chmod 600 "$tmp" 2>/dev/null || true
+            if mv -f "$tmp" "$dst" 2>/dev/null; then
+                count_synced=$((count_synced + 1))
+            else
+                rm -f "$tmp" 2>/dev/null || true
+            fi
+        else
+            rm -f "$tmp" 2>/dev/null || true
+        fi
+    done
+
+    # 마지막 polling 시각 기록 (status용)
+    echo "$(date +%s) total=$count_total synced=$count_synced" >"$STATE_FILE" 2>/dev/null || true
+    log "polling 완료 total=$count_total synced=$count_synced"
+}
+
+# CAS_BATCH_ONCE=1 이면 1회만 실행하고 종료 (테스트 모드)
+if [ "${CAS_BATCH_ONCE:-0}" = "1" ]; then
+    poll_once
+    exit 0
+fi
+
+# 메인 루프
+while :; do
+    poll_once || log "polling 에러 (계속 진행)"
+    sleep "$INTERVAL_SECONDS"
+done
+BATCH_EOF
+    chmod 700 "$CAS_BATCH_SCRIPT"
+}
+
+# _emit_batch_unit — heredoc로 ~/.config/systemd/user/cas-batch.service 생성
+_emit_batch_unit() {
+    mkdir -p "$(dirname "$CAS_BATCH_UNIT")"
+    cat >"$CAS_BATCH_UNIT" <<'UNIT_EOF'
+[Unit]
+Description=CAS Batch — Claude 사용량 캐시 모음 (옵션3 자가캐시 monitor)
+Documentation=file:///mnt/c/DATA/Project/AI/docs/cas-batch-guide.md
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=%h/.claude-as/cas-batch.sh
+Environment=CAS_BATCH_INTERVAL=60
+Restart=on-failure
+RestartSec=30s
+
+# 보안 강화
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=%h/.claude-as
+ProtectHome=read-only
+PrivateDevices=true
+
+[Install]
+WantedBy=default.target
+UNIT_EOF
+}
+
+# _emit_warmup_unit — heredoc로 ~/.config/systemd/user/cas-warmup.service 생성
+_emit_warmup_unit() {
+    mkdir -p "$(dirname "$CAS_WARMUP_UNIT")"
+    cat >"$CAS_WARMUP_UNIT" <<'WARMUP_UNIT_EOF'
+[Unit]
+Description=CAS Warmup — 다계정 Claude 토큰 만료 방지 1h 주기 워밍업 데몬
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=%h/.claude-as/cas-warmup.sh
+Environment=CAS_WARMUP_INTERVAL=3600
+Environment=CLAUDE_BIN=%h/.local/bin/claude
+Restart=on-failure
+RestartSec=30s
+
+# 보안 강화
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=%h/.claude-as %h/.claude-profiles
+ProtectHome=read-only
+PrivateDevices=true
+
+[Install]
+WantedBy=default.target
+WARMUP_UNIT_EOF
+}
+
+# cmd_install_batch — 환경 자동 감지 + linger 활성화 + unit/script emit + start
+cmd_install_batch() {
+    if ! command -v systemctl >/dev/null 2>&1; then
+        echo "[cas] systemctl 명령 없음 — systemd 환경 아님. bashrc fallback으로 진행합니다."
+        _install_bashrc_fallback
+        return 0
+    fi
+
+    # is-system-running 1회만 호출 + 변수 저장 (자아비판 수정사항 (a))
+    local sys_status
+    sys_status="$(systemctl --user is-system-running 2>&1 || true)"
+    case "$sys_status" in
+        running|degraded)
+            # systemd user 정상 가동
+            ;;
+        *)
+            echo "[cas] 경고: systemctl --user 비활성 ($sys_status) — bashrc nohup fallback으로 진행합니다."
+            _install_bashrc_fallback
+            return 0
+            ;;
+    esac
+
+    # linger 활성화 확인 (이미 yes면 skip)
+    local linger
+    linger="$(loginctl show-user "$USER" 2>/dev/null | grep -oP 'Linger=\K\w+' || echo 'no')"
+    if [ "$linger" != "yes" ]; then
+        echo "[cas] linger 미활성화 — 다음 명령을 1회 실행하세요 (sudo 필요):"
+        echo "    sudo loginctl enable-linger $USER"
+        echo "[cas] 또는 linger 없이 로그인 동안만 실행되는 모드로 계속하시겠습니까? [y/N]"
+        read -r ans
+        [ "$ans" = "y" ] || { echo "[cas] 중단"; return 1; }
+    fi
+
+    _emit_batch_script
+    _emit_batch_unit
+    _emit_warmup_unit
+    if [ ! -x "$CAS_WARMUP_SCRIPT" ]; then
+        echo "[cas] 경고: $CAS_WARMUP_SCRIPT 없음 — cas-warmup.service 등록은 skip. 수동 작성 후 재실행 필요."
+    fi
+    systemctl --user daemon-reload
+    systemctl --user enable --now cas-batch.service
+    systemctl --user enable --now cas-warmup.service
+    echo "[cas] cas-batch + cas-warmup 설치 완료. 상태 확인: cas batch-status"
+}
+
+# cmd_uninstall_batch — systemctl 비활성화 + 파일 삭제
+cmd_uninstall_batch() {
+    if command -v systemctl >/dev/null 2>&1; then
+        if systemctl --user is-active cas-batch.service >/dev/null 2>&1; then
+            systemctl --user disable --now cas-batch.service 2>/dev/null || true
+        fi
+        rm -f "$CAS_BATCH_UNIT"
+        if systemctl --user is-active cas-warmup.service >/dev/null 2>&1; then
+            systemctl --user disable --now cas-warmup.service 2>/dev/null || true
+        fi
+        rm -f "$CAS_WARMUP_UNIT"
+        systemctl --user daemon-reload 2>/dev/null || true
+    fi
+    rm -f "$CAS_BATCH_SCRIPT"
+    rm -f "$CAS_BATCH_DIR/cas-batch.pid"
+    rm -f "$CAS_BATCH_DIR/cas-batch.log"
+    rm -f "$CAS_BATCH_DIR/cas-batch.state"
+    rm -rf "$CAS_BATCH_CACHE"
+    rm -f "$CAS_BATCH_DIR/cas-warmup.pid"
+    rm -f "$CAS_BATCH_DIR/cas-warmup.log"
+    echo "[cas] cas-batch + cas-warmup 제거 완료"
+}
+
+# cmd_batch_status — daemon PID/uptime/마지막 폴링 시각/캐시 mirror 개수
+cmd_batch_status() {
+    echo "=== cas-batch 상태 ==="
+    if command -v systemctl >/dev/null 2>&1 && systemctl --user is-active cas-batch.service >/dev/null 2>&1; then
+        echo "systemd: active"
+        systemctl --user status cas-batch.service --no-pager | head -10
+    else
+        echo "systemd: inactive"
+        # bashrc fallback PID 확인
+        if [ -f "$CAS_BATCH_DIR/cas-batch.pid" ]; then
+            local pid
+            pid="$(cat "$CAS_BATCH_DIR/cas-batch.pid" 2>/dev/null || echo '')"
+            if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+                echo "nohup daemon: PID=$pid (실행 중)"
+            fi
+        fi
+    fi
+    echo ""
+    echo "=== cas-warmup 상태 ==="
+    if command -v systemctl >/dev/null 2>&1 && systemctl --user is-active cas-warmup.service >/dev/null 2>&1; then
+        echo "systemd: active"
+        systemctl --user status cas-warmup.service --no-pager | head -10
+    else
+        echo "systemd: inactive"
+        if [ -f "$CAS_BATCH_DIR/cas-warmup.pid" ]; then
+            local wpid
+            wpid="$(cat "$CAS_BATCH_DIR/cas-warmup.pid" 2>/dev/null || echo '')"
+            if [ -n "$wpid" ] && kill -0 "$wpid" 2>/dev/null; then
+                echo "nohup daemon: PID=$wpid (실행 중)"
+            fi
+        fi
+    fi
+    echo ""
+    if [ -f "$CAS_BATCH_DIR/cas-batch.state" ]; then
+        local state_line epoch now age
+        state_line="$(cat "$CAS_BATCH_DIR/cas-batch.state")"
+        epoch="${state_line%% *}"
+        now="$(date +%s)"
+        age=$(( now - epoch ))
+        echo "마지막 polling: ${state_line}  (${age}초 전)"
+    else
+        echo "마지막 polling: (아직 없음)"
+    fi
+    echo ""
+    echo "=== batch_cache 신선도 ==="
+    if [ -d "$CAS_BATCH_CACHE" ]; then
+        local count=0
+        for f in "$CAS_BATCH_CACHE"/*.json; do
+            [ -f "$f" ] || continue
+            count=$((count + 1))
+            local age name
+            name="$(basename "$f" .json)"
+            age=$(( $(date +%s) - $(stat -c %Y "$f") ))
+            if [ "$age" -lt 600 ]; then
+                printf '  %-15s [신선 %d초 전]\n' "$name" "$age"
+            elif [ "$age" -lt 3600 ]; then
+                printf '  %-15s [%d분 전]\n' "$name" $((age / 60))
+            else
+                printf '  %-15s [⚠ stale %d시간 전]\n' "$name" $((age / 3600))
+            fi
+        done
+        [ "$count" -eq 0 ] && echo "  (캐시 없음 — 아직 polling 안 됨)"
+    else
+        echo "  (캐시 디렉토리 없음 — install-batch 필요)"
+    fi
+}
+
+# _install_bashrc_fallback — systemd 비활성 환경 대응
+_install_bashrc_fallback() {
+    local marker="# cas-batch auto-start (oplan_v2)"
+    if grep -qF "$marker" "$HOME/.bashrc" 2>/dev/null; then
+        echo "[cas] bashrc fallback 이미 설치됨"
+        return 0
+    fi
+    _emit_batch_script
+    cat >>"$HOME/.bashrc" <<EOF
+
+$marker
+if [ -x "\$HOME/.claude-as/cas-batch.sh" ] && ! pgrep -f "\$HOME/.claude-as/cas-batch.sh" >/dev/null 2>&1; then
+    nohup "\$HOME/.claude-as/cas-batch.sh" >/dev/null 2>&1 &
+    disown
+fi
+EOF
+    local warmup_marker="# cas-warmup auto-start (oplan_v3)"
+    if ! grep -qF "$warmup_marker" "$HOME/.bashrc" 2>/dev/null; then
+        cat >>"$HOME/.bashrc" <<EOF
+
+$warmup_marker
+if [ -x "\$HOME/.claude-as/cas-warmup.sh" ] && ! pgrep -f "\$HOME/.claude-as/cas-warmup.sh" >/dev/null 2>&1; then
+    nohup "\$HOME/.claude-as/cas-warmup.sh" >/dev/null 2>&1 &
+    disown
+fi
+EOF
+    fi
+    echo "[cas] bashrc fallback 설치 완료 (다음 셸에서 자동 시작)"
+}
+
+# =============================================================================
+# §2.9 디버그 마커 헬퍼 — Phase D 완료 후 제거
+# =============================================================================
+# DEBUG-MARKER helper — Phase D 완료 후 제거
+_cas_log() {
+    local marker="$1"; shift
+    local extra="$*"
+    local logf="${HOME}/.claude/cas_debug.log"
+    mkdir -p "${HOME}/.claude" 2>/dev/null || true
+    echo "[$(date '+%Y-%m-%d %H:%M:%S.%3N')] [pid=$$] ${marker}: rc=${rc:-?} CLEANUP_DONE=${CLEANUP_DONE:-?} TMP_CFG=${TMP_CFG:-unset} PROFILE_DIR=${PROFILE_DIR:-unset} ${extra}" >>"${logf}" 2>/dev/null || true
+}
+
+# cmd_run — 메인 진입 로직
+# 전역(trap에서 사용): TMP_CFG, PROFILE_DIR
+cmd_run() {
+    local name="${1:?사용법: claude-as <name> [claude args...]}"
+    shift || true
+    validate_name "${name}"
+
+    PROFILE_DIR="${PROFILES_ROOT}/${name}"
+    if [[ ! -d "${PROFILE_DIR}" ]]; then
+        die "프로파일 미존재: ${name}. 먼저 'claude-as create ${name}'을 실행하세요."
+    fi
+    chmod 700 "${PROFILE_DIR}" 2>/dev/null || true
+
+    # ── (a.0) tmux 자동 진입 — tmux 밖이면 새 tmux 세션을 spawn하여 그 안에서 재실행
+    # 배경: cas는 원래 tmux 안에서만 실행되어야 함. tmux 밖 실행 시 외부 WT가 Claude Code의
+    # OSC 0("✳ Claude Code")을 직접 받아 잔존. tmux 안이면 statusline DCS passthrough로
+    # 1초마다 정상값 갱신 가능 (allow-passthrough on 필수).
+    # 가드: CAS_TMUX_SPAWNED=1 (자기 재호출 시 무한 루프 방지).
+    if [[ -z "${TMUX:-}" ]] && [[ -z "${CAS_TMUX_SPAWNED:-}" ]] \
+       && [[ -t 0 ]] && [[ -t 1 ]] && command -v tmux >/dev/null 2>&1; then
+        local _cas_proj_name="$(basename "${PWD}")"
+        local _cas_session_base="claude-${_cas_proj_name}"
+        local _cas_session="${_cas_session_base}"
+        local _cas_socket="claude-${_cas_proj_name}"
+        local _n=2
+        while tmux -L "${_cas_socket}" has-session -t "${_cas_session}" 2>/dev/null; do
+            _cas_session="${_cas_session_base}-${_n}"
+            _n=$((_n + 1))
+        done
+        # 새 tmux 세션 spawn → 세션 내부에서 title 전파 활성화 + cas 재실행
+        export CAS_TMUX_SPAWNED=1
+        # cas 종료 시 tmux 세션 자동 kill (bash 프롬프트 노출 방지)
+        # 주의: 인자에 공백/특수문자 가능성 — printf %q로 quote
+        local _cmd
+        _cmd="$(printf '%q ' "$0" "${name}" "$@")"
+        exec tmux -L "${_cas_socket}" new-session -A -s "${_cas_session}" -n "${_cas_proj_name}" -c "${PWD}" \
+            "tmux -L '${_cas_socket}' set-option -g set-titles on 2>/dev/null; tmux -L '${_cas_socket}' set-option -g set-titles-string '#W' 2>/dev/null; ${_cmd}; tmux -L '${_cas_socket}' kill-session -t '${_cas_session}' 2>/dev/null"
+    fi
+
+    # ── (a) 환경 위생 (S3)
+    unset_anthropic_envs
+
+    # ── (a.5) 화면 + scrollback 클리어 — cc 메뉴 동작과 동등 (마우스 휠로도 안 보이게)
+    # 이유: Claude Code v2.1.x는 alt-screen 미사용 → 단순 \e[2J만으로는 scrollback 잔존
+    # → 마우스 휠로 위로 올리면 셸 prompt + cas rio 명령이 그대로 보임.
+    # \e[3J (xterm 확장) = scrollback buffer까지 클리어. tput clear는 H+2J+3J 모두 송출.
+    # cc는 메뉴 표시 시 clear 명령을 호출하여 scrollback까지 클리어함 → 휠로 안 보임.
+    if [[ -t 1 ]]; then
+        # \e[H (커서 홈) + \e[2J (화면) + \e[3J (scrollback)
+        printf '\e[H\e[2J\e[3J'
+        # tmux 안이면 tmux scrollback도 명시 클리어 (tmux는 자체 history 보유)
+        [[ -n "${TMUX:-}" ]] && tmux clear-history 2>/dev/null || true
+    fi
+
+    # ── (a.6) Windows Terminal 탭 타이틀 사전 송출 — 첫 statusline 호출 전 1초 latency 회피
+    # (a.0) tmux 자동 spawn 케이스(CAS_TMUX_SPAWNED=1)는 새 tmux가 set-titles로 자동 송출하므로 skip.
+    # 기존 tmux 안에서 cas 직접 호출되는 케이스에만 의미 있음.
+    if [[ -z "${CAS_TMUX_SPAWNED:-}" ]] && [[ -n "${TMUX:-}" ]] && [[ -t 1 ]] \
+       && command -v tmux >/dev/null 2>&1; then
+        local _cas_init_title="$(basename "${PWD}")"
+        tmux set-option -g set-titles on 2>/dev/null || true
+        tmux set-option -g set-titles-string '#W' 2>/dev/null || true
+        tmux rename-window "${_cas_init_title}" 2>/dev/null || true
+        printf '\ePtmux;\e\e]2;%s\a\e\\' "${_cas_init_title}"
+    fi
+
+    # ── (b.5) 일회성 마이그레이션: 계정별 projects → 공유 마스터 (~/.claude/projects)
+    local marker="${PROFILE_DIR}/.migrated_v1"
+    if [[ ! -f "${marker}" && -d "${PROFILE_DIR}/projects" ]]; then
+        echo "[claude-as] projects 마이그레이션: ${PROFILE_DIR}/projects/ → ${ORIGIN_HOME_CLAUDE}/projects/ (cp -rn)" >&2
+        mkdir -p "${ORIGIN_HOME_CLAUDE}/projects"
+        cp -rn "${PROFILE_DIR}/projects/." "${ORIGIN_HOME_CLAUDE}/projects/" 2>/dev/null || true
+        touch "${marker}"
+        echo "[claude-as] 마이그레이션 완료. 이후 모든 계정이 ~/.claude/projects를 공유합니다." >&2
+    elif [[ -f "${marker}" && -d "${PROFILE_DIR}/projects" && ! -L "${PROFILE_DIR}/projects" ]]; then
+        # 마이그레이션 완료됐으나 구 projects/ 디렉토리가 남아있는 경우 → 제거 (SHARED_LINKS가 symlink 생성)
+        rm -rf "${PROFILE_DIR}/projects" 2>/dev/null || true
+    fi
+
+    # ── (c) per-session tmp CONFIG_DIR
+    local UUID="${CLAUDE_AS_UUID:-$(generate_uuid)}"
+    TMP_CFG="/tmp/cc-${UUID}"
+    mkdir -p "${TMP_CFG}"
+    chmod 700 "${TMP_CFG}"
+
+    # ── (d) trap 등록 (C2 — EXIT/INT/TERM/HUP)
+    # cleanup_trap: signal/예외 경로용. 정상 종료 시 cleanup_and_exit가 먼저 호출되어 CLEANUP_DONE 가드로 no-op.
+    trap cleanup_trap EXIT INT TERM HUP
+    # DEBUG-MARKER M0 — Phase D 완료 후 제거
+    _cas_log M0 "trap 등록 완료 profile=${name} uuid=${UUID}"
+
+    # ── R7: stale inotify daemon PID 정리 (zombie 방지)
+    _r7_clean_stale_daemons || true
+
+    # ── R8: 이전 비정상 종료 .bak 자동 복구 (mtime 비교)
+    _r8_auto_recover || true
+
+    # ── R12: .credentials.json flock 획득 (30s timeout, fail-soft)
+    _r12_acquire_flock || true
+
+    # ── (e) 분리 자원: 단일원본 → tmp dir 실제 파일 복사 (G5 (b) 케이스 방어)
+    #     symlink 아닌 실제 파일 복사 — atomic 가정 단독 설계 금지.
+    local f d
+    for f in "${SYNC_FILES[@]}"; do
+        if [[ -f "${PROFILE_DIR}/${f}" ]]; then
+            cp -a "${PROFILE_DIR}/${f}" "${TMP_CFG}/${f}"
+        fi
+    done
+    for f in "${SYNC_FILES_OPTIONAL[@]}"; do
+        if [[ -f "${PROFILE_DIR}/${f}" ]]; then
+            cp -a "${PROFILE_DIR}/${f}" "${TMP_CFG}/${f}"
+        fi
+    done
+    for d in "${SYNC_DIRS[@]}"; do
+        if [[ -d "${PROFILE_DIR}/${d}" ]]; then
+            cp -a "${PROFILE_DIR}/${d}" "${TMP_CFG}/${d}"
+        fi
+    done
+
+    # ── (f) 권한 600 강제 (S4)
+    for f in "${CHMOD_600_FILES[@]}"; do
+        [[ -f "${TMP_CFG}/${f}" ]] && chmod 600 "${TMP_CFG}/${f}"
+    done
+
+    # ── (g) 휘발성 빈 디렉토리 (단일원본 동기화 안 함)
+    for d in "${EPHEMERAL_DIRS[@]}"; do
+        mkdir -p "${TMP_CFG}/${d}"
+        chmod 700 "${TMP_CFG}/${d}"
+    done
+
+    # ── (h) 코드 자산 symlink (read-only 공유)
+    local item
+    for item in "${SHARED_LINKS[@]}"; do
+        ensure_link "${item}" "${TMP_CFG}"
+    done
+    # skills 별도 분기 처리 (C1 — 빈 일반 dir 케이스)
+    ensure_link "skills" "${TMP_CFG}"
+
+    # ── R8: .bak 즉시 생성 (flock 보유 중 — 단일원본 스냅샷)
+    _r8_create_bak || true
+
+    # ── R12: flock 해제 (claude 실행 전 — .bak 생성 완료 후)
+    _r12_release_flock || true
+
+    # ── R7: inotifywait 백그라운드 daemon spawn
+    _r7_spawn_daemon "${TMP_CFG}" "${PROFILE_DIR}" "${UUID}" || true
+
+    # ── (h.5) 격리 settings.json에 statusLine 주입 — cwd 무관하게 항상 정상 statusline 보장
+    # 이유: cas는 CLAUDE_CONFIG_DIR=/tmp/cc-${UUID}로 격리. Claude Code가 이 격리 settings.json을 우선 사용.
+    # 프로파일 settings.json엔 {"theme":"dark"}만 있어 statusLine 정의 없음 → "✳ Claude Code" 폴백.
+    # AI 프로젝트 statusline.py를 강제 주입하여 cwd가 어디든 statusline 정상 표시.
+    local _cas_statusline_py="/mnt/c/DATA/Project/AI/script/statusline.py"
+    if [[ -f "${_cas_statusline_py}" ]]; then
+        python3 - "${TMP_CFG}/settings.json" "${_cas_statusline_py}" <<'PYEOF_INJECT' 2>/dev/null || true
+import json, sys
+settings_path, statusline_py = sys.argv[1], sys.argv[2]
+try:
+    with open(settings_path) as f:
+        s = json.load(f)
+except Exception:
+    s = {}
+# statusLine이 이미 있고 같은 명령이면 skip
+existing = s.get("statusLine") or {}
+new_cmd = f"python3 {statusline_py}"
+if existing.get("command") != new_cmd:
+    s["statusLine"] = {"type": "command", "command": new_cmd}
+    with open(settings_path, "w") as f:
+        json.dump(s, f, indent=2, ensure_ascii=False)
+PYEOF_INJECT
+    fi
+
+    # ── (h.6) 격리 settings.json에 hooks 주입 — ★가드가 통째로 죽던 문제의 해결★
+    # 배경 (2026-09-06 실측):
+    #   cas는 CLAUDE_CONFIG_DIR=/tmp/cc-${UUID}로 격리하고, 그 settings.json은
+    #   프로파일(~/.claude-profiles/<name>/settings.json)에서 복사해 온다.
+    #   그런데 프로파일 3종(cs/dev/know) 모두 hooks가 ★0개★ 였다.
+    #   정본 hooks 59개는 /mnt/c/DATA/Project/AI/.claude/settings.json 에 정상 등록돼 있으나
+    #   그 파일은 정본 프로젝트에서 실행할 때만 적용되므로, 다른 프로젝트 세션에서는
+    #   ★hook이 하나도 물리지 않았다★.
+    #   실제 피해: write_guard(메인 직접수정 차단) · oto_completion_guard(조기종료 차단) ·
+    #   full_task_team_guard(팀에이전트 파라미터 검증)가 전부 무력화됐고,
+    #   그 결과 /oto 가 미완료 잔여를 남기고 종료하거나 메인이 팀에이전트 대신 직접
+    #   작업하는 사고가 반복됐다. 규칙 문서는 멀쩡했고 hook 파일도 멀쩡했으나 배선이 끊겨 있었다.
+    # 방침:
+    #   (h.5) statusLine 주입과 동일한 패턴. 정본 settings.json의 hooks 를 격리 설정에 병합한다.
+    #   ★격리 설정에 이미 hooks 가 있으면 건드리지 않는다★ — 사용자가 세션별로 조정한 값을 존중.
+    local _cas_hooks_src="/mnt/c/DATA/Project/AI/.claude/settings.json"
+    if [[ -f "${_cas_hooks_src}" ]]; then
+        python3 - "${TMP_CFG}/settings.json" "${_cas_hooks_src}" <<'PYEOF_HOOKS' 2>/dev/null || true
+import json, sys
+dst_path, src_path = sys.argv[1], sys.argv[2]
+try:
+    with open(dst_path) as f:
+        dst = json.load(f)
+except Exception:
+    dst = {}
+# 이미 hooks 가 있으면 손대지 않는다 (세션별 커스터마이즈 보호)
+if dst.get("hooks"):
+    sys.exit(0)
+try:
+    with open(src_path) as f:
+        src = json.load(f)
+except Exception:
+    sys.exit(0)
+hooks = src.get("hooks")
+if not hooks:
+    sys.exit(0)
+dst["hooks"] = hooks
+tmp = dst_path + ".tmp"
+with open(tmp, "w") as f:
+    json.dump(dst, f, indent=2, ensure_ascii=False)
+import os
+os.replace(tmp, dst_path)
+PYEOF_HOOKS
+    fi
+
+    # ── (h.7) 격리 settings.json에 ★정본 스칼라 키★ 주입 — teammateMode/language 누락 방지
+    # 배경 (2026-09-07 사이클90 실측):
+    #   (h.6)이 hooks 배선을 고쳤듯, 같은 원인이 ★스칼라 키★ 에서 재발했다.
+    #   프로파일(cs/dev)에 teammateMode 가 없어 격리 설정에도 없었고, Claude Code 기본값이
+    #   "in-process" 라 ★팀에이전트 tmux pane 이 생성되지 않았다★.
+    #   그 결과 --parent-session-id 프로세스가 없어 write_guard 의 팀에이전트 판별이
+    #   도달 불가능해졌고, PLAN 상태에서 oplan 이 전면 차단되는 교착이 발생했다.
+    #   language(korean) 도 동일하게 누락돼 있었다.
+    # 방침:
+    #   (h.5) statusLine · (h.6) hooks 와 동일 패턴. 정본의 스칼라 키를 격리 설정에 주입한다.
+    #   ★격리 설정에 이미 값이 있으면 건드리지 않는다★ — 세션별 커스터마이즈 존중.
+    #   ⚠️ teammateMode 는 "auto" 가 정본이다. "tmux" 명시는 실측상 pane 이 생성되지 않았고
+    #      (2026-09-07 전 세션 상관관계 조사), "auto" 인 세션만 pane 을 정상 생성했다.
+    local _cas_scalar_src="/mnt/c/DATA/Project/AI/.claude/settings.json"
+    if [[ -f "${_cas_scalar_src}" ]]; then
+        python3 - "${TMP_CFG}/settings.json" "${_cas_scalar_src}" <<'PYEOF_SCALAR' 2>/dev/null || true
+import json, os, sys
+dst_path, src_path = sys.argv[1], sys.argv[2]
+KEYS = ("teammateMode", "language", "effortLevel")
+try:
+    with open(dst_path, encoding="utf-8") as f:
+        dst = json.load(f)
+except Exception:
+    dst = {}
+try:
+    with open(src_path, encoding="utf-8") as f:
+        src = json.load(f)
+except Exception:
+    sys.exit(0)
+changed = False
+for k in KEYS:
+    if k in src and k not in dst:      # 이미 있으면 존중 — 덮어쓰지 않는다
+        dst[k] = src[k]
+        changed = True
+# env 는 키 단위 병합 — 정본에만 있는 항목만 채우고 기존 값은 보존한다.
+# (정본의 CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS·MCP_TIMEOUT 등이 격리 설정에 누락돼 있었다.
+#  2026-09-07 실측상 pane 생성의 필요조건은 아니었으나, 정본과의 정합성을 위해 주입한다.)
+src_env = src.get("env") or {}
+if isinstance(src_env, dict) and src_env:
+    dst_env = dst.get("env") or {}
+    if not isinstance(dst_env, dict):
+        dst_env = {}
+    for k, v in src_env.items():
+        if k not in dst_env:
+            dst_env[k] = v
+            changed = True
+    if dst_env:
+        dst["env"] = dst_env
+if not changed:
+    sys.exit(0)
+tmp = dst_path + ".tmp"
+with open(tmp, "w", encoding="utf-8") as f:
+    json.dump(dst, f, indent=2, ensure_ascii=False)
+os.replace(tmp, dst_path)
+PYEOF_SCALAR
+    fi
+
+    # ── (i) 환경변수 export
+    export CLAUDE_CONFIG_DIR="${TMP_CFG}"
+    export CLAUDE_PROFILE_NAME="${name}"
+    export CLAUDE_AS_UUID="${UUID}"
+
+    err "profile=${name} uuid=${UUID} config_dir=${TMP_CFG}"
+
+    # ── (j) foreground 실행 — bash 인터프리터 보존 + trap 유지 + sync_back 보장
+    # exec를 제거하면 PID는 동일하지만 bash가 살아있어 trap이 정상 작동.
+    # set -e 보호: claude exit code != 0 이어도 trap이 cleanup 실행해야 함.
+    local claude_bin
+    claude_bin="$(detect_claude_bin)"
+
+    # ── 하네스 배포본: --dangerously-skip-permissions 멱등 주입
+    # cc 는 이미 플래그를 붙여 호출하므로 중복 주입을 피한다.
+    # HARNESS_SAFE_MODE=1 이면 주입을 생략한다 (README 보안 고지 연동).
+    if [ -z "${HARNESS_SAFE_MODE:-}" ]; then
+        case " $* " in
+            *" --dangerously-skip-permissions "*) : ;;
+            *) set -- "$@" --dangerously-skip-permissions ;;
+        esac
+    fi
+
+    # DEBUG-MARKER M0.5 — Phase D 완료 후 제거
+    _cas_log M0.5 "claude_bin 실행 직전 claude_bin=${claude_bin} args=$*"
+    set +e
+    "${claude_bin}" "$@"
+    local rc=$?
+    # DEBUG-MARKER M1 — Phase D 완료 후 제거
+    _cas_log M1 "claude_bin 종료 직후 rc=${rc} ts=$(date +%s%N)"
+    set -e
+    cleanup_and_exit "${rc}"
+}
+
+# =============================================================================
+# §4. main
+# =============================================================================
+
+main() {
+    local sub="${1:-}"
+
+    case "${sub}" in
+        ""|"-h"|"--help"|help)
+            cat <<EOF
+claude-as — Claude Code multi-account profile launcher
+
+사용법:
+  claude-as <name> [claude args...]   해당 프로파일로 Claude Code 진입
+  claude-as create <name>             프로파일 skeleton 생성 + first-run 안내
+  claude-as list                      프로파일 목록 + 마지막 사용 시각
+  claude-as remove <name>             프로파일 삭제 (확인 prompt) [alias: delete]
+  claude-as current                   현재 활성 프로파일 표시
+  claude-as monitor                   모든 프로파일 사용량 5분 주기 모니터 (Ctrl+C로 종료)
+  claude-as help                      이 도움말
+
+환경변수:
+  CLAUDE_PROFILES_ROOT  (기본: ~/.claude-profiles)
+  CLAUDE_BIN            (기본: command -v claude)
+
+예:
+  claude-as create work
+  claude-as work
+  claude-as list
+EOF
+            [[ -z "${sub}" ]] && exit 64 || exit 0
+            ;;
+        create)
+            shift
+            cmd_create "$@"
+            ;;
+        list)
+            shift
+            cmd_list "$@"
+            ;;
+        remove|delete)
+            shift
+            cmd_remove "$@"
+            ;;
+        current)
+            shift
+            cmd_current "$@"
+            ;;
+        monitor)
+            shift
+            cmd_monitor "$@"
+            ;;
+        install-batch)
+            shift
+            cmd_install_batch "$@"
+            ;;
+        uninstall-batch)
+            shift
+            cmd_uninstall_batch "$@"
+            ;;
+        batch-status)
+            shift
+            cmd_batch_status "$@"
+            ;;
+        *)
+            # 첫 인자가 프로파일명
+            cmd_run "$@"
+            ;;
+    esac
+}
+
+main "$@"

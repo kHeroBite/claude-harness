@@ -1,0 +1,20 @@
+{
+  "_status": "MERGED — 병합 완료. 다시 병합하지 마십시오 (중복 등록됨).",
+  "_merged_into": "plugins/harness/hooks/hooks.json — hooks.SessionStart[matcher=\"\"].hooks 3번째 항목",
+  "_merged_form": "본체의 기존 관례(command=배열, timeout=5)에 맞춰 등재했다. 아래 _original_snippet 은 command 가 문자열이므로 그대로 쓰면 형식이 어긋난다.",
+  "_script_location": "plugins/harness/scripts/sync_rules.sh (repo 루트 scripts/ 사본은 중복이라 삭제함)",
+  "_kept_for": "이력 보존용. 스니펫 원본 형태를 남겨두기 위한 것이며 더 이상 입력 파일이 아니다.",
+  "_original_snippet": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/sync_rules.sh"
+          }
+        ]
+      }
+    ]
+  }
+}

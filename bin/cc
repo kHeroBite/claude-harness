@@ -1,0 +1,459 @@
+#!/bin/bash
+# cc — Claude Code 진입 (계정 메뉴 + cas 격리 진입)
+# 버전: 2.1 (--continue 옵션 지원)
+# 변경: 2.0(멀티계정) → 2.1(--continue 파싱, ccc는 cc 래퍼로 단순화)
+set -euo pipefail
+
+# 인수 파싱: WORK_DIR(위치 인수) + --continue 플래그 + --profile NAME (메뉴 우회)
+WORK_DIR=""
+CONTINUE_FLAG=""
+FORCED_PROFILE=""
+_skip_next=0
+_args=("$@")
+for _i in "${!_args[@]}"; do
+    if [[ "$_skip_next" == "1" ]]; then _skip_next=0; continue; fi
+    _arg="${_args[$_i]}"
+    if [[ "$_arg" == "--continue" ]]; then
+        CONTINUE_FLAG="--continue"
+    elif [[ "$_arg" == "--profile" ]]; then
+        # 다음 인자를 프로파일명으로 사용 (메뉴 우회)
+        _next=$((_i + 1))
+        FORCED_PROFILE="${_args[$_next]:-}"
+        _skip_next=1
+    elif [[ -z "$WORK_DIR" ]]; then
+        WORK_DIR="$_arg"
+    fi
+done
+WORK_DIR="${WORK_DIR:-$(pwd)}"
+PROFILES_ROOT="$HOME/.claude-profiles"
+
+# 프로파일 목록 수집 (.credentials.json 존재하는 디렉토리만, 알파벳 정렬)
+mapfile -t PROFILES < <(
+  find "$PROFILES_ROOT" -maxdepth 2 -name '.credentials.json' \
+    -printf '%h\n' 2>/dev/null \
+  | xargs -I{} basename {} \
+  | sort
+)
+
+# 0개: 에러 종료
+if [[ ${#PROFILES[@]} -eq 0 ]]; then
+    echo "❌ 등록된 프로파일이 없습니다."
+    echo ""
+    echo "   하네스를 처음 설치했다면 프로파일을 1개 만들어야 합니다."
+    echo "   다음 명령으로 만드세요:"
+    echo ""
+    echo "       cas create <이름>       (예: cas create default)"
+    echo ""
+    echo "   생성 후 해당 프로파일로 1회 로그인하면 .credentials.json 이 만들어지고"
+    echo "   이후 cc 가 정상 동작합니다."
+    exit 1
+fi
+
+# 사용량 캐시 한 줄 텍스트 반환
+_usage_line() {
+    local p="$1"
+    local _batch_cache="$HOME/.claude-as/batch_cache/${p}.json"
+    local _self_cache="$PROFILES_ROOT/$p/.usage_cache.json"
+    local _cache_file="$_self_cache"
+    if [[ -f "$_batch_cache" ]] && [[ -f "$_self_cache" ]]; then
+        if python3 -c "import json,sys; b=json.load(open(sys.argv[1])); s=json.load(open(sys.argv[2])); sys.exit(0 if int(b.get('timestamp',0)) >= int(s.get('timestamp',0)) else 1)" "$_batch_cache" "$_self_cache" 2>/dev/null; then
+            _cache_file="$_batch_cache"
+        fi
+    elif [[ -f "$_batch_cache" ]]; then
+        _cache_file="$_batch_cache"
+    fi
+    if [[ -f "$_cache_file" ]]; then
+        python3 - "$_cache_file" <<'PYEOF' 2>/dev/null || printf "AGE:\n      → (캐시 손상)\n      "
+import json, sys, time
+
+R  = "\033[0m"
+DIM    = "\033[90m"
+WHITE  = "\033[97m"
+CYAN   = "\033[96m"
+GREEN  = "\033[38;2;0;255;127m"
+YELLOW = "\033[93m"
+ORANGE = "\033[38;2;255;165;0m"
+PINK   = "\033[38;2;255;105;180m"
+GOLD   = "\033[38;2;255;215;0m"
+
+def fmt_remain(secs):
+    if secs <= 0: return f"{PINK}만료{R}"
+    h = int(secs // 3600)
+    m = int((secs % 3600) // 60)
+    if h >= 24:
+        d, rh = h // 24, h % 24
+        return f"-{d}日{rh}時"
+    return f"-{h}時{m:02d}分"
+
+def fmt_remain_colored(secs, color_fn):
+    c = color_fn(secs)
+    return f"{c}{fmt_remain(secs)}{R}"
+
+def dot_bar(pct_used, w=8):
+    filled = int(pct_used / 100 * w)
+    return "━" * filled + "╌" * (w - filled)
+
+def rem_color_5h(rem_pct):
+    if rem_pct < 10: return PINK
+    if rem_pct < 20: return ORANGE
+    if rem_pct < 30: return YELLOW
+    return DIM
+
+def rem_color_7d(rem_pct):
+    if rem_pct < 50: return PINK
+    if rem_pct < 70: return ORANGE
+    if rem_pct < 90: return YELLOW
+    return DIM
+
+def burn_color_5h(rate):
+    if rate >= 40: return PINK
+    if rate >= 25: return ORANGE
+    if rate >= 15: return YELLOW
+    return DIM
+
+def burn_color_7d(rate):
+    if rate >= 2:   return PINK
+    if rate >= 1:   return ORANGE
+    if rate >= 0.5: return YELLOW
+    return DIM
+
+def remain_color_5h(secs):
+    h = secs / 3600
+    if h <= 1:  return PINK
+    if h <= 2:  return ORANGE
+    if h <= 3:  return YELLOW
+    return DIM
+
+def remain_color_7d(secs):
+    h = secs / 3600
+    if h <= 12: return PINK
+    if h <= 24: return ORANGE
+    if h <= 48: return YELLOW
+    return DIM
+
+def fmt_remain_colored(secs, color_fn):
+    c = color_fn(secs)
+    return f"{c}{fmt_remain(secs)}{R}"
+
+try:
+    d = json.load(open(sys.argv[1]))
+    ts = int(d.get("timestamp", 0))
+    now = time.time()
+    age = int(now) - ts
+    rl = d.get("rate_limits", {})
+
+    fh = rl.get("five_hour", {})
+    fh_pct = fh.get("used_percentage")
+    fh_reset = fh.get("resets_at", 0)
+
+    sd = rl.get("seven_day", {})
+    sd_pct = sd.get("used_percentage")
+    sd_reset = sd.get("resets_at", 0)
+
+    # age 문자열 (첫 줄로 분리 출력 → bash가 계정명 우측에 붙임)
+    # 색상은 항상 DIM(어두운 회색) 단일 — 시간 경과·선택 여부와 무관
+    if   age < 60:    a = f"{DIM}[방금]{R}"
+    elif age < 3600:  a = f"{DIM}[{age//60}분 전]{R}"
+    elif age < 21600: a = f"{DIM}[{age//3600}시간 전]{R}"
+    else:             a = f"{DIM}[stale {age//3600}h]{R}"
+    print(f"AGE:{a}")
+
+    # 세션(5h) 라인
+    if fh_pct is not None:
+        fh_used = float(fh_pct)
+        fh_rem_pct = 100 - fh_used
+        fh_remain_secs = max(0, fh_reset - now)
+        fh_elapsed_secs = 18000 - fh_remain_secs
+        fh_rate = (fh_used / (fh_elapsed_secs / 3600)) if fh_elapsed_secs > 60 else 0
+        bar = dot_bar(fh_rem_pct)
+        rc = rem_color_5h(fh_rem_pct)
+        bc = burn_color_5h(fh_rate)
+        tc = remain_color_5h(fh_remain_secs)
+        rem_str = fmt_remain(fh_remain_secs)
+        time_left_h = fh_remain_secs / 3600
+        proj = fh_used + fh_rate * time_left_h if fh_rate > 0 else fh_used
+        rem_proj = 100 - proj  # 남은예상치 (음수 허용)
+        if rem_proj <= 0:    proj_str = f":{PINK}⛔ {rem_proj:.0f}%{R}"
+        elif rem_proj <= 10: proj_str = f":{ORANGE}⚠ {rem_proj:.0f}%{R}"
+        elif rem_proj <= 20: proj_str = f":{YELLOW}⚡ {rem_proj:.0f}%{R}"
+        else:                proj_str = f":{DIM}{rem_proj:.0f}%{R}"
+        print(f"      ⏱  {rc}{bar}{R} {rc}{fh_rem_pct:.0f}%{R} ({tc}{rem_str}{R}) {bc}{fh_rate:.1f}%/h{R}{proj_str}")
+    else:
+        print(f"      ⏱  {DIM}(세션 데이터 없음){R}")
+
+    # 주간(7d) 라인
+    if sd_pct is not None:
+        sd_used = float(sd_pct)
+        sd_rem_pct = 100 - sd_used
+        sd_remain_secs = max(0, sd_reset - now)
+        sd_elapsed_secs = 604800 - sd_remain_secs
+        sd_rate = (sd_used / (sd_elapsed_secs / 3600)) if sd_elapsed_secs > 60 else 0
+        bar = dot_bar(sd_rem_pct)
+        rc = rem_color_7d(sd_rem_pct)
+        bc = burn_color_7d(sd_rate)
+        tc = remain_color_7d(sd_remain_secs)
+        rem_str = fmt_remain(sd_remain_secs)
+        time_left_h = sd_remain_secs / 3600
+        proj = sd_used + sd_rate * time_left_h if sd_rate > 0 else sd_used
+        rem_proj = 100 - proj  # 남은예상치 (음수 허용)
+        if rem_proj <= 0:    proj_str = f":{PINK}⛔ {rem_proj:.0f}%{R}"
+        elif rem_proj <= 10: proj_str = f":{ORANGE}⚠ {rem_proj:.0f}%{R}"
+        elif rem_proj <= 20: proj_str = f":{YELLOW}⚡ {rem_proj:.0f}%{R}"
+        else:                proj_str = f":{DIM}{rem_proj:.0f}%{R}"
+        print(f"      🕐 {rc}{bar}{R} {rc}{sd_rem_pct:.0f}%{R} ({tc}{rem_str}{R}) {bc}{sd_rate:.2f}%/h{R}{proj_str}")
+        print(f"PROJ:{rem_proj:.2f}")
+    else:
+        print(f"      🕐 {DIM}(주간 데이터 없음){R}")
+        print(f"PROJ:9999")
+except Exception as e:
+    print(f"AGE:")
+    print(f"      → (캐시 손상)")
+    print(f"      ")
+    print(f"PROJ:9999")
+PYEOF
+    else
+        printf "AGE:\n      → (사용 이력 없음)\n      \nPROJ:9999\n"
+    fi
+}
+
+# 계정 선택 (--profile 강제 / 1개면 자동 / 다수면 메뉴)
+SELECTED=""
+if [[ -n "$FORCED_PROFILE" ]]; then
+    # --profile NAME으로 명시적 선택 (cmon Enter 등 외부 호출)
+    SELECTED="$FORCED_PROFILE"
+elif [[ ${#PROFILES[@]} -eq 1 ]]; then
+    SELECTED="${PROFILES[0]}"
+    echo "ℹ️  프로파일 1개 — 자동 선택: $SELECTED"
+else
+    # 이메일 + 사용량 캐시 미리 수집 (정렬 전 임시 배열에 모아둠)
+    declare -a _RAW_PROFILES=("${PROFILES[@]}")
+    declare -a _RAW_EMAILS=()
+    declare -a _RAW_USAGES=()
+    declare -a _RAW_USAGES_PLAIN=()
+    declare -a _RAW_AGES=()
+    declare -a _RAW_AGES_COLOR=()
+    declare -a _RAW_PROJS=()
+    for i in "${!_RAW_PROFILES[@]}"; do
+        local_p="${_RAW_PROFILES[i]}"
+        local_cache="$PROFILES_ROOT/$local_p/.account_email_cache"
+        local_email=""
+        if [[ -f "$local_cache" ]]; then
+            local_email=$(python3 -c "import json,sys; d=json.load(open('$local_cache')); print(d.get('email',''))" 2>/dev/null \
+                          || grep -oP '"email":"\K[^"]+' "$local_cache" 2>/dev/null || true)
+        fi
+        _RAW_EMAILS+=("$local_email")
+        # _usage_line 출력 분리: 첫 줄=AGE, 마지막 줄=PROJ, 가운데=usage 2줄
+        _raw_usage="$(_usage_line "$local_p")"
+        _age_line=$(printf '%s' "$_raw_usage" | head -1)
+        _proj_line=$(printf '%s' "$_raw_usage" | tail -1)
+        _usage_body=$(printf '%s' "$_raw_usage" | sed -n '2,$p' | sed '$d')
+        _age_color="${_age_line#AGE:}"
+        _age_plain=$(printf '%s' "$_age_color" | sed 's/\x1b\[[0-9;:]*[mGKHF]//g')
+        _proj_val="${_proj_line#PROJ:}"
+        [[ -z "$_proj_val" || ! "$_proj_val" =~ ^[0-9.]+$ ]] && _proj_val="9999"
+        _RAW_AGES+=("$_age_plain")
+        _RAW_AGES_COLOR+=("$_age_color")
+        _RAW_USAGES+=("$_usage_body")
+        _usage_plain=$(printf '%s' "$_usage_body" | sed 's/\x1b\[[0-9;:]*[mGKHF]//g')
+        _RAW_USAGES_PLAIN+=("$_usage_plain")
+        _RAW_PROJS+=("$_proj_val")
+    done
+
+    # 주간 남은예상 내림차순 정렬 (잔량 많은 계정이 1번)
+    _sorted_idx=$(
+        for i in "${!_RAW_PROFILES[@]}"; do
+            printf '%s\t%d\n' "${_RAW_PROJS[i]}" "$i"
+        done | sort -k1,1 -rn | awk '{print $2}'
+    )
+
+    PROFILES=()
+    declare -a _EMAILS=()
+    declare -a _USAGES=()
+    declare -a _USAGES_PLAIN=()
+    declare -a _AGES=()
+    declare -a _AGES_COLOR=()
+    while IFS= read -r idx; do
+        PROFILES+=("${_RAW_PROFILES[idx]}")
+        _EMAILS+=("${_RAW_EMAILS[idx]}")
+        _USAGES+=("${_RAW_USAGES[idx]}")
+        _USAGES_PLAIN+=("${_RAW_USAGES_PLAIN[idx]}")
+        _AGES+=("${_RAW_AGES[idx]}")
+        _AGES_COLOR+=("${_RAW_AGES_COLOR[idx]}")
+    done <<< "$_sorted_idx"
+
+    _COLS=$(tput cols 2>/dev/null || echo 120)
+    _BG="\e[48;2;64;64;64m"
+    _LINE_W=$(( _COLS > 82 ? 80 : _COLS - 2 ))
+    _HR=""
+    for ((__k=0; __k<_LINE_W; __k++)); do _HR+="─"; done
+
+    # ─── 사전 캐시: 모든 항목 라인 + 패딩 공백 개수를 Python 한 번 호출로 일괄 계산 ───
+    # 입력: 각 라인을 \0로 구분해 stdin으로 전달
+    # 출력: 각 라인의 패딩 공백 수(\n 구분)
+    declare -a _ITEM_LINES_NORMAL=()  # 비선택용 (3줄/계정)
+    declare -a _ITEM_LINES_SEL=()     # 선택용 (3줄/계정, \033[0m → \033[0m+_BG 치환됨)
+    declare -a _ITEM_PADS=()           # 라인별 패딩 공백 수
+    declare -a _LINE_OWNER=()          # 라인 → 프로파일 인덱스 매핑
+
+    # 헤더 2줄 + 항목 3줄×N
+    declare -a _HEADER_LINES=(
+        "Claude Code — 계정 선택${CONTINUE_FLAG:+ (재개)}"
+        "$(printf '\e[90m(↑↓ 이동, 숫자 즉시선택, Enter 확정, q 취소)\e[0m')"
+    )
+    declare -a _HEADER_PADS=()
+
+    # 각 프로파일 3줄(계정명/⏱/🕐) × 비선택용 + 선택용 빌드
+    for i in "${!PROFILES[@]}"; do
+        local_p="${PROFILES[i]}"
+        local_n=$(( i + 1 ))
+        local_email="${_EMAILS[i]}"
+        local_usage="${_USAGES[i]}"
+        local_age="${_AGES[i]}"
+        local_age_color="${_AGES_COLOR[i]}"
+
+        # 첫 줄 (계정명 라인) — 비선택/선택 동일 내용 (선택 시 ▶  추가)
+        if [[ -n "$local_email" ]]; then
+            _line_normal=$(printf '   %d) %-12s \e[90m%-38s %s\e[0m' "$local_n" "$local_p" "($local_email)" "$local_age")
+            _line_sel=$(printf '▶  %d) %-12s \e[90m%-38s %s\e[0m' "$local_n" "$local_p" "($local_email)" "$local_age_color")
+        else
+            _line_normal=$(printf '   %d) %-12s \e[90m%s\e[0m' "$local_n" "$local_p" "$local_age")
+            _line_sel=$(printf '▶  %d) %-12s \e[90m%s\e[0m' "$local_n" "$local_p" "$local_age_color")
+        fi
+        _ITEM_LINES_NORMAL+=("$_line_normal")
+        _ITEM_LINES_SEL+=("$_line_sel")
+
+        # ⏱/🕐 2줄 - 비선택/선택 동일 (사용 색상 그대로)
+        while IFS= read -r _uline; do
+            _ITEM_LINES_NORMAL+=("$_uline")
+            _ITEM_LINES_SEL+=("$_uline")
+        done <<< "$local_usage"
+    done
+
+    # 모든 라인(헤더+항목)에 대해 Python 한 번 호출로 패딩 폭 일괄 계산
+    _all_lines_for_pad() {
+        for line in "${_HEADER_LINES[@]}"; do printf '%s\0' "$line"; done
+        for line in "${_ITEM_LINES_NORMAL[@]}"; do printf '%s\0' "$line"; done
+    }
+    mapfile -t _ALL_PADS < <(
+        _all_lines_for_pad | python3 -c "
+import sys, re, unicodedata
+ANSI = re.compile(r'\x1b\[[0-9;:]*[mGKHF]')
+def w(c):
+    if unicodedata.east_asian_width(c) in ('W','F'): return 2
+    if unicodedata.category(c) in ('Mn','Cf'): return 0
+    return 1
+target = int(sys.argv[1])
+data = sys.stdin.buffer.read().decode('utf-8', errors='replace')
+for s in data.split('\0'):
+    if not s: continue
+    plain = ANSI.sub('', s)
+    width = sum(w(c) for c in plain)
+    print(max(0, target - width))
+" "$(( _LINE_W - 2 ))"
+    )
+    # 헤더 패딩 분리
+    _HEADER_PADS=("${_ALL_PADS[@]:0:${#_HEADER_LINES[@]}}")
+    _ITEM_PADS=("${_ALL_PADS[@]:${#_HEADER_LINES[@]}}")
+
+    _draw_menu() {
+        local cur=$1
+        local out=""
+        local lines=0
+        out+=$'\e[0m\e[2K\n'; lines=$(( lines + 1 ))
+        out+=$'\e[0m\e[2K\e[90m╭'"$_HR"$'╮\e[0m\n'; lines=$(( lines + 1 ))
+        # 헤더 2줄
+        local h
+        for h in 0 1; do
+            out+=$'\e[0m\e[2K\e[90m│\e[0m '"${_HEADER_LINES[h]}"
+            printf -v _spc '%*s' "${_HEADER_PADS[h]}" ""
+            out+="$_spc"$' \e[90m│\e[0m\n'
+            lines=$(( lines + 1 ))
+        done
+        out+=$'\e[0m\e[2K\e[90m├'"$_HR"$'┤\e[0m\n'; lines=$(( lines + 1 ))
+
+        # 항목 라인 (3줄/계정)
+        local total=${#PROFILES[@]}
+        for i in "${!PROFILES[@]}"; do
+            local base=$(( i * 3 ))
+            local k content pad
+            for k in 0 1 2; do
+                pad="${_ITEM_PADS[base+k]}"
+                printf -v _spc '%*s' "$pad" ""
+                if [[ "$i" == "$cur" ]]; then
+                    content="${_ITEM_LINES_SEL[base+k]}"
+                    # \033[0m → \033[0m + _BG 로 배경 유지
+                    content="${content//$'\e[0m'/$'\e[0m\e[48;2;64;64;64m'}"
+                    out+=$'\e[0m\e[2K\e[90m│\e[0m\e[48;2;64;64;64m '"$content$_spc"$' \e[0m\e[90m│\e[0m\n'
+                else
+                    content="${_ITEM_LINES_NORMAL[base+k]}"
+                    out+=$'\e[0m\e[2K\e[90m│\e[0m '"$content$_spc"$' \e[90m│\e[0m\n'
+                fi
+                lines=$(( lines + 1 ))
+            done
+        done
+
+        out+=$'\e[0m\e[2K\e[90m╰'"$_HR"$'╯\e[0m\n'; lines=$(( lines + 1 ))
+        _MENU_LINES=$lines
+        printf '%s' "$out"
+    }
+
+    cur=0
+    total=${#PROFILES[@]}
+
+    # 화면 clear (커서 홈으로 이동) → 메뉴가 상단부터 표시되도록
+    printf '\e[2J\e[H'
+
+    # 초기 메뉴 출력
+    _draw_menu "$cur"
+
+    # 키 입력 루프: 변경 시 메뉴 전체를 위로 올리고 재출력
+    while true; do
+        IFS= read -r -s -n1 key </dev/tty
+        if [[ "$key" == $'\x1b' ]]; then
+            IFS= read -r -s -n2 -t 0.1 seq </dev/tty
+            key="${key}${seq}"
+        fi
+
+        prev=$cur
+        case "$key" in
+            $'\x1b[A')  # ↑ (circular: 첫 항목에서 → 마지막으로)
+                cur=$(( (cur - 1 + total) % total )) ;;
+            $'\x1b[B')  # ↓ (circular: 마지막 항목에서 → 첫 번째로)
+                cur=$(( (cur + 1) % total )) ;;
+            1|2|3|4|5|6|7|8|9)  # 숫자 즉시선택 (엔터 없이)
+                _n=$(( key - 1 ))
+                if (( _n < total )); then
+                    SELECTED="${PROFILES[$_n]}"
+                    break
+                fi ;;
+            ''|$'\n'|$'\r')  # Enter
+                SELECTED="${PROFILES[$cur]}"
+                break ;;
+            q|Q)
+                echo ""
+                echo "취소됨."
+                exit 0 ;;
+        esac
+
+        if [[ "$cur" != "$prev" ]]; then
+            # 메뉴 줄 수만큼 위로 이동 후 재출력
+            printf "\e[%dA" "$_MENU_LINES"
+            _draw_menu "$cur"
+        fi
+    done
+    echo ""
+fi
+
+echo ""
+echo "🚀 [$SELECTED] 계정으로 Claude Code ${CONTINUE_FLAG:+재개}${CONTINUE_FLAG:-진입} 중..."
+
+# cas의 정보성 메시지 필터 (정보/profile= 디버그 숨김, 에러/경고는 통과)
+_CAS_FILTER='grep -v -E "^\[claude-as\] (정보|profile=)"'
+
+# tmux 진입 + 탭 타이틀 처리는 cas가 단독 책임 (cas 자체의 a.0/a.6 분기)
+# cc는 메뉴 + 인자 파싱 + cas 호출만 담당
+# --remote-control: 세션 시작과 동시에 Remote Control(휴대폰/claude.ai 연결) 자동 활성화
+#   (--remote-control [name] 은 선택 인자를 받으므로 다른 인자를 삼키지 않도록 맨 뒤에 둔다)
+cd "$WORK_DIR"
+cas "$SELECTED" $CONTINUE_FLAG --dangerously-skip-permissions --remote-control 2> >(eval "$_CAS_FILTER" >&2)
+exit $?

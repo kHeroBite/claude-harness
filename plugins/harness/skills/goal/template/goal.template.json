@@ -1,0 +1,44 @@
+{
+  "_description": "파이프라인 계약 문서 템플릿 — goal/SKILL.md §3 스키마 참조. oplan_normal Phase 0 또는 oto 1_5_목표계약_세팅에서 goal.json 생성 시 이 구조를 따른다.",
+  "goal_id": "G-XXXXXXXX",
+  "intent": "<1~2줄 사용자 의도 요약>",
+  "scope_in": ["<포함 파일/모듈 절대경로>"],
+  "scope_out": ["<제외 항목>"],
+  "constraints": ["<기술/성능/운영 제약 조건>"],
+  "acceptance": [
+    {
+      "id": "A1",
+      "kind": "behavior|build|test|ui|metric|file",
+      "desc": "<자연어 설명>",
+      "check": "<사람이 읽는 검증 기술>",
+      "auto_script": "<bash 실행 명령 — exit 0 = PASS. blocked/blocked_by 제외 전 항목 필수>",
+      "depends_on": [],
+      "status": "open"
+    },
+    {
+      "_comment": "완주 불가 항목 예시 — §3.2 참조. 최초 생성 시에만 기입 가능(locked=true 이후 write_guard F-GOAL-1이 수정 차단).",
+      "id": "A2",
+      "kind": "behavior",
+      "desc": "<이 세션의 에이전트 권한 밖인 항목>",
+      "depends_on": [],
+      "status": "blocked",
+      "blocked_reason": "타세션_프로세스_재시작_필요",
+      "blocked_evidence": "<실측 근거 — 명령 출력/로그 경로/에러 원문. '판단했다'는 근거가 아니다>"
+    },
+    {
+      "_comment": "전파 예시 — depends_on이 blocked 항목을 포함하면 blocked_by가 된다. 직접 지정하지 말고 전파 규칙으로 계산할 것.",
+      "id": "A3",
+      "kind": "test",
+      "desc": "<A2의 산출물을 입력으로 요구하는 항목>",
+      "depends_on": ["A2"],
+      "status": "blocked_by",
+      "blocked_reason": "선행_blocked_항목_의존",
+      "blocked_evidence": "A2(타세션 재시작 필요)의 산출물이 입력으로 필요함",
+      "blocked_by_id": "A2"
+    }
+  ],
+  "non_goals": ["<명시적 비목표 — scope creep 방지>"],
+  "max_iterations": 5,
+  "locked": false,
+  "created_at": "<ISO 8601 — 생성 시점 자동 기록>"
+}

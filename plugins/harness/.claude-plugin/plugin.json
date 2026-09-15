@@ -1,0 +1,19 @@
+{
+  "name": "harness",
+  "version": "1.0.0",
+  "description": "WSL2 전용 Claude Code 오케스트레이션 하네스 — o시리즈 파이프라인(oplan/odev/otest/odone/ofinish), 물리 차단 hook, oio 파일 I/O MCP 서버",
+  "author": {
+    "name": "kHeroBite"
+  },
+  "license": "MIT",
+  "keywords": [
+    "wsl2",
+    "pipeline",
+    "orchestration",
+    "hooks",
+    "mcp"
+  ],
+  "skills": "./skills",
+  "hooks": "./hooks/hooks.json",
+  "mcpServers": "./.mcp.json"
+}
