@@ -536,7 +536,7 @@ python3 scripts/analyze_lessons_cleanup.py
     print("⚠️ MY_UUID 미설정 — 스킵")
     sys.exit(0)
 
-  SESSION_OPS = "/mnt/c/DATA/Project/AI/MCP-Servers/oio-mcp-server/session_ops.py"
+  SESSION_OPS = "<프로젝트 루트>/MCP-Servers/oio-mcp-server/session_ops.py"
   sys.path.insert(0, os.path.dirname(SESSION_OPS))
   from session_ops import session_state
 
@@ -634,7 +634,7 @@ python3 scripts/analyze_lessons_cleanup.py
 수정_파일_위치_판별:
   프로젝트_파일: CLAUDE.md, LESSONS.md 등 → 현재 프로젝트 git
   스킬_hook_파일: .claude/skills/*, .claude/hooks/* → AI 원본 프로젝트 git
-    경로: /mnt/c/DATA/Project/AI/ (심볼릭링크 원본)
+    경로: <프로젝트 루트>/ (심볼릭링크 원본)
   MEMORY_파일: ~/.claude/projects/*/memory/ → git 미추적 (커밋 불필요)
 
 커밋_절차:
@@ -644,7 +644,7 @@ python3 scripts/analyze_lessons_cleanup.py
      git push
 
   2. AI 원본 프로젝트 (스킬/hook 수정 시):
-     cd /mnt/c/DATA/Project/AI
+     cd <프로젝트 루트>
      git add {수정된 스킬/hook 파일}
      git commit -m "🔧 oinsights 자동 개선 — {수정 대상 요약} by {모델버전}"
      git push

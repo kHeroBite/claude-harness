@@ -39,14 +39,14 @@ invocation:
   변경_없음: 스킵
 
 3_AI_repo_push:
-  경로: /mnt/c/DATA/Project/AI (범용 스킬/hooks 원본 레포)
-  감지: git -C "/mnt/c/DATA/Project/AI" status --porcelain
+  경로: <프로젝트 루트> (범용 스킬/hooks 원본 레포)
+  감지: git -C "<프로젝트 루트>" status --porcelain
   변경_있음:
-    git -C "/mnt/c/DATA/Project/AI" add {변경 파일명 명시} (git add -u/-A/. 절대 금지 — L-457)
-    git -C "/mnt/c/DATA/Project/AI" status --short 로 staged 개수가 의도한 파일 수와 일치하는지 확인
+    git -C "<프로젝트 루트>" add {변경 파일명 명시} (git add -u/-A/. 절대 금지 — L-457)
+    git -C "<프로젝트 루트>" status --short 로 staged 개수가 의도한 파일 수와 일치하는지 확인
     커밋 메시지: "🔧 update: {변경 파일 요약}"
-    git -C "/mnt/c/DATA/Project/AI" commit -m "🔧 update: {변경 파일 요약}"
-    git -C "/mnt/c/DATA/Project/AI" push
+    git -C "<프로젝트 루트>" commit -m "🔧 update: {변경 파일 요약}"
+    git -C "<프로젝트 루트>" push
   변경_없음: 스킵
   실패_시: 경고 후 계속 (프로젝트 push는 이미 완료)
   ⚠️ 다중_세션_주의 (L-457): 이 저장소는 여러 Claude Code 세션이 공유한다. git status에 타 세션의

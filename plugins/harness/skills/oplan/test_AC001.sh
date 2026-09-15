@@ -4,7 +4,7 @@
 # 기대: TMP_CFG 디렉토리가 삭제됨 (sync_back + rm -rf 실행)
 set -euo pipefail
 
-CAS="/mnt/c/DATA/Project/AI/bin/claude-as"
+CAS="${HARNESS_CAS:-$(command -v cas 2>/dev/null || echo "${CLAUDE_PROJECT_DIR:-$PWD}/bin/claude-as")}"
 PROFILE="cas-test-ac001"
 PROFILES_ROOT="${CLAUDE_PROFILES_ROOT:-$HOME/.claude-profiles}"
 PROFILE_DIR="${PROFILES_ROOT}/${PROFILE}"

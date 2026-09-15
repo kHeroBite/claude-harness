@@ -264,7 +264,7 @@ Step_5_확장질의_생성:
 
 확장 질의:
 oi/SKILL.md 파일(현재 153줄)을 핵심 로직을 보존하면서 압축하라.
-- 대상: /mnt/c/DATA/Project/AI/.claude/skills/oi/SKILL.md
+- 대상: <프로젝트 루트>/.claude/skills/oi/SKILL.md
 - 보존 필수: spawn 프롬프트(oi-qa/oi-fix-1), 케이스 A/B/C 분기 로직
 - 제거 가능: 중복 설명, Step 0 bash 블록(텍스트로 대체), Step 2 TEST/DONE 처리(hook에서 처리)
 - 목표: 130줄 이하, oio MCP file_edit으로 수정

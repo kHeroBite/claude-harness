@@ -500,7 +500,7 @@ fi
 # ★한계 (알고 있어야 한다 — 완전 차단이 아니다)★
 #   ① 변수·치환 대상(`rm -rf "$DIR"`)은 정적 판정 불가 → fail-open 통과시킨다.
 #   ② base64/eval 로 난독화한 명령은 텍스트 판정을 원리적으로 우회한다.
-#   ③ 절대경로여도 그 경로 자체가 틀리면(`rm -rf /mnt/c/DATA/Project/Xxx`) 막지 못한다.
+#   ③ 절대경로여도 그 경로 자체가 틀리면(`rm -rf <프로젝트 루트>`) 막지 못한다.
 #      이 축이 막는 것은 "의도하지 않은 대상"이지 "잘못 지정한 대상"이 아니다.
 #   ④ `cd /abs && rm -rf ./x` 처럼 cd 가 성공하면 안전한 경우도 함께 막는다(과차단).
 #      대안이 명확하므로(절대경로로 쓰면 됨) 이 과차단은 수용한다.
@@ -598,7 +598,7 @@ if [[ "$TOOL_NAME" == "mcp__oio__bash_exec" ]] && [[ ! -f "$HOME/.claude/hooks/D
     fi
 
     if [[ -n "$_DS_REASON" ]]; then
-      echo "{\"decision\":\"block\",\"reason\":\"🚫 [사이클65/F-DESTROY-1] cwd 의존 파괴 명령 차단 — ${_DS_REASON}. oio bash_exec 는 호출 간 working directory 를 유지하므로 지금 셸이 어느 디렉토리에 있는지 확신할 수 없습니다. 사이클65 에서 정확히 이 형태(cd 실패 후 find . -type f -delete)로 작업트리와 .git 이 통째로 삭제됐습니다(로컬 복구 불가). → 삭제 대상을 ★절대경로★로 명시하십시오. 예: rm -rf /mnt/c/DATA/Project/Xxx/tmp/x · find /mnt/c/DATA/Project/Xxx -name '*.tmp' -delete. 더 나은 경로는 mcp__oio__file_delete / dir_delete 입니다(ALLOWED_ROOTS 검증 포함). 임시 산출물은 처음부터 /mnt/c/DATA/Project/ 이하에 만드십시오. 비상 시 hooks/DISABLE_DESTROY_GUARD 로 우회 가능.\"}"
+      echo "{\"decision\":\"block\",\"reason\":\"🚫 [사이클65/F-DESTROY-1] cwd 의존 파괴 명령 차단 — ${_DS_REASON}. oio bash_exec 는 호출 간 working directory 를 유지하므로 지금 셸이 어느 디렉토리에 있는지 확신할 수 없습니다. 사이클65 에서 정확히 이 형태(cd 실패 후 find . -type f -delete)로 작업트리와 .git 이 통째로 삭제됐습니다(로컬 복구 불가). → 삭제 대상을 ★절대경로★로 명시하십시오. 예: rm -rf <프로젝트 루트>/tmp/x · find <프로젝트 루트> -name '*.tmp' -delete. 더 나은 경로는 mcp__oio__file_delete / dir_delete 입니다(ALLOWED_ROOTS 검증 포함). 임시 산출물은 처음부터 프로젝트 루트 이하에 만드십시오. 비상 시 hooks/DISABLE_DESTROY_GUARD 로 우회 가능.\"}"
       exit 2
     fi
   fi

@@ -3,7 +3,7 @@
 # 절차: 가짜 .credentials.json을 TMP_CFG에 미리 배치 → cas 실행(CLAUDE_BIN=/bin/true) → PROFILE_DIR에 복사됐는지 확인
 set -euo pipefail
 
-CAS="/mnt/c/DATA/Project/AI/bin/claude-as"
+CAS="${HARNESS_CAS:-$(command -v cas 2>/dev/null || echo "${CLAUDE_PROJECT_DIR:-$PWD}/bin/claude-as")}"
 PROFILE="cas-test-ac002"
 PROFILES_ROOT="${CLAUDE_PROFILES_ROOT:-$HOME/.claude-profiles}"
 PROFILE_DIR="${PROFILES_ROOT}/${PROFILE}"

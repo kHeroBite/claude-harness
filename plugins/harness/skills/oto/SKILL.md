@@ -482,8 +482,8 @@ autoloop: |
   후행 항목의 검증력은 정의상 0 이다. 선행이 통과하면 후행도 자동 통과하기 때문이다.
 
 실사고 (D1/D6): |
-  D1  depends_on=[]      auto_script="cd /mnt/c/DATA/Project/AI && test -f LESSONS.md"
-  D6  depends_on=["D1"]  auto_script="cd /mnt/c/DATA/Project/AI && test -f LESSONS.md"   ← 글자까지 동일
+  D1  depends_on=[]      auto_script="cd <프로젝트 루트> && test -f LESSONS.md"
+  D6  depends_on=["D1"]  auto_script="cd <프로젝트 루트> && test -f LESSONS.md"   ← 글자까지 동일
   D6 는 D1 과 검증 내용이 완전히 동일해서, D1 이 통과하면 자동 통과한다. 검증력이 0 이다.
 
 depends_on_무관: |

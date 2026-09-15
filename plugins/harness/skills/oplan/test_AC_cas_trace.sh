@@ -6,7 +6,7 @@
 #       otest 단계에서 호출. 실제 프로파일(rio/dev/know/cs) 절대 미사용.
 #
 # 사용법:
-#   cd /mnt/c/DATA/Project/AI
+#   cd <프로젝트 루트>
 #   bash .claude/skills/oplan/test_AC_cas_trace.sh
 #
 # 환경변수:

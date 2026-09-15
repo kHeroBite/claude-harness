@@ -2,7 +2,7 @@
 # AC-004: flock — 같은 프로파일로 동시 두 cas 실행 → 두 번째가 차단(exit 1)
 set -euo pipefail
 
-CAS="/mnt/c/DATA/Project/AI/bin/claude-as"
+CAS="${HARNESS_CAS:-$(command -v cas 2>/dev/null || echo "${CLAUDE_PROJECT_DIR:-$PWD}/bin/claude-as")}"
 PROFILE="cas-test-ac004"
 PROFILES_ROOT="${CLAUDE_PROFILES_ROOT:-$HOME/.claude-profiles}"
 PROFILE_DIR="${PROFILES_ROOT}/${PROFILE}"

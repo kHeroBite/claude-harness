@@ -8,7 +8,7 @@
 #   5. BEFORE == AFTER → 격리 보존 (PASS) / 변경됨 → Issue #3833 확정 (보고 후 WARN)
 set -euo pipefail
 
-CAS="/mnt/c/DATA/Project/AI/bin/claude-as"
+CAS="${HARNESS_CAS:-$(command -v cas 2>/dev/null || echo "${CLAUDE_PROJECT_DIR:-$PWD}/bin/claude-as")}"
 PROFILE="cas-test-isolation"
 PROFILES_ROOT="${CLAUDE_PROFILES_ROOT:-$HOME/.claude-profiles}"
 PROFILE_DIR="${PROFILES_ROOT}/${PROFILE}"

@@ -40,7 +40,7 @@ Read {프로젝트_루트}/PROJECT.md
 
 | 경로 패턴 | 스킬 |
 |-----------|------|
-| `/mnt/c/DATA/Project/{프로젝트}` 포함 | `Skill('oinfra_{프로젝트}')` |
+| `/mnt/c/work/{프로젝트}` 포함 | `Skill('oinfra_{프로젝트}')` |
 
 `{프로젝트}` 는 cwd 의 basename 을 소문자로 변환한 값이다.
 해당 `oinfra_{프로젝트}` 스킬이 없으면 인프라 로딩을 건너뛴다.

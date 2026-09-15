@@ -25,7 +25,8 @@ if _SERVER_DIR not in sys.path:
 
 # ═══════════════════════════════════════════════════════════
 # startup path 검증 — 대소문자/symlink 경유 실행 거부
-# 원인 1: /mnt/c/DATA/Project/ai/ (소문자) 등 비정규 경로 차단
+# 대소문자만 다른 중복 경로(대소문자 무시 파일시스템)나 symlink 경유 실행을 차단한다.
+# 같은 서버가 서로 다른 경로 표기로 두 벌 떠서 Lock 이 갈라지는 사고를 막는다.
 # ═══════════════════════════════════════════════════════════
 _abs_path = os.path.abspath(__file__)
 _real_path = os.path.realpath(__file__)
@@ -690,7 +691,8 @@ def _startup_janitor():
     # 5. Orphan oio/fio 프로세스 정리 (원인 2 대응)
     #    - fio-mcp-server: 더 이상 사용하지 않음 → 무조건 SIGTERM
     #    - oio-mcp-server: ppid 조건 검사 (ppid=1 OR 사망 OR cmdline에 claude 없음)
-    #    - /mnt/c/DATA/Project/ai/ (소문자) 경로 실행 oio: 즉시 SIGKILL (원인 1)
+    #    비정규 경로(대소문자 불일치/symlink 경유) 실행은 기동 시점의 startup path 검증이
+    #    담당하므로 여기서 별도로 다루지 않는다.
     target_cmds = ("oio-mcp-server/server.py", "fio-mcp-server/server.py")
     my_pid = os.getpid()
     for cmdline_path in glob.glob("/proc/*/cmdline"):
@@ -703,15 +705,6 @@ def _startup_janitor():
         try:
             cmdline = open(cmdline_path, "rb").read().decode(errors="replace")
             if not any(tc in cmdline for tc in target_cmds):
-                continue
-
-            # 소문자 /mnt/c/DATA/Project/ai/ 경로 감지 → 즉시 SIGKILL (원인 1)
-            if "/Project/ai/" in cmdline:
-                try:
-                    os.kill(pid, _signal_mod.SIGKILL)
-                    cleaned["lowercase_ai"] = cleaned.get("lowercase_ai", 0) + 1
-                except (ProcessLookupError, PermissionError):
-                    pass
                 continue
 
             # fio는 더 이상 사용 안 함 → 무조건 SIGTERM

@@ -48,7 +48,9 @@ fi
 # ═══════════════════════════════════════════════════════════
 # 4. CLAUDE.md 하드링크 동일성 검증
 # ═══════════════════════════════════════════════════════════
-PROJECT_BASE="/mnt/c/DATA/Project"
+# 여러 프로젝트가 CLAUDE.md 를 하드링크로 공유하는 경우의 상위 디렉토리.
+# 환경변수 HARNESS_PROJECT_BASE 로 지정한다. 미설정 시 현재 프로젝트의 부모를 쓴다.
+PROJECT_BASE="${HARNESS_PROJECT_BASE:-$(dirname "${CLAUDE_PROJECT_DIR:-$PWD}")}"
 # 하드링크로 CLAUDE.md 를 공유하는 프로젝트 디렉토리명을 나열한다.
 # 환경변수 HARNESS_LINKED_PROJECTS 로 재정의 가능 (공백 구분).
 # 미설정 시 PROJECT_BASE 하위에서 .claude/ 를 가진 디렉토리를 자동 탐지한다.

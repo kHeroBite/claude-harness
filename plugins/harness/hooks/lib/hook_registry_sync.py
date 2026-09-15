@@ -20,8 +20,12 @@ import os
 import re
 import sys
 
-BASE = "/mnt/c/DATA/Project"
-CANON_PROJECT = "AI"
+# 파생본을 탐색할 상위 디렉토리와, 정본으로 삼을 프로젝트 디렉토리명.
+# 배포자 고유 경로를 하드코딩하지 않는다. 환경변수로 지정하며,
+# 미설정 시 현재 프로젝트의 부모를 BASE 로, 현재 프로젝트명을 정본으로 쓴다.
+_CUR = os.path.abspath(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
+BASE = os.environ.get("HARNESS_PROJECT_BASE") or os.path.dirname(_CUR)
+CANON_PROJECT = os.environ.get("HARNESS_CANON_PROJECT") or os.path.basename(_CUR)
 
 # 프로젝트 고유 hook — 전파 대상에서 영구 제외한다. 신규 고유 hook 추가 시 여기에 등재하라.
 PROJECT_LOCAL = {

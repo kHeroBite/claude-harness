@@ -7,14 +7,111 @@ import re
 # UUID v4 형식 (36자: 8-4-4-4-12)
 _UUID_PATTERN = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
 
-# 배포본 기본값: 개인 홈 경로를 하드코딩하지 않고 실행 사용자의 홈을 사용한다.
-# .mcp.json 의 FILEOPS_ALLOWED_ROOTS 환경변수로 덮어쓸 수 있다.
-_DEFAULT_ALLOWED_ROOTS = [
-    "/mnt/c/DATA/Project",
-    "/mnt/c/MCP-Servers",
+# ALLOWED_ROOTS 는 특정 배포자의 경로를 하드코딩하지 않는다.
+# 실행 사용자의 홈 + /tmp 를 기반으로 하고, 프로젝트 루트는 환경변수 선언
+# 또는 CLAUDE_PROJECT_DIR/cwd 자동 판별로 결정한다. 상세는 _resolve_allowed_roots 참조.
+# 어떤 경우에도 허용되는 기반 루트. 실행 사용자의 홈과 임시 디렉토리다.
+_BASE_ALLOWED_ROOTS = [
     os.path.expanduser("~"),
     "/tmp",
 ]
+
+# 자동 판별로 열어서는 안 되는 경로. 여기에 해당하면 프로젝트 루트 후보에서 탈락한다.
+# "/" 와 "/mnt" 같은 광역 경로를 여는 것을 물리적으로 막는 안전 하한선이다.
+_ROOT_DENYLIST = {
+    "/", "/mnt", "/mnt/c", "/mnt/d", "/mnt/e", "/mnt/f",
+    "/home", "/media", "/usr", "/etc", "/var", "/opt", "/srv", "/root",
+}
+
+
+def _is_safe_project_root(path: str) -> bool:
+    """프로젝트 루트로 허용해도 되는 경로인지 판정한다.
+
+    거부 조건은 세 가지다.
+    - 절대경로가 아니다.
+    - 정규화 결과가 _ROOT_DENYLIST 에 있다 (예: /, /mnt, /mnt/c).
+    - 경로 깊이가 2 미만이다 (예: /foo). 최소 2단계(/mnt/d/work, /home/me/x)를 요구한다.
+      단 홈 디렉토리 자신은 _BASE_ALLOWED_ROOTS 로 이미 허용되므로 여기서 다루지 않는다.
+    """
+    if not path or not os.path.isabs(path):
+        return False
+    norm = os.path.normpath(path).rstrip("/") or "/"
+    if norm in _ROOT_DENYLIST:
+        return False
+    # 선행 "/" 를 제외한 세그먼트 수. /mnt/d -> 2, /mnt/d/work -> 3
+    depth = len([seg for seg in norm.split("/") if seg])
+    return depth >= 2
+
+
+def _auto_project_roots():
+    """설정이 없을 때 프로젝트 루트를 자동 판별한다.
+
+    우선순위는 다음과 같다.
+    1. CLAUDE_PROJECT_DIR — Claude Code 가 공식 보장하는 프로젝트 디렉토리
+    2. 현재 작업 디렉토리 — 하네스는 프로젝트 디렉토리에서 기동되는 것이 정상이다
+    후보는 그 경로 자신만 채택하고 부모로 올라가지 않는다. 부모까지 열면
+    형제 프로젝트가 덤으로 열리는 대신 허용 범위가 필요 이상으로 넓어진다.
+    여러 위치의 프로젝트가 필요하면 HARNESS_PROJECT_ROOTS 로 명시 선언하라.
+
+    ★ 절대경로 검사를 realpath 앞에 둔다 ★ — ${CLAUDE_PROJECT_DIR} 이 전개되지
+    않은 채 전달되면 realpath 가 이를 cwd 기준 상대경로로 해석해 엉뚱한 디렉토리를
+    허용 루트로 승격시킨다. 전개 실패는 실제로 가능한 시나리오이므로 먼저 거른다.
+    """
+    roots = []
+    candidates = []
+    env_proj = os.environ.get("CLAUDE_PROJECT_DIR", "").strip()
+    if env_proj:
+        candidates.append(env_proj)
+    try:
+        candidates.append(os.getcwd())
+    except OSError:
+        pass
+
+    for cand in candidates:
+        # realpath 이전에 절대경로 여부를 먼저 확인한다 (미전개 변수 방어).
+        if not cand or not os.path.isabs(cand):
+            continue
+        try:
+            resolved = os.path.realpath(cand)
+        except (OSError, ValueError):
+            continue
+        if _is_safe_project_root(resolved):
+            resolved = os.path.normpath(resolved).rstrip("/")
+            if resolved not in roots:
+                roots.append(resolved)
+    return roots
+
+
+def _resolve_allowed_roots():
+    """ALLOWED_ROOTS 결정 체인.
+
+    1. FILEOPS_ALLOWED_ROOTS  — 전체를 명시적으로 덮어쓴다 (최우선, 하한선 검사 없음)
+    2. HARNESS_PROJECT_ROOTS  — 프로젝트 루트만 지정. 홈/tmp 는 자동 추가된다
+    3. 자동 판별                — CLAUDE_PROJECT_DIR / cwd 기반, 안전 하한선 통과분만
+    어느 경우든 홈과 /tmp 는 기반 루트로 항상 포함된다(1번 제외).
+    설정도 없고 자동 판별도 실패하면 홈 + /tmp 만 남는다 — fail-safe 다.
+    """
+    override = os.environ.get("FILEOPS_ALLOWED_ROOTS", "").strip()
+    if override:
+        return [r.strip() for r in override.split(",") if r.strip()]
+
+    roots = list(_BASE_ALLOWED_ROOTS)
+
+    declared = os.environ.get("HARNESS_PROJECT_ROOTS", "").strip()
+    if declared:
+        for r in declared.split(","):
+            r = r.strip()
+            # 명시 선언이라도 "/" 나 "/mnt" 같은 광역 경로는 거부한다.
+            if r and _is_safe_project_root(r):
+                r = os.path.normpath(r).rstrip("/")
+                if r not in roots:
+                    roots.append(r)
+    else:
+        for r in _auto_project_roots():
+            if r not in roots:
+                roots.append(r)
+
+    return roots
 
 _DEFAULT_BLOCKED_PATHS = [
     "/mnt/c/Windows",
@@ -58,11 +155,19 @@ _SENSITIVE_ENV_PATTERNS = [
 ]
 
 
+_ALLOWED_ROOTS_CACHE = None
+
+
 def _get_allowed_roots():
-    env = os.environ.get("FILEOPS_ALLOWED_ROOTS", "")
-    if env:
-        return [r.strip() for r in env.split(",") if r.strip()]
-    return _DEFAULT_ALLOWED_ROOTS
+    """허용 루트를 반환한다. 최초 1회만 계산하고 이후 캐시를 쓴다.
+
+    캐시하는 이유는 자동 판별이 cwd 를 참조하기 때문이다. 서버 기동 후 cwd 가
+    바뀌어도 허용 범위가 흔들리지 않도록 기동 시점 값으로 고정한다.
+    """
+    global _ALLOWED_ROOTS_CACHE
+    if _ALLOWED_ROOTS_CACHE is None:
+        _ALLOWED_ROOTS_CACHE = _resolve_allowed_roots()
+    return _ALLOWED_ROOTS_CACHE
 
 
 def _get_blocked_paths():

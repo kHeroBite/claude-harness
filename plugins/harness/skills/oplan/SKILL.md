@@ -277,7 +277,7 @@ Phase_G_TODO_생성_XML_블록:
     ```
 
   작성_규칙:
-    - path: 절대 경로 (예: /mnt/c/DATA/Project/MyApp/.claude/skills/ok_pipeline/SKILL.md)
+    - path: 절대 경로 (예: /mnt/c/work/MyApp/.claude/skills/ok_pipeline/SKILL.md)
     - action: modify(수정)/create(신규)/delete(삭제)
     - scope: 수정 범위 최소화 기재 (예: "Wave_동적_spawn 섹션")
     - dependencies: 선행 작업명 없으면 빈 태그 (<dependencies/>)

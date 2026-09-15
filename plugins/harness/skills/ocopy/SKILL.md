@@ -21,12 +21,12 @@ AI 프로젝트 원본의 공용 파일/폴더를 대상 프로젝트에 심볼�
 
 ```yaml
 슬래시_커맨드:
-  - /ocopy tmuxMon           # 프로젝트명 → /mnt/c/DATA/Project/tmuxMon
-  - /ocopy /mnt/c/DATA/Project/tmuxMon  # 절대경로 직접 지정
+  - /ocopy tmuxMon           # 프로젝트명 → /mnt/c/work/tmuxMon
+  - /ocopy /mnt/c/work/tmuxMon  # 절대경로 직접 지정
 
 자연어:
   - "tmuxMon 프로젝트에 기본환경 구축해줘"
-  - "/mnt/c/DATA/Project/tmuxMon 에 기본환경 구축해줘"
+  - "/mnt/c/work/tmuxMon 에 기본환경 구축해줘"
 ```
 
 ---
@@ -36,16 +36,18 @@ AI 프로젝트 원본의 공용 파일/폴더를 대상 프로젝트에 심볼�
 ```yaml
 규칙:
   1. 절대경로 (/로 시작): 그대로 사용
-  2. 프로젝트명 (단어): /mnt/c/DATA/Project/{프로젝트명} 으로 변환
+  2. 프로젝트명 (단어): /mnt/c/work/{프로젝트명} 으로 변환
   3. 인자 없음: 사용자에게 프로젝트명 질문
 ```
 
 ---
 
-## AI 원본 경로
+## 원본 경로
 
 ```yaml
-원본: /mnt/c/DATA/Project/AI/   # 대문자 AI — 링크 경로 표기 대문자로 통일
+원본: <프로젝트 루트>/   # 범용 스킬·hooks 를 보유한 정본 프로젝트
+# 표기는 실제 디렉토리명의 대소문자와 정확히 일치시킨다.
+# 대소문자만 다른 중복 경로가 생기면 Lock 이 갈라진다.
 ```
 
 ---
@@ -78,7 +80,7 @@ AI 프로젝트 원본의 공용 파일/폴더를 대상 프로젝트에 심볼�
 ```yaml
 입력: 사용자 인자 (프로젝트명 또는 절대경로)
 출력: TARGET_PATH (절대경로)
-변환: 프로젝트명이면 /mnt/c/DATA/Project/{프로젝트명}
+변환: 프로젝트명이면 /mnt/c/work/{프로젝트명}
 ```
 
 ### Step 2: 디렉토리 준비
@@ -128,7 +130,7 @@ mkdir -p .claude/locks
 
 ```bash
 PROJECT="{project}"  # 인자에서 추출한 프로젝트명 (예: rtx5070)
-SKILLS_DIR="/mnt/c/DATA/Project/AI/.claude/skills"
+SKILLS_DIR="<프로젝트 루트>/.claude/skills"
 
 skill="oinfra_${PROJECT}"
 SKILL_DIR="$SKILLS_DIR/$skill"

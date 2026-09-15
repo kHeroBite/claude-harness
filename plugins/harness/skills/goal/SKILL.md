@@ -293,7 +293,7 @@ Phase_D_저장:
 ## §7 템플릿 경로
 
 ```yaml
-위치: /mnt/c/DATA/Project/AI/.claude/skills/goal/template/goal.template.json
+위치: <프로젝트 루트>/.claude/skills/goal/template/goal.template.json
 용도: Phase_D 저장 전 구조 참조용 (직접 복사하지 않고 스키마 확인용)
 ```
 

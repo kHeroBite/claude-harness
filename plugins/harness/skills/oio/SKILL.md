@@ -96,7 +96,7 @@ description: "oio MCP 명령 라우팅 설정. '/oio <명령>' 호출 시 ① �
 
 대상_파일:
   - $HOME/.claude/hooks/write_guard.sh (화이트리스트 + 차단 규칙)
-  - /mnt/c/DATA/Project/ai/CLAUDE.md (예외 목록 + 매핑표)
+  - <프로젝트 루트>/CLAUDE.md (예외 목록 + 매핑표)
 ```
 
 ## 주의사항

@@ -23,8 +23,8 @@ _HP="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null
 #   기준A 는 depends_on 축 하나만 본다. 그래서 depends_on 을 비우기만 하면
 #   무의미 게이트가 기준B 경고만 받고 그대로 통과한다(rc=0 실측 확인).
 #   실사고 D1/D6 (사이클51-C):
-#     D1  depends_on=[]      auto_script="cd /mnt/c/DATA/Project/AI && test -f LESSONS.md"
-#     D6  depends_on=["D1"]  auto_script="cd /mnt/c/DATA/Project/AI && test -f LESSONS.md"  ← 글자까지 동일
+#     D1  depends_on=[]      auto_script="cd <프로젝트 루트> && test -f LESSONS.md"
+#     D6  depends_on=["D1"]  auto_script="cd <프로젝트 루트> && test -f LESSONS.md"  ← 글자까지 동일
 #   D6 가 잡힌 것은 depends_on 을 우연히 적었기 때문이며, 비웠다면 통과했다.
 #   D6 의 본질은 "D1 과 auto_script 가 완전히 동일" 이고, 이는 depends_on 과 무관한 별도 축이다.
 #   ⇒ 판정축을 늘려야 회피 경로가 닫힌다.
@@ -182,7 +182,7 @@ if [[ -n "$_DUP_REPORT" ]]; then
 ⇒ 후행 항목은 선행과 독립적으로 실패할 수 없으므로 검증력이 정의상 0 입니다.
 ⇒ depends_on 유무·rc 와 무관하게 성립하는 구조적 결함이며, locked=true 계약의 의미가 사라집니다.
    실사고(D1/D6, 사이클51-C) — 두 항목의 auto_script 가
-   'cd /mnt/c/DATA/Project/AI && test -f LESSONS.md' 로 글자까지 동일했습니다.
+   'cd <프로젝트 루트> && test -f LESSONS.md' 로 글자까지 동일했습니다.
    D6 가 적발된 것은 depends_on 을 우연히 적었기 때문이며, 비웠다면 F-GOALAS-1 을 그대로 빠져나갔습니다.
    ⇒ 단일 판정축(depends_on)은 회피됩니다. 그래서 중복이라는 독립 축을 추가로 봅니다.
 

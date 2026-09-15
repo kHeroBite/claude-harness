@@ -15,9 +15,9 @@
   Line 3: Unix timestamp (Lock 생성 시각)
 
 예시:
-  대상: /mnt/c/DATA/Project/MyApp/FormMain.cs
-  Lock: /mnt/c/DATA/Project/MyApp/.FormMain.cs.lock
-  Dir:  /mnt/c/DATA/Project/MyApp/.FormMain.cs.lockdir
+  대상: /mnt/c/work/MyApp/FormMain.cs
+  Lock: /mnt/c/work/MyApp/.FormMain.cs.lock
+  Dir:  /mnt/c/work/MyApp/.FormMain.cs.lockdir
 ```
 
 ## Lock 프로세스 (7단계)

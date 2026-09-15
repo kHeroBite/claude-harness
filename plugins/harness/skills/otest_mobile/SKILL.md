@@ -387,7 +387,7 @@ else
 fi
 
 # S0-5. APK 설치 (선택된 단일 디바이스에만)
-APK_PATH_WIN=$(wslpath -w "/mnt/c/DATA/Project/MyApp/MyApp.Mobile/bin/Release/net10.0-android/publish/com.example.myapp-Signed.apk")
+APK_PATH_WIN=$(wslpath -w "/mnt/c/work/MyApp/MyApp.Mobile/bin/Release/net10.0-android/publish/com.example.myapp-Signed.apk")
 "$ADB" -s "$TARGET_SERIAL" install -r "$APK_PATH_WIN"
 
 # 이후 모든 패턴 A~D는 "$ADB" -s "$TARGET_SERIAL" 기준으로 실행

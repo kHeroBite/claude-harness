@@ -724,7 +724,7 @@ _emit_batch_unit() {
     cat >"$CAS_BATCH_UNIT" <<'UNIT_EOF'
 [Unit]
 Description=CAS Batch — Claude 사용량 캐시 모음 (옵션3 자가캐시 monitor)
-Documentation=file:///mnt/c/DATA/Project/AI/docs/cas-batch-guide.md
+Documentation=https://github.com/kHeroBite/claude-harness
 After=default.target
 
 [Service]
@@ -1104,7 +1104,10 @@ cmd_run() {
     # 이유: cas는 CLAUDE_CONFIG_DIR=/tmp/cc-${UUID}로 격리. Claude Code가 이 격리 settings.json을 우선 사용.
     # 프로파일 settings.json엔 {"theme":"dark"}만 있어 statusLine 정의 없음 → "✳ Claude Code" 폴백.
     # AI 프로젝트 statusline.py를 강제 주입하여 cwd가 어디든 statusline 정상 표시.
-    local _cas_statusline_py="/mnt/c/DATA/Project/AI/script/statusline.py"
+    # statusline 스크립트 경로. 배포자 고유 경로를 하드코딩하지 않는다.
+    # HARNESS_STATUSLINE_PY 로 지정하며, 미지정 시 현재 프로젝트의 script/statusline.py 를 본다.
+    # 파일이 없으면 아래 -f 검사에서 조용히 건너뛴다 (statusline 없이도 정상 동작).
+    local _cas_statusline_py="${HARNESS_STATUSLINE_PY:-${CLAUDE_PROJECT_DIR:-$PWD}/script/statusline.py}"
     if [[ -f "${_cas_statusline_py}" ]]; then
         python3 - "${TMP_CFG}/settings.json" "${_cas_statusline_py}" <<'PYEOF_INJECT' 2>/dev/null || true
 import json, sys
@@ -1129,7 +1132,7 @@ PYEOF_INJECT
     #   cas는 CLAUDE_CONFIG_DIR=/tmp/cc-${UUID}로 격리하고, 그 settings.json은
     #   프로파일(~/.claude-profiles/<name>/settings.json)에서 복사해 온다.
     #   그런데 프로파일 3종(cs/dev/know) 모두 hooks가 ★0개★ 였다.
-    #   정본 hooks 59개는 /mnt/c/DATA/Project/AI/.claude/settings.json 에 정상 등록돼 있으나
+    #   정본 hooks 는 정본 프로젝트의 .claude/settings.json 에 정상 등록돼 있으나
     #   그 파일은 정본 프로젝트에서 실행할 때만 적용되므로, 다른 프로젝트 세션에서는
     #   ★hook이 하나도 물리지 않았다★.
     #   실제 피해: write_guard(메인 직접수정 차단) · oto_completion_guard(조기종료 차단) ·
@@ -1139,7 +1142,9 @@ PYEOF_INJECT
     # 방침:
     #   (h.5) statusLine 주입과 동일한 패턴. 정본 settings.json의 hooks 를 격리 설정에 병합한다.
     #   ★격리 설정에 이미 hooks 가 있으면 건드리지 않는다★ — 사용자가 세션별로 조정한 값을 존중.
-    local _cas_hooks_src="/mnt/c/DATA/Project/AI/.claude/settings.json"
+    # 정본 settings.json 경로. 배포자 고유 경로를 하드코딩하지 않는다.
+    # HARNESS_CANON_SETTINGS 로 지정하며, 미지정 시 현재 프로젝트의 .claude/settings.json 을 본다.
+    local _cas_hooks_src="${HARNESS_CANON_SETTINGS:-${CLAUDE_PROJECT_DIR:-$PWD}/.claude/settings.json}"
     if [[ -f "${_cas_hooks_src}" ]]; then
         python3 - "${TMP_CFG}/settings.json" "${_cas_hooks_src}" <<'PYEOF_HOOKS' 2>/dev/null || true
 import json, sys
@@ -1182,7 +1187,7 @@ PYEOF_HOOKS
     #   ★격리 설정에 이미 값이 있으면 건드리지 않는다★ — 세션별 커스터마이즈 존중.
     #   ⚠️ teammateMode 는 "auto" 가 정본이다. "tmux" 명시는 실측상 pane 이 생성되지 않았고
     #      (2026-09-07 전 세션 상관관계 조사), "auto" 인 세션만 pane 을 정상 생성했다.
-    local _cas_scalar_src="/mnt/c/DATA/Project/AI/.claude/settings.json"
+    local _cas_scalar_src="${HARNESS_CANON_SETTINGS:-${CLAUDE_PROJECT_DIR:-$PWD}/.claude/settings.json}"
     if [[ -f "${_cas_scalar_src}" ]]; then
         python3 - "${TMP_CFG}/settings.json" "${_cas_scalar_src}" <<'PYEOF_SCALAR' 2>/dev/null || true
 import json, os, sys

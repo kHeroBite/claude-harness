@@ -10,8 +10,8 @@
   공용_스킬: ~/.claude/skills/ 내 범용 스킬 (ok, oplan, odev, otest, odone 등)
   공용_hook: ~/.claude/hooks/ 내 모든 .sh 파일
   공용_설정: ~/.claude/settings.json, ~/.claude/settings.local.json
-  프로젝트_CLAUDE_md: /mnt/c/DATA/Project/{ProjA,ProjB,ProjC}/CLAUDE.md (하드링크)
-  프로젝트_스킬: /mnt/c/DATA/Project/{ProjA,ProjB,ProjC}/.claude/skills/ 내 범용 스킬 (하드링크)
+  프로젝트_CLAUDE_md: /mnt/c/work/{ProjA,ProjB,ProjC}/CLAUDE.md (하드링크)
+  프로젝트_스킬: /mnt/c/work/{ProjA,ProjB,ProjC}/.claude/skills/ 내 범용 스킬 (하드링크)
 
 검증_항목:
 

@@ -1,6 +1,6 @@
 {
   "_comment_venv_path": "command 의 ${HOME} 전개는 미검증이다. 공식 문서상 전개가 보장된 변수는 ${CLAUDE_PLUGIN_ROOT}/${CLAUDE_PLUGIN_DATA}/${CLAUDE_PROJECT_DIR} 뿐이다. venv 를 플러그인 바깥 고정 경로에 두는 이유는 플러그인 갱신 시 캐시 경로가 바뀌어도 venv 가 살아남게 하기 위함이다. 만약 기동 시 oio 서버가 붙지 않으면 이 파일의 command 를 절대경로(예: /home/<사용자>/.harness/venv/oio/bin/python)로 직접 치환하라. install.sh 가 venv 를 ~/.harness/venv/oio 에 생성한다.",
-  "_comment_allowed_roots": "FILEOPS_ALLOWED_ROOTS 는 oio 의 파일 I/O 허용 루트다. 배포본 기본값은 실행 사용자의 홈이며, 필요하면 콤마 구분으로 경로를 추가하라.",
+  "_comment_allowed_roots": "oio 의 파일 I/O 허용 루트는 배포자 경로를 하드코딩하지 않는다. 실행 사용자의 홈과 /tmp 는 항상 허용되고, 프로젝트 루트는 아래 CLAUDE_PROJECT_DIR 전달값 또는 cwd 로 자동 판별된다. 여러 위치의 프로젝트를 함께 쓰려면 셸에서 HARNESS_PROJECT_ROOTS 를 콤마 구분으로 선언하라(예: export HARNESS_PROJECT_ROOTS=/mnt/d/work,/mnt/c/src). 전체를 직접 지정하려면 FILEOPS_ALLOWED_ROOTS 를 쓰되, '/' 나 '/mnt' 로 여는 것은 금지다. 상세는 README '프로젝트 경로 설정' 절 참조.",
   "mcpServers": {
     "oio": {
       "command": "${HOME}/.harness/venv/oio/bin/python",
@@ -8,7 +8,7 @@
         "${CLAUDE_PLUGIN_ROOT}/mcp-servers/oio/server.py"
       ],
       "env": {
-        "FILEOPS_ALLOWED_ROOTS": "${HOME},/mnt/c/DATA/Project,/tmp"
+        "CLAUDE_PROJECT_DIR": "${CLAUDE_PROJECT_DIR}"
       }
     }
   }

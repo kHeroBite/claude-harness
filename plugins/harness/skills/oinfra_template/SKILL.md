@@ -36,7 +36,7 @@ description: 프로젝트 인프라 설정 골격 템플릿. 이 파일을 oinfr
 ## 프로젝트 경로
 
 ```yaml
-프로젝트_루트: <여기에 프로젝트 절대경로를 적으세요 (예: /mnt/c/DATA/Project/myapp)>
+프로젝트_루트: <여기에 프로젝트 절대경로를 적으세요 (예: /mnt/c/work/myapp)>
 솔루션_또는_진입점: <여기에 .sln / package.json / pyproject.toml 등 경로를 적으세요>
 산출물_경로: <여기에 빌드 산출물 경로를 적으세요>
 주요_소스_디렉토리: <여기에 적으세요>
@@ -52,8 +52,8 @@ description: 프로젝트 인프라 설정 골격 템플릿. 이 파일을 oinfr
 빌드_명령: |
   <여기에 빌드 명령을 적으세요>
   # 예: cmd.exe /c "cd /d C:\DATA\Project\myapp && dotnet build myapp.sln -c Debug"
-  # 예: npm --prefix /mnt/c/DATA/Project/myapp run build
-  # 예: python3 -m compileall /mnt/c/DATA/Project/myapp/src
+  # 예: npm --prefix /mnt/c/work/myapp run build
+  # 예: python3 -m compileall /mnt/c/work/myapp/src
 
 빌드_전_필수_작업: |
   <여기에 적으세요 — 없으면 "없음">
@@ -140,12 +140,12 @@ description: 프로젝트 인프라 설정 골격 템플릿. 이 파일을 oinfr
 > obuild 가 기동 로그 확인에, odone_cleanup 이 로그 정리에 사용한다.
 
 ```yaml
-애플리케이션_로그: <여기에 적으세요 (예: /mnt/c/DATA/Project/myapp/logs/app.log)>
+애플리케이션_로그: <여기에 적으세요 (예: /mnt/c/work/myapp/logs/app.log)>
 빌드_로그: <여기에 적으세요 — 없으면 "없음">
 원격_로그: <여기에 적으세요 — 없으면 "해당없음">
 확인_명령: |
   <여기에 적으세요>
-  # 예: tail -n 100 /mnt/c/DATA/Project/myapp/logs/app.log
+  # 예: tail -n 100 /mnt/c/work/myapp/logs/app.log
 오류_패턴: <여기에 로그에서 오류로 간주할 패턴을 적으세요 (예: ERROR|FATAL|Exception)>
 ```
 

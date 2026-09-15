@@ -2,11 +2,21 @@ import sys, re, json, os, subprocess, glob
 
 output_path = sys.argv[1] if len(sys.argv) > 1 else "$HOME/.claude/session-env/oinsights_lessons_cleanup.json"
 
-# LESSONS.md 경로 감지
+# 프로젝트 루트 — 배포자 고유 경로를 하드코딩하지 않는다.
+# CLAUDE_PROJECT_DIR 이 있으면 그것을, 없으면 현재 작업 디렉토리를 쓴다.
+_PROJECT_DIR = os.path.abspath(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
+# 형제 프로젝트 탐색용 상위 디렉토리. HARNESS_PROJECT_BASE 로 재정의 가능.
+_PROJECT_BASE = os.environ.get("HARNESS_PROJECT_BASE") or os.path.dirname(_PROJECT_DIR)
+
+# LESSONS.md 경로 감지 — 현재 프로젝트 우선, 없으면 형제 프로젝트에서 찾는다.
 lessons_path = None
-for candidate in glob.glob("/mnt/c/DATA/Project/*/LESSONS.md"):
-    lessons_path = candidate
-    break
+_own = os.path.join(_PROJECT_DIR, "LESSONS.md")
+if os.path.isfile(_own):
+    lessons_path = _own
+else:
+    for candidate in sorted(glob.glob(os.path.join(_PROJECT_BASE, "*", "LESSONS.md"))):
+        lessons_path = candidate
+        break
 if not lessons_path:
     print("⚠️ LESSONS.md 미발견")
     exit(0)
@@ -36,9 +46,12 @@ for m in re.finditer(lesson_pattern, content, re.DOTALL):
     })
 
 # 스킬/hooks/CLAUDE.md에서 L-번호 참조 검색
-skill_dir = "/mnt/c/DATA/Project/AI/.claude/skills/"
-hook_dirs = ["/mnt/c/DATA/Project/AI/.claude/hooks/", os.path.expanduser("~/.claude/hooks/")]
-claude_md_candidates = glob.glob("/mnt/c/DATA/Project/*/CLAUDE.md")
+skill_dir = os.path.join(_PROJECT_DIR, ".claude", "skills") + os.sep
+hook_dirs = [os.path.join(_PROJECT_DIR, ".claude", "hooks") + os.sep, os.path.expanduser("~/.claude/hooks/")]
+claude_md_candidates = sorted(glob.glob(os.path.join(_PROJECT_BASE, "*", "CLAUDE.md")))
+_own_md = os.path.join(_PROJECT_DIR, "CLAUDE.md")
+if os.path.isfile(_own_md) and _own_md not in claude_md_candidates:
+    claude_md_candidates.append(_own_md)
 
 referenced_lessons = set()
 for search_dir in [skill_dir] + hook_dirs + claude_md_candidates:

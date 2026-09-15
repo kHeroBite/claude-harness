@@ -408,7 +408,7 @@ acceptance_criteria.json의 must 항목은 기존 형식을 그대로 사용하�
     {
       "id": "AC-001",
       "criterion": "ogrill SKILL.md 220줄 이상",
-      "verify": "wc -l /mnt/c/DATA/Project/AI/.claude/skills/ogrill/SKILL.md | awk '{print $1}'",
+      "verify": "wc -l <프로젝트 루트>/.claude/skills/ogrill/SKILL.md | awk '{print $1}'",
       "expected": ">= 100",
       "red_first": true
     }

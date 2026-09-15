@@ -168,6 +168,52 @@ else
     MCP_HINT=0
 fi
 
+# ── 6.7) 프로젝트 루트 선언 (선택)
+#    oio 의 파일 I/O 허용 루트다. 미선언이면 CLAUDE_PROJECT_DIR / cwd 로 자동 판별하므로
+#    단일 프로젝트 사용자는 아무것도 하지 않아도 된다. 여러 위치의 프로젝트를
+#    함께 쓰는 경우에만 선언하면 된다.
+#    멱등: 마커 주석 존재 여부로 중복 추가를 막는다.
+echo "[6.7/7] 프로젝트 루트 선언 (선택)"
+_marker='# >>> harness project roots'
+if grep -q "$_marker" "$_bashrc" 2>/dev/null; then
+    record "프로젝트 루트 선언" "성공" "이미 선언됨 (중복 추가 안 함)"
+elif [ -n "${HARNESS_PROJECT_ROOTS:-}" ]; then
+    # 환경변수로 이미 주어졌으면 그대로 고정한다 (무인 설치 경로).
+    {
+        echo ''
+        echo "$_marker"
+        echo "export HARNESS_PROJECT_ROOTS=\"${HARNESS_PROJECT_ROOTS}\""
+        echo '# <<< harness project roots'
+    } >> "$_bashrc"
+    record "프로젝트 루트 선언" "성공" "${HARNESS_PROJECT_ROOTS}"
+elif [ -t 0 ]; then
+    echo ""
+    echo "  프로젝트를 여러 위치에 두셨다면 그 상위 경로들을 콤마로 구분해 입력하세요."
+    echo "  예: /mnt/d/work,/mnt/c/src"
+    echo "  그냥 Enter 를 누르면 자동 판별을 씁니다 (대부분의 경우 이걸로 충분합니다)."
+    echo ""
+    printf "     프로젝트 루트 [자동 판별] "
+    read -r _roots
+    _roots="$(printf '%s' "$_roots" | tr -d '[:space:]')"
+    if [ -z "$_roots" ]; then
+        record "프로젝트 루트 선언" "성공" "자동 판별 사용"
+    elif printf '%s' "$_roots" | grep -qE '(^|,)/(mnt)?(/[a-z])?(,|$)'; then
+        # "/" · "/mnt" · "/mnt/c" 같은 광역 경로는 거부한다 (보안 하한선).
+        echo "     ⚠ '/' · '/mnt' · '/mnt/c' 같은 광역 경로는 허용하지 않습니다. 자동 판별로 진행합니다."
+        record "프로젝트 루트 선언" "성공" "광역 경로 거부 — 자동 판별 사용"
+    else
+        {
+            echo ''
+            echo "$_marker"
+            echo "export HARNESS_PROJECT_ROOTS=\"${_roots}\""
+            echo '# <<< harness project roots'
+        } >> "$_bashrc"
+        record "프로젝트 루트 선언" "성공" "$_roots"
+    fi
+else
+    record "프로젝트 루트 선언" "성공" "비대화 설치 — 자동 판별 사용"
+fi
+
 # ── 7) rules 디렉토리 (SessionStart hook 이 harness.md 를 동기화하는 고정 경로)
 echo "[7/7] rules 디렉토리 생성"
 mkdir -p "${HOME}/.claude/rules"
