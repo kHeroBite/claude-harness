@@ -360,7 +360,7 @@ o5_토론_절차:
     - 복잡한 알고리즘/아키텍처 결정이 필요한 경우
     - 기술 선택 트레이드오프 분석이 필요한 경우
     - 이종 AI 시각이 도움이 될 경우 (다양한 외부 관점)
-    - Codex MCP(mcp__codex__codex) 연결 상태일 때
+    - Codex 플러그인(codex:rescue) 사용 가능 상태일 때
   oplan_consult_폴백: Codex 사용 불가 시 oplan_debate로 자동 전환
 
   oplan_debate_spawn_절차:

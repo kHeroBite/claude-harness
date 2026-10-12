@@ -242,9 +242,11 @@ spawn_프롬프트_구조 (최대 1,500 토큰 목표):
       2차_fallback (1차 hook 차단 또는 팅김 시):
         Agent(name="oplan-3", team_name="{팀명}", subagent_type="general-purpose", model="sonnet", mode="bypassPermissions", run_in_background=True)
         + spawn 프롬프트에 추가 지시: |-
-            이종 AI(Codex) 분석 fallback으로 실행 중. mcp__codex__codex 도구를 직접 호출하여
+            이종 AI(Codex) 분석 fallback으로 실행 중. mcp__oio__bash_exec 로
+            `codex exec --skip-git-repo-check -s read-only "<분석 지시>"` 를 실행하여
             구현 렌즈 분석을 수행하고, 그 결과를 통합하여 plan_3.md에 저장하라.
-            mcp__codex__codex 호출 실패 시: 구현 렌즈 관점만으로 독립 분석 수행 후 저장.
+            codex exec 실패 시: 구현 렌즈 관점만으로 독립 분석 수행 후 저장.
+            (codex mcp-server 는 codex-cli 0.154.0 에서 공식 제거되어 mcp__codex__codex 는 쓰지 않는다.)
         fallback_이유: codex:rescue가 파이프라인 활성(PLAN) 상태에서 full_task_team_guard.sh의
                        team_name 요구를 충족하지 못할 경우 대비. 이종 AI 분석 유지 목적.
       3차_fallback (2차도 실패 시):
@@ -531,7 +533,7 @@ spawn (팀에이전트 형식 필수 — P-TEAM):
          그 다음, critique_A/B.md에서 지적하지 못한 새로운 약점을 추가 발굴하라.
        전달 파일: oplan_final.md + critique_A.md + critique_B.md
      방법_2차 (1차 실패 시): Agent(name="oplan-5-codex", team_name="{팀명}", subagent_type="codex:codex-rescue", mode="bypassPermissions") spawn  # name+team_name 필수 (F8: unnamed Agent 차단 대응)
-     방법_3차 (2차도 실패 시): mcp__codex__codex 도구 직접 호출
+     방법_3차 (2차도 실패 시): mcp__oio__bash_exec 로 `codex exec --skip-git-repo-check -s read-only "<비판 지시>"` 직접 실행 (codex mcp-server 는 0.154.0 에서 제거됨)
      방법_4차 (전부 실패 시): 이 단계 스킵, "⚠️ Codex 적대적 검증 불가 — 생략" 출력
   2. Codex 비판 보고서 수신
      저장: ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/session-env/${UUID}/plans/codex_critique.md

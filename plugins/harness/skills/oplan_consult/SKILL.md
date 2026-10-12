@@ -36,7 +36,7 @@ invocation:
 
 ```yaml
 codex_rescue_실패_시:
-  대체: Agent(subagent_type="general-purpose", name="계획가-2-fallback", team_name="{팀명}", model="claude-sonnet-4-5", mode="bypassPermissions") spawn
+  대체: Agent(subagent_type="general-purpose", name="계획가-2-fallback", team_name="{팀명}", model="sonnet", mode="bypassPermissions") spawn
   역할: 동일 — 독립 계획서 작성 (plan_codex.md)
   알림: "⚠️ codex:rescue 사용 불가 — sonnet으로 대체"
 ```
@@ -126,7 +126,7 @@ TeamCreate_필수 (Step 1 진입 전 최우선):
     name: "계획가-1"
     team_name: "{팀명}"
     subagent_type: "general-purpose"
-    model: "claude-opus-4-5"  # opus
+    model: "opus"  # 별칭 — 항상 최신 Opus
     mode: "bypassPermissions"
     run_in_background: true
     prompt: |
@@ -207,7 +207,7 @@ TeamCreate_필수 (Step 1 진입 전 최우선):
       name: "계획가-2"
       team_name: "{팀명}"
       subagent_type: "general-purpose"
-      model: "claude-sonnet-4-5"
+      model: "sonnet"
       mode: "bypassPermissions"
       run_in_background: true
       prompt: |
@@ -393,8 +393,8 @@ ultrathink: 조건부 — spawn 프롬프트 < 1,000 토큰 AND 추가 파일 �
 모드: 병렬 단일 모드 (순차 모드 없음)
 
 계획가_구성:
-  1번: opus Agent (general-purpose, model=claude-opus-4-5)
-  2번: codex:rescue Agent → 실패 시 sonnet(claude-sonnet-4-5) 대체
+  1번: opus Agent (general-purpose, model=opus)
+  2번: codex:rescue Agent → 실패 시 sonnet 대체
 
 ultrathink: Claude(oplan_deep) 프롬프트에 조건부 포함 — ok_model 표준 조건(<1,000토큰 AND <2파일) 충족 시에만 활성화
 

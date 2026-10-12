@@ -455,5 +455,10 @@ _CAS_FILTER='grep -v -E "^\[claude-as\] (정보|profile=)"'
 # --remote-control: 세션 시작과 동시에 Remote Control(휴대폰/claude.ai 연결) 자동 활성화
 #   (--remote-control [name] 은 선택 인자를 받으므로 다른 인자를 삼키지 않도록 맨 뒤에 둔다)
 cd "$WORK_DIR"
-cas "$SELECTED" $CONTINUE_FLAG --dangerously-skip-permissions --remote-control 2> >(eval "$_CAS_FILTER" >&2)
+# --model: --continue 재개 시 대화 저장 당시 모델(예: 구버전 Opus)에 묶이지 않도록 매번 명시한다.
+#   사용자 설정(~/.claude/settings.json 의 model, /model 로 저장)이 있으면 그 값, 없으면 "default"(계정 최신 기본 모델).
+#   별칭(default/opus/sonnet/haiku/fable)은 새 모델 출시 시 자동으로 최신 버전을 가리킨다.
+_MODEL_ARG=$(python3 -c 'import json,os;print(json.load(open(os.path.expanduser("~/.claude/settings.json"))).get("model") or "default")' 2>/dev/null)
+[ -z "$_MODEL_ARG" ] && _MODEL_ARG="default"
+cas "$SELECTED" $CONTINUE_FLAG --model "$_MODEL_ARG" --dangerously-skip-permissions --remote-control 2> >(eval "$_CAS_FILTER" >&2)
 exit $?
