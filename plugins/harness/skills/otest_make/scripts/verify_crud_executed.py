@@ -306,16 +306,58 @@ def load_crud_suspect_files(file_assignment_path):
         return None, str(exc)
 
     all_files = []
-    agents = assignment.get("agents", {}) if isinstance(assignment, dict) else {}
-    if isinstance(agents, dict):
-        for agent_info in agents.values():
-            if isinstance(agent_info, dict):
-                files = agent_info.get("files", [])
-                if isinstance(files, list):
-                    all_files.extend(str(f) for f in files)
+    seen = set()
+    for group in _file_groups_from_assignment(assignment):
+        for f in group.get("files", []):
+            f = str(f)
+            if f not in seen:
+                seen.add(f)
+                all_files.append(f)
 
     suspects = [f for f in all_files if CRUD_SUSPECT_PATTERN.search(f)]
     return suspects, None
+
+
+# ★file_assignment.json 다중 스키마 판독★ (정본 .claude/skills 사본과 동일 규칙 — 사이클172 C25 + 사이클174 이월1)
+#   종전 배포본은 assignment["agents"][*]["files"] 한 형태만 읽어, 최상위 에이전트 키·batches[]·phases[]·
+#   waves[] 형식에서 변경 파일 0개로 판독됐다. 아는 형태를 합집합으로 모은다. 모르는 형태는 여전히 0개다
+#   (판독 범위를 넓힌 것이지 판정을 무르게 한 것이 아니다).
+_ASSIGNMENT_NESTED_KEYS = ("agents", "file_assignment")
+_ASSIGNMENT_LIST_KEYS = ("phases", "batches", "waves")
+
+
+def _file_groups_from_assignment(assignment, _depth=0):
+    """file_assignment 구조에서 {files} 그룹(dict) 목록을 모은다.
+
+    인식 형식(합집합):
+      ① {"agents": {"odev-1": {"files": [...]}}}           — 종전 형식
+      ② {"odev-1": {"files": [...]}, ...}                  — 최상위 에이전트 키
+      ③ {"phases"|"batches"|"waves": [{"file_assignment": {...}} | {"files": [...]} | {"agents": {...}}]}
+      ④ {"file_assignment": {...}}                         — 한 겹 감싼 형식
+      ⑤ {"files": [...]}                                   — 평면 형식
+    """
+    groups = []
+    if not isinstance(assignment, dict) or _depth > 4:
+        return groups
+    if isinstance(assignment.get("files"), list):
+        groups.append(assignment)
+    for key in _ASSIGNMENT_NESTED_KEYS:
+        nested = assignment.get(key)
+        if isinstance(nested, dict):
+            for value in nested.values():
+                if isinstance(value, dict):
+                    groups.extend(_file_groups_from_assignment(value, _depth + 1))
+    for key in _ASSIGNMENT_LIST_KEYS:
+        seq = assignment.get(key)
+        if isinstance(seq, list):
+            for entry in seq:
+                groups.extend(_file_groups_from_assignment(entry, _depth + 1))
+    for key, value in assignment.items():
+        if key in _ASSIGNMENT_NESTED_KEYS or key in _ASSIGNMENT_LIST_KEYS or key == "files":
+            continue
+        if isinstance(value, dict) and isinstance(value.get("files"), list):
+            groups.extend(_file_groups_from_assignment(value, _depth + 1))
+    return groups
 
 
 def is_non_crud_declared(data, file_assignment_path):
