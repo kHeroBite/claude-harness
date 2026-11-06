@@ -40,6 +40,16 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 2.5 open ${CLAUDE_PLUGIN_ROOT}/hooks/UserPromptSubmit_peer_inbox.sh",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "PreToolUse": [

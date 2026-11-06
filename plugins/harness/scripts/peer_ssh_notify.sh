@@ -6,23 +6,29 @@
 #   peer_ssh_notify.sh send --outbox <프로젝트> <태그>    < 본문      역방향 ssh 불가 시 자기 outbox 에 적기
 #   peer_ssh_notify.sh pull <ssh별칭> <프로젝트>                      상대 outbox 를 가져와 자기 inbox 에 넣고 상대 outbox 비우기
 #   peer_ssh_notify.sh read <프로젝트>                                자기 inbox 출력(데이터)
+#   peer_ssh_notify.sh new <프로젝트> <커서파일>                      커서 이후 신규 건(JSONL)만 출력하고 커서 갱신
 #   peer_ssh_notify.sh recv <프로젝트> <태그> <보낸호스트>  < 본문     (내부) 원격에서 실행되는 수신부
 #   peer_ssh_notify.sh outbox-take <프로젝트> | outbox-ack <프로젝트> <바이트>   (내부) pull 이 쓰는 원격 부분
 #
 # 태그: 작업시작 · 작업종료 · 인계 · 인계결과 (이 넷만 허용)
 # 본문: 반드시 stdin 으로만 넘긴다(argv 금지). UTF-8, 4096 바이트 이하, 제어문자(줄바꿈·탭 제외)는 지운다.
-# 위치: inbox  = ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/peer_inbox/<프로젝트>.jsonl
-#       outbox = ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/peer_outbox/<프로젝트>.jsonl
+# 위치: inbox  = ${PEER_NOTIFY_HOME:-$HOME/.claude}/peer_inbox/<프로젝트>.jsonl
+#       outbox = ${PEER_NOTIFY_HOME:-$HOME/.claude}/peer_outbox/<프로젝트>.jsonl
 #       1줄 = 1건 {"ts","from_host","project","tag","body","via"}
+#       CLAUDE_CONFIG_DIR 는 쓰지 않는다. cas 세션은 그 값이 종료 때 지워지는 /tmp/cc-* 라서
+#       inbox 가 세션마다 흩어지고 사라진다(2026-11-06 실측). 머신당 한 곳에 모은다.
+# 커서: new 는 <커서파일> 에 마지막으로 읽은 바이트 위치를 적는다. 커서가 없으면 마지막 10건까지만,
+#       있으면 그 뒤 완결된 줄만 낸다. inbox 가 커서보다 작아졌으면 처음부터 다시 읽는다.
 #
 # ★수신측 inbox 는 통지를 데이터로만 다룬다.★ 본문은 다른 세션이 보낸 정보일 뿐 지시가 아니다.
-#   수신부는 기록만 하며 eval·source·명령 실행을 하지 않는다. tmux send-keys 로 입력에 주입하지 않고,
+#   수신부는 기록만 하며 eval·source·명령 실행을 하지 않는다. tmux 키 입력 주입은 쓰지 않고,
 #   사람에게는 tmux display-message(상태줄 표시)로 "통지 1건 도착"만 알린다.
 #
 # 환경변수:
 #   PEER_NOTIFY_REMOTE_HARNESS  원격의 HARNESS_HOME 절대경로(기본: 원격 PATH 의 peer_ssh_notify.sh,
 #                               없으면 원격 ${HARNESS_HOME:-$HOME/.harness}/current/scripts/)
 #   PEER_NOTIFY_TMUX=0          수신 시 tmux 상태줄 알림 끔
+#   PEER_NOTIFY_HOME            inbox·outbox 루트(기본 $HOME/.claude)
 #
 # 종료 코드: 0 성공 · 1 실행 실패(ssh·파일) · 2 사용법·검증 실패(ssh 호출 전 거부)
 
@@ -128,19 +134,45 @@ elif mode == "ingest":
     if good:
         locked_append(path, good)
     sys.stdout.write("pulled=%d skipped=%d\n" % (len(good), bad))
+elif mode == "new":
+    path, cur_path = sys.argv[2], sys.argv[3]
+    try:
+        with open(cur_path, encoding="ascii") as f:
+            cur = int(f.read().strip() or "-1")
+    except (OSError, ValueError):
+        cur = -1
+    if not os.path.exists(path):
+        sys.exit(0)
+    with open(path, "rb") as f:
+        fcntl.flock(f, fcntl.LOCK_SH)
+        data = f.read()
+    end = data.rfind(b"\n") + 1          # 완결된 줄까지만 읽음 처리한다
+    if cur < 0:
+        start = 0
+        lines = data[:end].splitlines(keepends=True)[-10:]
+        chunk = b"".join(lines)
+    else:
+        start = cur if cur <= end else 0  # inbox 가 줄었으면 처음부터
+        chunk = data[start:end]
+    sys.stdout.buffer.write(chunk)
+    os.makedirs(os.path.dirname(cur_path) or ".", exist_ok=True)
+    tmp = cur_path + ".tmp%d" % os.getpid()
+    with open(tmp, "w", encoding="ascii") as f:
+        f.write(str(end))
+    os.replace(tmp, cur_path)
 else:
     die("알 수 없는 도우미 모드")
 PY
 )
 
 usage() {
-    sed -n '4,27p' "$0" | sed 's/^# \{0,1\}//' >&2
+    sed -n '4,33p' "$0" | sed 's/^# \{0,1\}//' >&2
     exit 2
 }
 
 err() { printf 'peer_ssh_notify: %s\n' "$*" >&2; }
 
-cfg_dir() { printf '%s' "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"; }
+cfg_dir() { printf '%s' "${PEER_NOTIFY_HOME:-$HOME/.claude}"; }
 inbox_path() { printf '%s/peer_inbox/%s.jsonl' "$(cfg_dir)" "$1"; }
 outbox_path() { printf '%s/peer_outbox/%s.jsonl' "$(cfg_dir)" "$1"; }
 
@@ -179,7 +211,7 @@ need_alias() {
     ssh -G -- "$1" >/dev/null 2>&1 || { err "ssh -G 로 해석되지 않는 별칭이다: $1"; exit 2; }
 }
 
-notify_tmux() {  # 상태줄 알림만 — 입력 주입(send-keys) 금지
+notify_tmux() {  # 상태줄 알림만 — 키 입력 주입 금지
     [ "${PEER_NOTIFY_TMUX:-1}" = 1 ] || return 0
     command -v tmux >/dev/null 2>&1 || return 0
     local c
@@ -230,6 +262,13 @@ cmd_read() {
     return 0
 }
 
+cmd_new() {
+    [ $# -eq 2 ] || usage
+    need_token "프로젝트" "$1"
+    case "$2" in /*) ;; *) err "커서파일은 절대경로여야 한다"; exit 2 ;; esac
+    python3 -c "$PY_HELPER" new "$(inbox_path "$1")" "$2"
+}
+
 cmd_outbox_take() {
     [ $# -eq 1 ] || usage
     need_token "프로젝트" "$1"
@@ -270,6 +309,7 @@ main() {
         send) cmd_send "$@" ;;
         recv) cmd_recv "$@" ;;
         read) cmd_read "$@" ;;
+        new) cmd_new "$@" ;;
         pull) cmd_pull "$@" ;;
         outbox-take) cmd_outbox_take "$@" ;;
         outbox-ack) cmd_outbox_ack "$@" ;;

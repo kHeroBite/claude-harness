@@ -143,7 +143,8 @@ err() {
 }
 
 die() {
-    err "$*"
+    # 치명 오류는 VERBOSE 와 무관하게 항상 stderr 1줄 — 무메시지 종료(원인 불명 복귀) 방지
+    echo "[claude-as] $*" >&2
     exit 1
 }
 
@@ -1594,12 +1595,13 @@ cmd_run() {
         # 새 tmux 세션 spawn → 세션 내부에서 title 전파 활성화 + cas 재실행
         export CAS_TMUX_SPAWNED=1
         # cas 종료 시 tmux 세션 자동 kill (bash 프롬프트 노출 방지)
+        # rc≠0 이면 종료 코드를 띄우고 5초 대기 후 kill — 오류 메시지가 즉시 사라지는 무메시지 복귀 방지
         # 주의: 인자에 공백/특수문자 가능성 — printf %q로 quote
         local _cmd
         _cmd="$(printf '%q ' "$0" "${name}" "$@")"
         # (계정 전파는 세션 /login 결과를 자동 동기화하므로 별도 허용 변수를 전달하지 않는다)
         exec tmux -L "${_cas_socket}" new-session -A -s "${_cas_session}" -n "${_cas_proj_name}" -c "${PWD}" \
-            "tmux -L '${_cas_socket}' set-option -g set-titles on 2>/dev/null; tmux -L '${_cas_socket}' set-option -g set-titles-string '${_CAS_TITLE_FMT}' 2>/dev/null; ${_cmd}; tmux -L '${_cas_socket}' kill-session -t '${_cas_session}' 2>/dev/null"
+            "tmux -L '${_cas_socket}' set-option -g set-titles on 2>/dev/null; tmux -L '${_cas_socket}' set-option -g set-titles-string '${_CAS_TITLE_FMT}' 2>/dev/null; ${_cmd}; _cas_rc=\$?; if [ \"\$_cas_rc\" -ne 0 ]; then echo \"[claude-as] 종료 코드 \$_cas_rc\" >&2; sleep 5; fi; tmux -L '${_cas_socket}' kill-session -t '${_cas_session}' 2>/dev/null"
     fi
 
     # ── (a) 환경 위생 (S3)

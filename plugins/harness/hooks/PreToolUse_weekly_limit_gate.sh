@@ -16,7 +16,7 @@ INPUT=$(timeout 3 cat 2>/dev/null) || exit 0
 # 평상시 경로 — 잔여가 바깥 임계값보다 크면 여기서 끝난다. 숫자가 아니거나 jq 가 실패하면 코어가 판정한다.
 CACHE="$CFG/.usage_cache.json"
 [[ -f "$CACHE" ]] || exit 0
-if jq -e --arg t "${WLG_THRESHOLDS:-10}" \
+if jq -e --arg t "${WLG_THRESHOLDS:-30}" \
   '(.rate_limits.seven_day.used_percentage) as $u | ($u | type) == "number" and (100 - $u) > ($t | split(",") | map(tonumber) | max)' \
   "$CACHE" >/dev/null 2>&1; then
   exit 0

@@ -122,6 +122,12 @@ invocation:
     5. 통지한 세션명을 session-env/${UUID}/peer_notified.json 에 기록 (자기 UUID 경로만):
        {"project":"<프로젝트명>","started_at":"<ISO시각>","peers":["<세션명>"],"files_hint":"<범위>"}
     6. SendMessage 실패 또는 [Cross-session delivery notice] 거부 → logs/peer_notify.log 에 한 줄 기록 후 진행 (차단 금지)
+    7. 머신 간 통지 (ListAgents 통지와 별개로 추가 수행): 프로젝트 INFRA.md 의 INFRA-FIELDS 블록에서 `peer_ssh` 값을 읽는다.
+       - 값이 ssh 별칭이면 본문을 stdin 으로 넘겨 `bash <프로젝트 루트>/.claude/scripts/peer_ssh_notify.sh send <peer_ssh값> <프로젝트명> 작업시작` 을 실행한다.
+       - 값이 `outbox` 이면 `bash <프로젝트 루트>/.claude/scripts/peer_ssh_notify.sh send --outbox <프로젝트명> 작업시작` 을 실행한다.
+       - 키가 없으면 이 단계를 생략한다.
+       본문 형식은 4번의 [작업시작] 과 같다. 타 세션 UUID/team_name/state 와 이메일은 포함 금지.
+       실패(rc≠0 포함)는 logs/peer_notify.log 에 한 줄 기록 후 진행한다 (차단 금지).
   처리: 통지 후 즉시 다음 단계 진행 (충돌 발견 시에도 멈추지 않음)
 
 타_세션_통지_수신측_규칙:

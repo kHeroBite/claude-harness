@@ -1,4 +1,4 @@
-# 주간 사용 한도 잔여 10%·5% 단계에서 ntfy 를 먼저 보내고 도구를 멈춘 뒤 사용자의 계속/중단 답을 트랜스크립트로 검증하는 PreToolUse 게이트 코어
+# 주간 사용 한도 잔여 30%·20%·10% 단계에서 ntfy 를 먼저 보내고 도구를 멈춘 뒤 사용자의 계속/중단 답을 트랜스크립트로 검증하는 PreToolUse 게이트 코어
 """weekly_limit_gate — PreToolUse_weekly_limit_gate.sh 가 부른다.
 
 입력: stdin hook JSON(session_id, transcript_path, tool_name, tool_input, cwd).
@@ -20,7 +20,7 @@
 팀원은 트랜스크립트를 보지 않고 리드의 승인 기록을 읽기만 한다.
 
 시험·실측용 환경변수:
-  WLG_THRESHOLDS=25,22  임계값 덮어쓰기(기본 10,5)
+  WLG_THRESHOLDS=25,22  임계값 덮어쓰기(기본 30,20,10 — 2개 이상 N개 목록, 남은 비율 기준)
   WLG_TEST_TAG=1        ntfy 제목 앞에 [시험]
   WLG_NTFY_DRYRUN=1     ntfy_send.sh 를 --dry-run 으로 실행
   WLG_TEST_FAIL=1       코어 안에서 예외 발생(fail-open 시험)
@@ -41,7 +41,7 @@ import askq_approval as askq  # noqa: E402
 HEADER = "승인:WEEKLY_LIMIT"
 LABEL_CONTINUE = "계속 진행"
 LABEL_STOP = "중단"
-DEFAULT_THRESHOLDS = (10.0, 5.0)
+DEFAULT_THRESHOLDS = (30.0, 20.0, 10.0)
 TTL_SEC = 1800
 UNVERIFIED_TTL_SEC = 3600
 MAX_RESET_AHEAD = 8 * 86400
@@ -49,7 +49,7 @@ NTFY_WAIT_SEC = 2.5
 SWITCH_NAME = "DISABLE_WEEKLY_LIMIT_GATE"
 UUID_RE = re.compile(r"^[0-9a-f-]{36}$")
 TARGET_RE = re.compile(r"^WEEKLY_(\d+(?:\.\d+)?)_(continue|stop|void)@(\d+)@(\d+)$")
-THRESHOLD_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)\s*$")
+THRESHOLD_RE = re.compile(r"^\s*\d+(?:\.\d+)?(?:\s*,\s*\d+(?:\.\d+)?)+\s*$")
 EMAIL_RE = re.compile(r"[^\s@]+@[^\s@]+")
 UUID_ANY_RE = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 # ntfy_send.sh 출력에서 토픽 값과 URL 을 가리는 sed 식(작은따옴표로 감싼 셸 인자들)
@@ -73,12 +73,12 @@ ALLOW_SKILLS = {"ointaug", "oi", "oteam"}
 
 
 def _thresholds():
-    """(바깥 단계, 안쪽 단계) 내림차순. 형식이 틀리면 기본값."""
-    m = THRESHOLD_RE.match(os.environ.get("WLG_THRESHOLDS") or "")
-    if m:
-        a, b = float(m.group(1)), float(m.group(2))
-        if a != b:
-            return (max(a, b), min(a, b))
+    """단계 목록 내림차순(바깥→안쪽). 2개 이상 N개 쉼표 목록, 중복이 있거나 형식이 틀리면 기본값."""
+    raw = os.environ.get("WLG_THRESHOLDS") or ""
+    if THRESHOLD_RE.match(raw):
+        vals = [float(x) for x in raw.split(",")]
+        if len(set(vals)) == len(vals):
+            return tuple(sorted(vals, reverse=True))
     return DEFAULT_THRESHOLDS
 
 
