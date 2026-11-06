@@ -1871,6 +1871,70 @@ def cmd_project_slug(a):
     return 0
 
 
+_PROJECT_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def _is_wsl():
+    """WSL 판정: WSL_DISTRO_NAME 환경변수 → 커널 문자열(/proc/version 의 microsoft) 순."""
+    if os.environ.get("WSL_DISTRO_NAME"):
+        return True
+    try:
+        with open("/proc/version", encoding="utf-8", errors="replace") as f:
+            return "microsoft" in f.read().lower()
+    except OSError:
+        return False
+
+
+def project_roots():
+    """프로젝트 검색 루트: CLAUDE_PROJECT_ROOTS(콜론 구분, 앞 우선) → 기본 후보 중 존재하는 것만."""
+    env = os.environ.get("CLAUDE_PROJECT_ROOTS", "")
+    if env.strip():
+        cands = [c for c in env.split(":") if c.strip()]
+    else:
+        cands = [os.path.join(os.path.expanduser("~"), "Project")]
+        if _is_wsl():
+            # Windows 쪽 프로젝트 폴더는 WSL 에서만 후보로 넣는다
+            cands.append("/mnt/c/DATA/Project")
+    out = []
+    for c in cands:
+        c = os.path.abspath(os.path.expanduser(c.strip()))
+        if os.path.isdir(c) and c not in out:
+            out.append(c)
+    return out
+
+
+def cmd_project_dir(a):
+    # 프로젝트 이름 → 절대경로. 성공 rc=0, 없음 rc=1, 한 루트 안 대소문자 무시 모호 rc=2
+    name = a.name
+    if not _PROJECT_NAME_RE.match(name) or name in (".", ".."):
+        sys.stderr.write(f"❌ 프로젝트 이름 형식이 아닙니다: {name}\n")
+        return 1
+    roots = project_roots()
+    low = name.lower()
+    # 루트마다 정확 일치 → 대소문자 무시 순으로 보고, 앞 루트에서 찾으면 뒤 루트는 보지 않는다.
+    # 대소문자를 무시하는 파일시스템(NTFS /mnt/c)에서는 isdir 가 다른 대소문자에도 참이므로,
+    # 일치 판정과 반환 경로는 항상 listdir 의 실제 항목명으로 한다.
+    for root in roots:
+        try:
+            ents = sorted(os.listdir(root))
+        except OSError:
+            continue
+        if name in ents and os.path.isdir(os.path.join(root, name)):
+            print(os.path.join(root, name))
+            return 0
+        hits = [e for e in ents if e.lower() == low and os.path.isdir(os.path.join(root, e))]
+        if len(hits) == 1:
+            print(os.path.join(root, hits[0]))
+            return 0
+        if len(hits) > 1:
+            sys.stderr.write(f"❌ 프로젝트 '{name}' 이 모호합니다 (대소문자만 다른 후보):\n")
+            for h in hits:
+                sys.stderr.write(f"  {os.path.join(root, h)}\n")
+            return 2
+    sys.stderr.write(f"❌ 프로젝트 '{name}' 을 찾을 수 없습니다 (검색 루트: {':'.join(roots) or '없음'})\n")
+    return 1
+
+
 # ───────────────────────── 인자 ─────────────────────────
 
 def build_parser():
@@ -1998,6 +2062,8 @@ def build_parser():
     q = add("project-slug", cmd_project_slug, sid=False)
     q.add_argument("--tmux-session")
     q.add_argument("--cwd")
+    q = add("project-dir", cmd_project_dir, sid=False)
+    q.add_argument("name")
     return p
 
 

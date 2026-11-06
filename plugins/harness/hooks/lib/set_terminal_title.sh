@@ -3,10 +3,10 @@
 # Windows Terminal 타이틀바 갱신 헬퍼 — tmux rename-window 경유.
 # state_write() 등 state 변경 지점에서 호출하여 즉시성 보장.
 #
-# 포맷: "{프로젝트[-세션접미]} [표시이름] [🎭롤] [{아이콘}{현재 남은%}] {state이모지} {state} 👤 {계정명}" (값이 없는 칸은 생략, 👤 는 항상 계정명 바로 앞)
-# 예시: "AI-ba ⚡74% 🧍 idle 👤 rio", /oagent 이름이 있으면 "AI 🎭back#철수 74% 🧍 idle 👤 rio"
+# 포맷: "{호스트이모지}{프로젝트} [🎭롤] [{아이콘}{현재 남은%}] {state이모지} {state} 👤 {계정명}" (값이 없는 칸은 생략, 👤 는 항상 계정명 바로 앞)
+# 예시: "🖥️AI ⚡74% 🧍 idle 👤 rio", /oagent 이름이 있으면 "🖥️AI 🎭back#철수 74% 🧍 idle 👤 rio", 리눅스 서버는 "🗄️Pd …"
 # 바깥 창 제목 맨 앞의 스피너(◜◝◞◟, 메인 pane 작업 중일 때만)는 tmux set-titles-string 이 붙인다.
-# 표시 이름은 statusline.py 가 session-env/<UUID>/display_name 에 남긴 값이다. tier 를 모르므로 단계 칸은 다음 statusline 갱신 때 "🏃 ok:o4 dev" 가 된다.
+# 호스트 이모지는 host_label.py(statusline.py 와 공용 규칙)가 정한다. tier 를 모르므로 단계 칸은 다음 statusline 갱신 때 "🏃 ok:o4 dev" 가 된다.
 #
 # 의존: tmux·TMUX_PANE (없으면 silent skip), CLAUDE_PROFILE_NAME 또는 USER 환경변수
 #       사용량 표기 캐시: ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.weekly_remaining_cache (statusline.py가 갱신)
@@ -25,6 +25,12 @@ _title_origin_project() {
     else
       name="${base%.git}"
     fi
+  fi
+  # git 실패 폴백 — statusline._project_path_fallback 과 같은 규칙(`<P>/.claude/worktrees/<이름>` 이면 P, 아니면 폴더 이름)
+  if [ -z "$name" ]; then
+    case "$dir" in
+      */.claude/worktrees/*) name="${dir%%/.claude/worktrees/*}"; name="${name##*/}" ;;
+    esac
   fi
   [ -n "$name" ] || name=$(basename "$dir")
   printf '%s' "$name"
@@ -111,26 +117,16 @@ set_terminal_title() {
     [ -n "$ROLE_VAL" ] && ROLE_PART=" 🎭${ROLE_VAL}"
   fi
 
-  # 표시 이름 조각 — /oagent 이름(role#이름)이 있으면 그것이 에이전트명이므로 쓰지 않는다
-  local NAME_PART="" NAME_VAL=""
-  if [ -n "$_SID" ] && [ -r "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/session-env/$_SID/display_name" ]; then
-    IFS= read -r NAME_VAL < "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/session-env/$_SID/display_name"
-    case "$NAME_VAL" in *[[:space:]#%]*) NAME_VAL="" ;; esac
-    # 별도 칸은 /oagent 이름이 없을 때만. 있으면 아래 합치기에서만 쓴다
-    case "$ROLE_VAL" in *"#"*) ;; *) [ -n "$NAME_VAL" ] && NAME_PART=" ${NAME_VAL}" ;; esac
+  # 호스트 이모지 — statusline.py 와 같은 규칙 파일(host_label.py)을 부른다. 실패·빈 출력이면 이모지 없이 진행(차단 금지)
+  # 세션 표시 이름(AI-8c 류)은 타이틀에 넣지 않는다(2026-11-06 사용자 지시). /oagent 이름은 🎭롤#이름 으로 남는다.
+  local HOST_EMOJI=""
+  if [ -f "$_LIBDIR/host_label.py" ] && command -v python3 >/dev/null 2>&1; then
+    HOST_EMOJI=$(timeout 1 python3 -B "$_LIBDIR/host_label.py" emoji 2>/dev/null </dev/null | head -n 1)
+    case "$HOST_EMOJI" in *[[:space:]#%]*) HOST_EMOJI="" ;; esac
   fi
 
-  # 세션명이 `<프로젝트 소문자>-접미` 꼴이면 `프로젝트-접미` 로 합친다(AI + ai-ba → AI-ba). 아니면 두 토큰을 유지한다.
-  if [ -n "$NAME_VAL" ] && [ -n "$PROJECT" ]; then
-    local _PL _NL
-    _PL=$(printf '%s' "$PROJECT" | tr '[:upper:]' '[:lower:]')
-    _NL=$(printf '%s' "$NAME_VAL" | tr '[:upper:]' '[:lower:]')
-    case "$_NL" in
-      "${_PL}-"?*) PROJECT="${PROJECT}${NAME_VAL:${#PROJECT}}"; NAME_PART="" ;;
-    esac
-  fi
-
-  local TITLE="${PROJECT}${NAME_PART}${ROLE_PART}${PCT_PART} ${STATE_EMOJI} ${STATE_LOWER} 👤 ${ID_PART}"
+  # 이모지와 프로젝트 사이는 공백 없음(🖥️AI) — wt_title_watch.project_of() 가 첫 공백 토큰을 프로젝트 키로 쓴다
+  local TITLE="${HOST_EMOJI}${PROJECT}${ROLE_PART}${PCT_PART} ${STATE_EMOJI} ${STATE_LOWER} 👤 ${ID_PART}"
   # rename-window 이름은 tmux 형식 문자열로 확장되므로 에이전트명(front#이름)의 '#' 은 '##' 로 이스케이프한다
   TITLE="${TITLE//#/##}"
 

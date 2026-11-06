@@ -553,6 +553,13 @@ step8_peer_finish_notify (동일 프로젝트 타 세션 종료 통지 — 일�
        - 프로젝트 토큰은 INFRA-FIELDS project 값 그대로 쓴다(파일명 소문자 정규화는 스크립트가 한다).
        인계 통지([인계] 태그)를 보낼 때도 같은 분기를 쓰며 태그 인자만 `인계` 로 바꾼다. 타 세션 UUID/team_name/state 와 이메일은 포함 금지.
        실패(rc≠0 포함)는 logs/peer_notify.log 에 한 줄 기록 후 진행한다 (차단 금지).
+    6. 대화 공유 (5번과 같은 `peer_ssh` 값을 쓴다. 커밋 이후에만 실행한다 — o1/o2 는 Step 7.5 경량 커밋 뒤, o3 이상은 odone_git 커밋 뒤이며 둘 다 이 Step 8 보다 앞선다):
+       - 값이 ssh 별칭이면 `python3 -B <프로젝트 루트>/.claude/scripts/conv_share.py push --sid <UUID> --project <프로젝트명> <peer_ssh값>` 를 실행한다.
+       - 값이 `outbox` 이면 `python3 -B <프로젝트 루트>/.claude/scripts/conv_share.py push --sid <UUID> --project <프로젝트명> --outbox` 를 실행한다. 상대 머신이 시작할 때 pull 로 가져간다.
+       - 키가 없거나 스크립트가 없으면(구 배포본) 생략한다.
+       - 스크립트가 transcript 를 마스킹한 사본(토큰·비밀번호·키·이메일)만 보낸다. 출력 1줄 요약(줄 수·마스킹 건수)을 종료 보고에 옮긴다. 상한(기본 20MB)을 넘으면 rc=5 로 보내지 않는다.
+       - 실패(rc≠0)는 막지 않는다. 스크립트가 `conv_share.log` 에 남기고 메인은 logs/peer_notify.log 에 한 줄 기록 후 진행한다.
+       - 한계: 이 항목은 자율 준수이며 물리 강제가 아니다. 빠뜨렸으면 사용자가 같은 명령으로 수동 push 한다. 수신 측은 ccc 가 시작할 때마다 pull·import 하므로 다음 송신 때 최신 판으로 따라잡힌다.
   실패_허용: 실패는 logs/peer_notify.log 에 한 줄 기록 후 계속 진행 (IDLE 전환 차단 금지)
 
 step8_pre_cleanup (L-431 — 잔류 team_name 기반 다음 파이프라인 차단 재발방지 핵심):

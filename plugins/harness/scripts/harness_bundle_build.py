@@ -8,7 +8,7 @@
 
   (옵션 없음)  빌드 → out 반영 → out 에 lint 실행. lint 실패면 rc=1.
   --dry-run    임시 폴더에만 빌드하고 바뀔 목록·lint 결과만 출력한다(out 무변경).
-  --check      빌드 없이 out 에 lint(a·a2·b·c·d·e·f·sq)만 실행한다(읽기 전용).
+  --check      빌드 없이 out 에 lint(a·a2·b·c·d·e·f·sq·py310)만 실행한다(읽기 전용).
   --allow-dirty  out 저장소에 미커밋 변경이 있어도 덮어쓴다(재빌드용. 기본은 거부).
   --report     판정 상세를 json 으로 저장한다(값이 아니라 파일:줄·규칙만 담는다).
 
@@ -67,6 +67,8 @@ class Report:
         self.changes = {"add": [], "mod": [], "del": []}
         self.py_unconverted = []  # py 변환 실패·보류
         self.sq_spliced = []      # 셸 작은따옴표 리터럴 소비자 자리에 접합 치환한 곳(규칙 SQ)
+        # py310 검사 범위 집계 — py 파일 수·셸 heredoc 본문 수·python -c 미검사 수·py_compile 보강 여부
+        self.py310_stats = {"py": 0, "heredoc": 0, "unchecked_c": 0, "py_compile": "건너뜀(python3.10 없음)"}
 
     def add_lint(self, code, item):
         self.lint.setdefault(code, []).append(item)
@@ -80,7 +82,7 @@ class Report:
             "lint_warn": self.lint_warn, "dropped_hooks": self.dropped_hooks,
             "skipped_skills": self.skipped_skills, "untracked_skipped": self.untracked_skipped,
             "changes": self.changes, "py_unconverted": self.py_unconverted,
-            "sq_spliced": self.sq_spliced,
+            "sq_spliced": self.sq_spliced, "py310_stats": self.py310_stats,
         }
 
 # ─────────────────────────────── 공통 ───────────────────────────────
@@ -846,6 +848,174 @@ def _read_text(p):
         return None
 
 
+# ── (py310) 서버 python3.10 문법 호환 ──
+# 서버는 python 3.10 이다. 3.12 전용 문법(PEP 701: f-string 표현식 안의 같은 따옴표·백슬래시·주석)은
+# ast.parse(feature_version=(3,10)) 가 잡지 못하므로 tokenize 로 f-string 표현식 구간을 직접 본다.
+# 3.11·3.12 문법(except*·type 문·제네릭)은 ast feature_version 이 잡는다. python3.10 이 있으면 py_compile 로 보강한다.
+_PY_HEREDOC = re.compile(
+    r"(?:^|[\s;&|(!`])(?:\S*/)?python3?(?:\.\d+)?\b[^<\n]*<<(-?)[ \t]*(\\?)(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\3")
+_PY_DASH_C = re.compile(r"(?:^|[\s;&|(!`\"'])(?:\S*/)?python3?(?:\.\d+)?\s+(?:-[A-Za-z]+\s+)*-[A-Za-z]*c\b")
+_FS_START = getattr(tokenize, "FSTRING_START", None)
+_FS_MIDDLE = getattr(tokenize, "FSTRING_MIDDLE", None)
+_FS_END = getattr(tokenize, "FSTRING_END", None)
+
+
+def _str_delim(s):
+    """문자열 토큰의 접두어를 뗀 여는 구분자(' \" ''' \"\"\")."""
+    body = s.lstrip("rRbBfFuU")
+    return body[:3] if body[:3] in ('"""', "'''") else body[:1]
+
+
+def _quote_conflict(inner, outer):
+    """3.10 에서 바깥 f-string 을 끝내 버리는 안쪽 구분자인가."""
+    if len(outer) == 3:
+        return inner == outer
+    return inner[:1] == outer
+
+
+def py310_issues(src):
+    """3.10 비호환 위반 목록 [(줄, 사유)]. 토큰화 실패도 위반으로 돌려준다."""
+    issues = []
+    if _FS_START is not None:
+        stack = []                  # [여는 구분자, 중괄호 깊이]
+        try:
+            for tok in tokenize.generate_tokens(io.StringIO(src).readline):
+                t, s, ln = tok.type, tok.string, tok.start[0]
+                if t == _FS_END:
+                    if stack:
+                        stack.pop()
+                    continue
+                if t == _FS_MIDDLE:
+                    outer = [lv for lv in stack[:-1] if lv[1] > 0]
+                    if outer and "\\" in s:
+                        issues.append((ln, "f-string 표현식 안 백슬래시"))
+                    continue
+                expr = [lv for lv in stack if lv[1] > 0]
+                if t == _FS_START:
+                    d = _str_delim(s)
+                    if any(_quote_conflict(d, lv[0]) for lv in expr):
+                        issues.append((ln, "f-string 표현식 안 같은 따옴표(중첩 f-string)"))
+                    stack.append([d, 0])
+                    continue
+                if not stack:
+                    continue
+                if t == tokenize.OP and s in ("{", "}"):
+                    stack[-1][1] += 1 if s == "{" else -1
+                    continue
+                if not expr:
+                    continue
+                if t == tokenize.STRING:
+                    if any(_quote_conflict(_str_delim(s), lv[0]) for lv in expr):
+                        issues.append((ln, "f-string 표현식 안 같은 따옴표"))
+                    if "\\" in s:
+                        issues.append((ln, "f-string 표현식 안 백슬래시"))
+                elif t == tokenize.COMMENT:
+                    issues.append((ln, "f-string 표현식 안 주석"))
+        except (tokenize.TokenError, IndentationError, SyntaxError) as e:
+            issues.append((getattr(e, "lineno", 0) or 0, f"토큰화 실패: {str(e)[:80]}"))
+            return issues
+    try:
+        ast.parse(src, feature_version=(3, 10))
+    except SyntaxError as e:
+        issues.append((e.lineno or 0, f"3.10 문법 아님: {(e.msg or '')[:80]}"))
+    except ValueError as e:
+        issues.append((0, f"파싱 실패: {str(e)[:80]}"))
+    return issues
+
+
+def sh_python_heredocs(text):
+    """셸 소스의 python heredoc 본문 [(시작줄, 본문)] 과 오류 [(줄, 사유)], python -c 개수를 돌려준다."""
+    lines = text.split("\n")
+    bodies, errs, n_c = [], [], 0
+    i = 0
+    while i < len(lines):
+        ln = lines[i]
+        if ln.lstrip().startswith("#"):
+            i += 1
+            continue
+        n_c += len(_PY_DASH_C.findall(ln))
+        m = _PY_HEREDOC.search(ln)
+        if not m:
+            i += 1
+            continue
+        strip, bslash, quote, delim = m.group(1), m.group(2), m.group(3), m.group(4)
+        if not quote and not bslash:
+            errs.append((i + 1, f"비인용 python heredoc <<{delim} — <<'{delim}' 로 인용하라"))
+        j, found = i + 1, None
+        while j < len(lines):
+            cand = lines[j].lstrip("\t") if strip else lines[j]
+            if cand == delim:
+                found = j
+                break
+            j += 1
+        if found is None:
+            errs.append((i + 1, f"heredoc 종결자 {delim} 없음"))
+            i += 1
+            continue
+        body = lines[i + 1:found]
+        if strip:
+            body = [b.lstrip("\t") for b in body]
+        if quote or bslash:
+            bodies.append((i + 2, "\n".join(body) + "\n"))
+        i = found + 1
+    return bodies, errs, n_c
+
+
+def py310_lint_text(rel, kind, text, report, sources):
+    """py 파일 전체 또는 셸 python heredoc 본문에 py310 검사를 적용하고 py_compile 보강 대상을 모은다."""
+    if kind == "py":
+        report.py310_stats["py"] += 1
+        for n, why in py310_issues(text):
+            report.add_lint("py310", f"{rel}:{n} {why}")
+        sources.append((rel, 1, text))
+    elif kind == "sh":
+        bodies, errs, n_c = sh_python_heredocs(text)
+        report.py310_stats["unchecked_c"] += n_c
+        for n, why in errs:
+            report.add_lint("py310", f"{rel}:{n} {why}")
+        for start, body in bodies:
+            report.py310_stats["heredoc"] += 1
+            for n, why in py310_issues(body):
+                report.add_lint("py310", f"{rel}:{start + n - 1 if n else start} {why}")
+            sources.append((rel, start, body))
+
+
+_PY_COMPILE_PROG = (
+    "import sys\n"
+    "for p in sys.argv[1:]:\n"
+    "    try:\n"
+    "        compile(open(p, encoding='utf-8').read(), p, 'exec')\n"
+    "    except SyntaxError as e:\n"
+    "        print(p + '\\t' + str(e.lineno or 0) + '\\t' + str(e.msg)[:80])\n"
+)
+
+
+def py310_compile(sources, report):
+    """python3.10 이 있으면 모은 본문을 실제 3.10 컴파일러로 한 번 더 확인한다(없으면 건너뜀)."""
+    py = shutil.which("python3.10")
+    if not py or not sources:
+        return
+    tmp = tempfile.mkdtemp(prefix="py310_")
+    try:
+        index = {}
+        for k, (rel, start, body) in enumerate(sources):
+            p = os.path.join(tmp, f"{k}.py")
+            with open(p, "w", encoding="utf-8") as f:
+                f.write(body)
+            index[p] = (rel, start)
+        r = subprocess.run([py, "-I", "-c", _PY_COMPILE_PROG] + sorted(index), capture_output=True,
+                           text=True, timeout=80)
+        for row in r.stdout.splitlines():
+            p, n, msg = (row.split("\t") + ["", ""])[:3]
+            rel, start = index.get(p, (p, 1))
+            report.add_lint("py310", f"{rel}:{start + int(n or 1) - 1} python3.10 컴파일 실패: {msg}")
+        report.py310_stats["py_compile"] = f"python3.10 보강 {len(index)}건 rc={r.returncode}"
+    except (OSError, subprocess.TimeoutExpired, ValueError) as e:
+        report.add_lint("py310", f"python3.10 py_compile 실행 실패: {str(e)[:80]}")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def lint(out, manifest, report):
     L = manifest["lint"]
     home = manifest.get("src_user_home", (os.path.expanduser("~")))
@@ -858,6 +1028,7 @@ def lint(out, manifest, report):
     e_allow = L.get("e_allow", [])
     code_kinds = set(L.get("code_kinds", []))
     cred_names = {".credentials.json", "claude-credentials.json", ".claude.json", ".mcp.json", "INFRA.md"}
+    py_sources = []
     for rel, p in _iter_files(out, L.get("scope", [])):
         if os.path.islink(p):
             t = os.readlink(p)
@@ -871,6 +1042,8 @@ def lint(out, manifest, report):
         kind = file_kind(rel, text)
         lines = text.split("\n")
         guarded = any(g.search(text) for g in guards)
+        # (py310) 서버 python3.10 문법 호환 — py 파일 전체 + 셸의 인용 python heredoc 본문
+        py310_lint_text(rel, kind, text, report, py_sources)
         # (sq) 셸 확장형이 작은따옴표(리터럴 소비자)·따옴표 heredoc 안에 남아 확장되지 않는 자리
         if kind == "sh":
             sq_allow = [a for a in L.get("sq_allow", []) if fnmatch.fnmatchcase(rel, a["path"])]
@@ -912,6 +1085,7 @@ def lint(out, manifest, report):
                         report.add_lint("e", item)
                     else:
                         report.add_lint_warn("e", item)
+    py310_compile(py_sources, report)
     # (c) hooks.json 대상 실재·실행 비트
     hout = (manifest.get("hooks") or {}).get("out")
     hp = os.path.join(out, hout) if hout else None
@@ -993,7 +1167,10 @@ def print_report(report, title):
         print(f"  [sq 접합 치환] {len(report.sq_spliced)}건 (작은따옴표 리터럴 소비자 자리)")
         for x in report.sq_spliced[:MAX_SHOW]:
             print(f"    {x}")
-    for code in ("a", "a2", "b", "c", "d", "e", "f", "sq", "LINK_OUT"):
+    st = report.py310_stats
+    print(f"  [py310] 검사 py {st['py']}개 · heredoc {st['heredoc']}개 · "
+          f"미검사(python -c 본문) {st['unchecked_c']}건 · {st['py_compile']}")
+    for code in ("a", "a2", "b", "c", "d", "e", "f", "sq", "py310", "LINK_OUT"):
         items = report.lint.get(code, [])
         total += len(items)
         print(f"  lint ({code}) {'통과' if not items else f'실패 {len(items)}건'}")

@@ -265,14 +265,31 @@ def get_git_info(project_dir):
         return None, False
 
 def get_origin_project_name(project_dir):
-    """원본 checkout 기준 프로젝트명 (worktree 안에서도 같은 이름). 실패 시 cwd basename."""
+    """원본 checkout 기준 프로젝트명 (worktree 안에서도 같은 이름). 실패 시 경로 폴백(_project_path_fallback)."""
     if not project_dir:
         return 'Unknown'
+    return _origin_project_git(project_dir)[0] or _project_path_fallback(project_dir)
+
+
+def _project_path_fallback(project_dir):
+    """git 판정 실패 시 경로만으로 고른 이름 — `<P>/.claude/worktrees/<이름>` 꼴이면 P, 아니면 폴더 이름."""
+    parts = os.path.normpath(project_dir).split(os.sep)
+    for i in range(2, len(parts) - 1):  # 첫 `.claude/worktrees` 기준(셸 `${dir%%/.claude/worktrees/*}` 와 동일)
+        if parts[i] == 'worktrees' and parts[i - 1] == '.claude' and parts[i - 2]:
+            return parts[i - 2]
+    return os.path.basename(os.path.normpath(project_dir))
+
+
+def _origin_project_git(project_dir):
+    """(이름, 확정) — git 공통 디렉터리로 구한 원본 checkout 이름.
+    확정=True: 성공했거나, git 저장소가 아님·git 없음·폴더 없음처럼 다시 해도 같은 결과(이름 '' 이면 경로 폴백이 정답).
+    확정=False: timeout·그 밖 오류(NTFS 지연 등 일시 실패) — 호출자는 직전 저장값을 유지한다."""
     try:
         r = subprocess.run(
             ['git', 'rev-parse', '--path-format=absolute', '--git-common-dir'],
             capture_output=True, text=True, timeout=2,
-            cwd=project_dir, stdin=subprocess.DEVNULL
+            cwd=project_dir, stdin=subprocess.DEVNULL,
+            env=dict(os.environ, LC_ALL='C', LANGUAGE='')  # 'not a git repository' 판정을 로캘과 무관하게
         )
         common = r.stdout.strip().rstrip('/')
         if r.returncode == 0 and common:
@@ -282,10 +299,14 @@ def get_origin_project_name(project_dir):
             else:
                 name = base[:-4] if base.endswith('.git') else base
             if name:
-                return name
+                return name, True
+        if 'not a git repository' in (r.stderr or '').lower():
+            return '', True
+        return '', False
+    except (FileNotFoundError, NotADirectoryError):
+        return '', True
     except Exception:
-        pass
-    return os.path.basename(project_dir)
+        return '', False
 
 # ── 파이프라인 상태 ───────────────────────────────────
 
@@ -1111,7 +1132,23 @@ version = data.get('version', '')
 
 workspace = data.get('workspace', {})
 project_dir = workspace.get('project_dir') or workspace.get('current_dir') or data.get('cwd', '')
-project_name = get_origin_project_name(project_dir)
+# 프로젝트명 — git 판정이 확정(성공 또는 '저장소 아님')일 때만 display_project 에 저장한다.
+# 일시 실패·timeout(NTFS worktree 에서 실측)이면 직전 저장값을 유지해 제목이 `pd-18` ↔ `Pd` 로 번갈지 않게 한다(2026-11-06).
+_project_git, _project_name_ok = _origin_project_git(project_dir) if project_dir else ('', False)
+project_name = _project_git
+if not project_name and project_dir and _project_name_ok:
+    # git 저장소가 아님(확정) — 경로 폴백이 안정적인 정답이므로 표시·저장한다
+    project_name = _project_path_fallback(project_dir)
+if not project_name and project_dir:
+    try:
+        _sid0 = data.get('session_id', '')
+        if _sid0 and re.fullmatch(r'[A-Za-z0-9_-]+', _sid0):
+            with open(os.path.join(claude_config_dir(), 'session-env', _sid0, 'display_project'), encoding='utf-8') as _pf:
+                project_name = _pf.read().strip()
+    except Exception:
+        project_name = ''
+if not project_name:
+    project_name = _project_path_fallback(project_dir) if project_dir else 'Unknown'
 
 
 
@@ -1388,9 +1425,36 @@ def _save_usage_badge(badge):
         pass
 
 
+_HOST_FALLBACK = ('linux', '\U0001F5C4️')  # host_label.py 를 못 읽을 때만 쓰는 값(🗄️)
+
+
+def load_host_label():
+    """(host_tag, host_emoji) — 판정·이모지 규칙은 hooks/lib/host_label.py 한 곳에만 있다. 못 읽으면 _HOST_FALLBACK."""
+    try:
+        here = os.path.dirname(os.path.realpath(__file__))
+        _home = os.environ.get('ROLE_HOME_BASE', '').strip() or os.path.expanduser('~/.claude')
+        cands = [os.environ.get('HOST_LABEL_LIB_DIR', '').strip(),
+                 os.path.join(here, 'hooks', 'lib'),                  # 배포본: plugins/harness/statusline.py
+                 os.path.join(here, '..', '.claude', 'hooks', 'lib'),  # 저장소: script/statusline.py
+                 os.path.join(claude_config_dir(), 'hooks', 'lib'),
+                 os.path.join(_home, 'hooks', 'lib')]
+        for d in cands:
+            p = os.path.join(d, 'host_label.py') if d else ''
+            if p and os.path.isfile(p):
+                import importlib.util as _ilu
+                _spec = _ilu.spec_from_file_location('host_label_shared', p)
+                _mod = _ilu.module_from_spec(_spec)
+                _spec.loader.exec_module(_mod)
+                tag = _mod.host_tag()
+                return tag, _mod.host_emoji(tag)
+    except Exception:
+        pass
+    return _HOST_FALLBACK
+
+
 def _update_terminal_title(project, state, rem_proj_pct,
                             account_email=None, entry_tier=None, tier=None, status=None,
-                            is_team_agent=False, rem_now_pct=None, role='', display_name=''):
+                            is_team_agent=False, rem_now_pct=None, role='', host_emoji=''):
     """tmux 안: rename-window. statusline 본문과 동일한 display_tier 사용.
 
     포맷 매트릭스 (color_pipeline_display와 동일):
@@ -1434,12 +1498,13 @@ def _update_terminal_title(project, state, rem_proj_pct,
         if rem_proj_pct is not None:
             v = rem_proj_pct
             n = rem_now_pct if rem_now_pct is not None else v
+            # 타이틀 배지는 무공백 — set_terminal_title.sh 가 캐시를 공백 제거해 쓰므로 두 경로 제목을 바이트 단위로 맞춘다(5초 번갈음 방지)
             if v <= 0:
-                rem_badge = f"⛔ {n:.0f}%"
+                rem_badge = f"⛔{n:.0f}%"
             elif v <= 10:
-                rem_badge = f"⚠  {n:.0f}%"
+                rem_badge = f"⚠{n:.0f}%"
             elif v <= 20:
-                rem_badge = f"⚡ {n:.0f}%"
+                rem_badge = f"⚡{n:.0f}%"
             else:
                 rem_badge = f"{n:.0f}%"
         elif rem_now_pct is not None:
@@ -1475,17 +1540,11 @@ def _update_terminal_title(project, state, rem_proj_pct,
                 if tokens:
                     stage_part += f" {'|'.join(tokens)}"
 
-        # 순서: 프로젝트-세션접미 → 에이전트명(🎭롤) → 남은 용량 → 단계 → 👤 계정명(2026-11-04 사용자 요청). 값이 없으면 빈 문자열이라 공백이 겹치지 않는다.
-        # 세션명이 `<프로젝트 소문자>-접미` 꼴이면 `프로젝트-접미` 로 합친다(AI + ai-ba → AI-ba). /oagent 이름이 있어도 합친다.
-        # 합치기 조건이 아니면 두 토큰을 유지하되, /oagent 이름(role 의 #뒤)이 있으면 세션명은 생략한다(토큰 3개 방지).
-        if display_name and project and display_name.lower().startswith(project.lower() + '-') and len(display_name) > len(project) + 1:
-            project = project + display_name[len(project):]
-            display_name = ''
-        elif '#' in (role or ''):
-            display_name = ''
-        name_part = f" {display_name}" if display_name else ""
-        role_part = f" 🎭 {role}" if role else ""
-        title = f"{project}{name_part}{role_part}{badge_part} {stage_part} {id_part}"
+        # 순서: 호스트 이모지+프로젝트 → 에이전트명(🎭롤) → 남은 용량 → 단계 → 👤 계정명(2026-11-04 사용자 요청). 값이 없으면 빈 문자열이라 공백이 겹치지 않는다.
+        # 이모지와 프로젝트 사이는 공백 없음(🖥️AI) — wt_title_watch.project_of() 가 첫 공백 토큰을 프로젝트 키로 쓴다.
+        # 세션 표시 이름(AI-8c 류)은 타이틀에 넣지 않는다(2026-11-06 사용자 지시). /oagent 이름은 🎭롤#이름 으로 남는다.
+        role_part = f" 🎭{role}" if role else ""  # 무공백 — set_terminal_title.sh 의 ROLE_PART 와 동일
+        title = f"{host_emoji}{project}{role_part}{badge_part} {stage_part} {id_part}"
         # tmux 안: rename-window(내부 #W) + DCS passthrough(외부 WT 탭)
         # cas가 tmux 자동 spawn하므로 사용자 화면은 항상 tmux 안 보장.
         # 대상 없는 tmux 명령은 가장 최근 세션에 적용돼 다른 세션 제목을 바꾼다. 자기 pane 을 모르면 쓰지 않는다.
@@ -1535,19 +1594,22 @@ if is_team_agent:
 else:
     _display_name = get_session_display_name(session_id)
     save_title_field(session_id, 'display_name', _display_name)
-    save_title_field(session_id, 'display_project', project_name)
+    if _project_name_ok:  # 폴백 이름은 저장하지 않는다(직전 성공값 보존)
+        save_title_field(session_id, 'display_project', project_name)
     agent_name = _oagent_name or _display_name
+_host_tag, _host_emoji = load_host_label()
+_host_color = C_CYAN if _host_tag == 'wsl' else C_YELLOW
 _update_terminal_title(project_name, pipeline_state, _rem_proj_val, account_email,
                         entry_tier=pipeline_entry_tier, tier=pipeline_tier, status=pipeline_status,
                         is_team_agent=is_team_agent, rem_now_pct=_rem_now_val,
-                        role=session_role, display_name=_display_name)
+                        role=session_role, host_emoji=_host_emoji)
 
 # ── 출력 (Powerline 스타일) ───────────────────────────
 
 parts = []
 
-# 프로젝트
-parts.append(f"{C_CYAN}{project_name}{' ' + agent_name if agent_name else ''}{C_RESET}")
+# 프로젝트 — 맨 앞 호스트 이모지 + 공백 1 (색: wsl 청록, linux 노랑). 에이전트명은 다중 세션 구분용으로 유지
+parts.append(f"{_host_color}{_host_emoji + ' ' if _host_emoji else ''}{project_name}{' ' + agent_name if agent_name else ''}{C_RESET}")
 if session_role:
     parts.append(f"🎭 {C_GOLD}{session_role}{C_RESET}")
 
@@ -1600,6 +1662,7 @@ except Exception:
     pass
 
 # WT 탭 제목 고정 감시 — 60초마다 단발 점검 기동, 고정 감지 시 경고(실패 시 생략)
+_wt_warn_line = ''
 if not is_team_agent:
     try:
         sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
@@ -1607,7 +1670,8 @@ if not is_team_agent:
         _wtw.trigger()
         _wt_warn = _wtw.format_warning()
         if _wt_warn:
-            parts.append(f"{C_ORANGE}{_wt_warn}{C_RESET}")
+            # 1줄 끝에 붙이면 좁은 pane 에서 잘려 안 보인다(2026-11-06 실측) → 별도 줄로 맨 위에 출력한다
+            _wt_warn_line = f"{C_ORANGE}{_wt_warn}{C_RESET}"
     except Exception:
         pass
 
@@ -1649,6 +1713,8 @@ _cpu_pct, _rss_mb = session_cpu_mem(session_id)
 line2.insert(0, fmt_cpu_mem(_cpu_pct, _rss_mb,
                             None if is_team_agent else team_cpu_total(session_id, _cpu_pct, _rss_mb)))
 
+if _wt_warn_line:
+    print(_wt_warn_line)
 print(sep.join(line1_final))
 if line2:
     print(sep.join(line2))

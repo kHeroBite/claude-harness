@@ -1,11 +1,13 @@
 #!/bin/bash
 # cc — Claude Code 진입 (계정 메뉴 + cas 격리 진입)
-# 버전: 2.3 (계정 메뉴 → 롤 메뉴 / 재개 메뉴, 공용 상자형 메뉴 _box_menu)
+# 버전: 2.4 (프로젝트 이름 인자 cc <프로젝트> · --project, 2-pass 인자 판정)
 # 변경: 2.0(멀티계정) → 2.1(--continue 파싱, ccc는 cc 래퍼로 단순화)
 #       → 2.2(cc back · cc --role front · cc back:결제 · cc <계정> <롤>, 기동 전 롤 검증·기록, ccc 재개 통로 --resume)
 #       → 2.3(인자 없이 tty 로 실행하면 계정 메뉴 다음 같은 모양의 롤 메뉴(6롤 + 직접 입력),
 #             ccc 가 넘기는 --resume-pick 이면 롤별 최신 세션·최근 대화 미리보기 재개 메뉴)
-# 사용: cc [작업디렉터리] [계정] [롤[:영역]] [--role 롤] [--profile 계정] [--continue]
+#       → 2.4(디렉터리·롤·프로파일이 아닌 인자는 프로젝트 이름(role_lib project-dir, 루트 CLAUDE_PROJECT_ROOTS)
+#             로 해석해 작업 위치를 먼저 정한 뒤 롤을 판정한다 — 인자 순서 무관. 같은 이름 충돌은 --project)
+# 사용: cc [작업디렉터리|프로젝트] [계정] [롤[:영역]] [--role 롤] [--profile 계정] [--project 프로젝트] [--continue]
 #       cc                 계정 메뉴 → 롤 메뉴(tty 대화형일 때만, 계정·롤 인자가 있으면 메뉴 없이 기존 동작)
 #       (ccc 전용) --resume <sid> [--role 롤] [--profile-default 계정] · --resume-pick(계정 메뉴 → 재개 메뉴)
 # 시험: CC_ROLE_CHECK_ONLY=1 이면 cas 를 띄우지 않고 최종 인자만 출력한다(주입이 없으면 계정 메뉴도 건너뛴다).
@@ -20,6 +22,7 @@ WORK_DIR=""
 CONTINUE_FLAG=""
 FORCED_PROFILE=""
 ROLE_ARG=""
+PROJECT_ARG=""
 RESUME_SID=""
 DEFAULT_PROFILE=""
 RESUME_PICK=""
@@ -38,6 +41,10 @@ while (( _i < _n_args )); do
         --role)
             _i=$((_i + 1)); ROLE_ARG="${_args[$_i]:-}"
             if [[ -z "$ROLE_ARG" ]]; then echo "❌ --role 뒤에 롤이 없습니다." >&2; exit 1; fi ;;
+        --project)
+            # 롤·프로파일과 이름이 같은 프로젝트도 프로젝트로 지정한다
+            _i=$((_i + 1)); PROJECT_ARG="${_args[$_i]:-}"
+            if [[ -z "$PROJECT_ARG" ]]; then echo "❌ --project 뒤에 프로젝트 이름이 없습니다." >&2; exit 1; fi ;;
         --resume)
             _i=$((_i + 1)); RESUME_SID="${_args[$_i]:-}"
             if [[ ! "$RESUME_SID" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
@@ -102,7 +109,7 @@ _reject() {
     # 기동 전 거부: 사유 + 롤 목록 + 프로파일 목록, rc=1
     echo "❌ $1" >&2
     [[ -n "${2:-}" ]] && printf '%s\n' "$2" >&2
-    echo "사용: cc [작업디렉터리] [계정] [롤[:영역]]  (예: cc back · cc --role front · cc back:결제 · cc ${PROFILES[0]} back)" >&2
+    echo "사용: cc [작업디렉터리|프로젝트] [계정] [롤[:영역]] [--project 프로젝트]  (예: cc back · cc --role front · cc back:결제 · cc ${PROFILES[0]} back · cc pd back)" >&2
     if [[ -f "$ROLE_LIB" ]]; then
         echo "롤 목록:" >&2
         python3 -B "$ROLE_LIB" list 2>/dev/null | grep -v '^  \[그룹\]' >&2 || true
@@ -113,21 +120,64 @@ _reject() {
 
 # 위치 인수 판정 1단계: 존재하는 디렉터리 → WORK_DIR (첫 번째만, 기존 동작 보존)
 declare -a _REST=()
+_DIR_GIVEN=0
 for _arg in "${_POS[@]}"; do
     if [[ -z "$WORK_DIR" && -d "$_arg" ]]; then
-        WORK_DIR="$_arg"
+        WORK_DIR="$_arg"; _DIR_GIVEN=1
         if [[ "$_arg" != */* && -f "$ROLE_LIB" ]] && python3 -B "$ROLE_LIB" norm "$_arg" >/dev/null 2>&1; then
             echo "ℹ️  '$_arg' 는 디렉터리로 해석했습니다. 롤로 쓰려면: cc --role $_arg" >&2
+        elif [[ "$_arg" != */* && -z "$PROJECT_ARG" && -f "$ROLE_LIB" ]]; then
+            _pd_hint=$(python3 -B "$ROLE_LIB" project-dir "$_arg" 2>/dev/null || true)
+            if [[ -n "$_pd_hint" && "$_pd_hint" != "$(cd "$_arg" && pwd)" ]]; then
+                echo "ℹ️  '$_arg' 는 디렉터리로 해석했습니다. 프로젝트로 쓰려면: cc --project $_arg" >&2
+            fi
         fi
     else
         _REST+=("$_arg")
     fi
 done
+
+# 위치 인수 판정 pass A: 롤 별칭도 프로파일도 아닌 인자(또는 --project)를 프로젝트로 해석해 WORK_DIR 확정
+#   롤 별칭 판정은 영역(:…)·이름(#…)을 뗀 별칭만 본다(작업 디렉터리 확정 전이라 영역 검증은 pass B 에서)
+_PROJ_FROM_FLAG=0; [[ -n "$PROJECT_ARG" ]] && _PROJ_FROM_FLAG=1
+declare -a _REST_B=()
+for _arg in "${_REST[@]}"; do
+    _alias="${_arg%%:*}"; _alias="${_alias%%#*}"
+    if [[ "$_arg" == *[:#]* ]] || _is_profile "$_arg" \
+       || { [[ -f "$ROLE_LIB" && -n "$_alias" && "$_alias" != -* ]] && python3 -B "$ROLE_LIB" norm "$_alias" >/dev/null 2>&1; }; then
+        _REST_B+=("$_arg")
+        continue
+    fi
+    if [[ ! -f "$ROLE_LIB" ]]; then
+        _reject "알 수 없는 인자: $_arg (디렉터리·롤·프로파일 어느 것도 아님)" "롤 라이브러리 없음: $ROLE_LIB"
+    fi
+    if [[ "$_arg" == -* ]]; then
+        _reject "알 수 없는 인자: $_arg (디렉터리·롤·프로파일·프로젝트 어느 것도 아님)"
+    fi
+    if [[ -n "$PROJECT_ARG" || $_DIR_GIVEN -eq 1 ]]; then
+        _reject "작업 위치가 두 번 지정됐습니다: ${PROJECT_ARG:-$WORK_DIR}, $_arg"
+    fi
+    PROJECT_ARG="$_arg"
+done
+if [[ -n "$PROJECT_ARG" ]]; then
+    if [[ $_DIR_GIVEN -eq 1 ]]; then
+        _reject "작업 위치가 두 번 지정됐습니다: $WORK_DIR, --project $PROJECT_ARG"
+    fi
+    _prc=0
+    _pout=$(python3 -B "$ROLE_LIB" project-dir "$PROJECT_ARG" 2>&1) || _prc=$?
+    if [[ $_prc -eq 0 ]]; then
+        WORK_DIR="$_pout"
+    elif [[ $_PROJ_FROM_FLAG -eq 1 || $_prc -eq 2 ]]; then
+        _reject "프로젝트를 정할 수 없습니다: $PROJECT_ARG" "$_pout"
+    else
+        _reject "알 수 없는 인자: $PROJECT_ARG (디렉터리·롤·프로파일·프로젝트 어느 것도 아님)" "$_pout"
+    fi
+fi
 WORK_DIR="${WORK_DIR:-$(pwd)}"
 WORK_DIR="$(cd "$WORK_DIR" && pwd)"
 
-# 위치 인수 판정 2단계: 롤 별칭 → 롤, 프로파일 이름 → 계정, 둘 다·둘 다 아님 → 거부
-for _arg in "${_REST[@]}"; do
+# 위치 인수 판정 pass B: 확정된 WORK_DIR 기준으로 롤 별칭 → 롤, 프로파일 이름 → 계정, 둘 다·둘 다 아님 → 거부
+for _arg in "${_REST_B[@]}"; do
     _rrc=0
     _role_norm "$_arg" || _rrc=$?
     if [[ $_rrc -eq 2 ]]; then _reject "영역이 정의와 맞지 않습니다: $_arg" "$_ROLE_ERR"; fi
@@ -198,8 +248,34 @@ _build_session_args() {
     SESSION_ARGS=()
     [[ -n "$CONTINUE_FLAG" ]] && SESSION_ARGS+=("--continue")
     [[ -n "$RESUME_SID" ]] && SESSION_ARGS+=("--resume" "$RESUME_SID")
+    if [[ -n "$RESUME_SID" ]] && _is_imported_sid "$RESUME_SID"; then
+        # 다른 머신에서 가져온 대화는 새 세션 ID 로 이어 간다(원본 sid 는 송신 머신 전용)
+        SESSION_ARGS+=("--fork-session")
+    fi
     [[ -n "$NEW_SID" ]] && SESSION_ARGS+=("--session-id" "$NEW_SID")
     return 0
+}
+
+# 대화 공유 도구(conv_share.py) 위치: CONV_SHARE → 배포본 → ${HARNESS_HOME:-$HOME/.harness}/current/scripts. 없으면 빈 값(대화 공유 기능 건너뜀)
+_conv_share_path() {
+    local c
+    for c in "${CONV_SHARE:-}" "${HARNESS_HOME:-$HOME/.harness}/current/scripts/conv_share.py" "${HARNESS_HOME:-$HOME/.harness}/current/scripts/conv_share.py"; do
+        if [[ -n "$c" && -f "$c" ]]; then printf '%s' "$c"; return 0; fi
+    done
+    return 1
+}
+
+# 가져온(다른 머신) 대화인지: conv_share is-imported rc=0 이면 참. 도구가 없거나 판정 불가면 거짓(일반 재개)
+_is_imported_sid() {
+    local cs proj rc=0
+    cs="$(_conv_share_path)" || return 1
+    [[ -f "$ROLE_LIB" ]] || return 1
+    proj="$(python3 -B "$ROLE_LIB" project-slug --cwd "$WORK_DIR" || true)"
+    [[ -n "$proj" ]] || return 1
+    python3 -B "$cs" is-imported --sid "$1" --project "$proj" >/dev/null || rc=$?
+    if [[ $rc -eq 0 ]]; then return 0; fi
+    if [[ $rc -ne 1 ]]; then echo "⚠️  가져온 대화 판정 실패(rc=$rc) — 일반 재개로 진행합니다" >&2; fi
+    return 1
 }
 _build_session_args
 
@@ -352,7 +428,10 @@ PYEOF
     if [[ -z "$_cache_file" && $_existed -eq 1 ]]; then
         printf "AGE:\n      → (다른 계정 캐시 — 갱신 필요)\n      \n      \nPROJ:$_PROJ_NO_INFO\n"
     elif [[ -f "$_cache_file" ]]; then
-        python3 - "$_cache_file" <<'PYEOF' 2>/dev/null || printf "AGE:\n      → (캐시 손상)\n      \n      \nPROJ:$_PROJ_NO_INFO\n"
+        # 렌더 실패(문법 오류 등)를 "캐시 손상" 으로 오진하지 않도록 stderr 를 임시 파일로 받아 사유를 붙인다
+        local _uerr _uerr_line
+        _uerr="$(mktemp 2>/dev/null || true)"
+        python3 - "$_cache_file" <<'PYEOF' 2>"${_uerr:-/dev/null}" || { _uerr_line="$( [[ -n "$_uerr" ]] && grep -v '^[[:space:]]*$' "$_uerr" | tail -n 1 | cut -c1-80 || true)"; printf "AGE:\n      → (캐시 손상: %s)\n      \n      \nPROJ:$_PROJ_NO_INFO\n" "${_uerr_line:-사유 미상}"; }
 import json, sys, time
 
 R  = "\033[0m"
@@ -484,7 +563,7 @@ try:
         elif rem_proj <= 10: proj_str = f":{ORANGE}⚠ {rem_proj:.0f}%{R}"
         elif rem_proj <= 20: proj_str = f":{YELLOW}⚡ {rem_proj:.0f}%{R}"
         else:                proj_str = f":{DIM}{rem_proj:.0f}%{R}"
-        fh_remain_part = "" if fh_expired else f" ({tc}{rem_str if fh_reset else "?"}{R})"
+        fh_remain_part = "" if fh_expired else f" ({tc}{rem_str if fh_reset else '?'}{R})"
         print(f"      ⏱  {rc}{bar}{R} {rc}사용{fh_used:.0f}% 잔{fh_rem_pct:.0f}%{R}{fh_remain_part} {bc}{fh_rate:.1f}%/h{R}{proj_str}")
     else:
         print(f"      ⏱  {DIM}(세션 데이터 없음){R}")
@@ -513,7 +592,7 @@ try:
         elif rem_proj <= 10: proj_str = f":{ORANGE}⚠ {rem_proj:.0f}%{R}"
         elif rem_proj <= 20: proj_str = f":{YELLOW}⚡ {rem_proj:.0f}%{R}"
         else:                proj_str = f":{DIM}{rem_proj:.0f}%{R}"
-        print(f"      🕐 {rc}{bar}{R} {rc}사용{sd_used:.0f}% 잔{sd_rem_pct:.0f}%{R} ({tc}{rem_str if sd_reset else "?"}{R}) {bc}{sd_rate:.2f}%/h{R}{proj_str}")
+        print(f"      🕐 {rc}{bar}{R} {rc}사용{sd_used:.0f}% 잔{sd_rem_pct:.0f}%{R} ({tc}{rem_str if sd_reset else '?'}{R}) {bc}{sd_rate:.2f}%/h{R}{proj_str}")
         # 정렬 키: 병목 min(5h잔여, 주간유효잔여) 내림차순, 동점은 주간 초기화 빠른 순 (표시값 rem_proj 와 무관)
         f_rem = fh_rem_pct if fh_pct is not None else 100
         w_eff = sd_rem_pct + (100 - sd_rem_pct) * max(0, 1 - sd_remain_secs / 10800)  # 초기화 3h 이내 회복분 선형 반영
@@ -530,12 +609,15 @@ try:
         print(f"      📅 {DIM}주간 초기화 정보 없음{R}")
     print(sd_proj_out)
 except Exception as e:
+    # 캐시 읽기·렌더 예외도 사유를 붙인다(셸 쪽 heredoc 실패 표기와 같은 형식, 80자)
+    _why = " ".join(f"{type(e).__name__}: {e}".split())[:80]
     print(f"AGE:")
-    print(f"      → (캐시 손상)")
+    print(f"      → (캐시 손상: {_why})")
     print(f"      ")
     print(f"      ")
     print(f"PROJ:{PROJ_NO_INFO}")
 PYEOF
+        if [[ -n "$_uerr" ]]; then rm -f "$_uerr"; fi
     else
         printf "AGE:\n      → (사용 이력 없음)\n      \n      \nPROJ:$_PROJ_NO_INFO\n"
     fi
