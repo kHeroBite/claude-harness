@@ -788,7 +788,7 @@ import json,os,re,shlex,sys
 SELF=os.environ.get("WGS_SELF","")
 OUT=os.environ["WGS_OUT"]
 ROOTS=set()
-for r in (os.path.expanduser("${HARNESS_HOME:-$HOME/.harness}/current/hooks"), os.path.dirname(SELF), "${HARNESS_HOME:-$HOME/.harness}/current/hooks", os.environ.get("WGS_EXTRA_ROOT","")):
+for r in (os.path.expanduser("'"${HARNESS_HOME:-$HOME/.harness}/current/hooks"'"), os.path.dirname(SELF), "'"${HARNESS_HOME:-$HOME/.harness}/current/hooks"'", os.environ.get("WGS_EXTRA_ROOT","")):
     if r: ROOTS.add(os.path.realpath(r))
 SKIP=("tests","candidates","backup","logs","__pycache__")
 def kind(p):
@@ -991,7 +991,7 @@ if [[ -n "$_LKG_ON" ]] && command -v python3 >/dev/null 2>&1; then
 import glob,json,os,re,shlex,sys
 LKG=os.path.realpath(os.path.expanduser(os.environ.get("WGL_LKG_DIR") or "~/.local/state/hook_lkg"))
 ROOTS=set()
-for r in (os.path.expanduser("${HARNESS_HOME:-$HOME/.harness}/current/hooks"), os.path.dirname(os.environ.get("WGS_SELF","")), "${HARNESS_HOME:-$HOME/.harness}/current/hooks", os.environ.get("WGS_EXTRA_ROOT","")):
+for r in (os.path.expanduser("'"${HARNESS_HOME:-$HOME/.harness}/current/hooks"'"), os.path.dirname(os.environ.get("WGS_SELF","")), "'"${HARNESS_HOME:-$HOME/.harness}/current/hooks"'", os.environ.get("WGS_EXTRA_ROOT","")):
     if r: ROOTS.add(os.path.realpath(r))
 LKRE=re.compile(r"^\..+\.lkg\.")
 def in_tree(r):

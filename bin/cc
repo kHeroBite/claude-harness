@@ -1056,7 +1056,7 @@ _CAS_FILTER='grep -v -E "^\[claude-as\] (정보|profile=)"'
 # --model: --continue 재개 시 대화 저장 당시 모델(예: 구버전 Opus)에 묶이지 않도록 매번 명시한다.
 #   사용자 설정(${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json 의 model, /model 로 저장)이 있으면 그 값, 없으면 "default"(계정 최신 기본 모델).
 #   별칭(default/opus/sonnet/haiku/fable)은 새 모델 출시 시 자동으로 최신 버전을 가리킨다.
-_MODEL_ARG=$(python3 -c 'import json,os;print(json.load(open(os.path.expanduser("${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json"))).get("model") or "default")' 2>/dev/null)
+_MODEL_ARG=$(python3 -c 'import json,os;print(json.load(open(os.path.expanduser("'"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/"'settings.json"))).get("model") or "default")' 2>/dev/null || true)
 [ -z "$_MODEL_ARG" ] && _MODEL_ARG="default"
 cd "$WORK_DIR"
 cas "$SELECTED" "${SESSION_ARGS[@]}" --model "$_MODEL_ARG" --dangerously-skip-permissions 2> >(eval "$_CAS_FILTER" >&2)

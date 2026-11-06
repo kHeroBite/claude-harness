@@ -8,7 +8,7 @@
 
   (옵션 없음)  빌드 → out 반영 → out 에 lint 실행. lint 실패면 rc=1.
   --dry-run    임시 폴더에만 빌드하고 바뀔 목록·lint 결과만 출력한다(out 무변경).
-  --check      빌드 없이 out 에 lint(a·a2·b·c·d·e·f)만 실행한다(읽기 전용).
+  --check      빌드 없이 out 에 lint(a·a2·b·c·d·e·f·sq)만 실행한다(읽기 전용).
   --allow-dirty  out 저장소에 미커밋 변경이 있어도 덮어쓴다(재빌드용. 기본은 거부).
   --report     판정 상세를 json 으로 저장한다(값이 아니라 파일:줄·규칙만 담는다).
 
@@ -66,6 +66,7 @@ class Report:
         self.untracked_skipped = 0
         self.changes = {"add": [], "mod": [], "del": []}
         self.py_unconverted = []  # py 변환 실패·보류
+        self.sq_spliced = []      # 셸 작은따옴표 리터럴 소비자 자리에 접합 치환한 곳(규칙 SQ)
 
     def add_lint(self, code, item):
         self.lint.setdefault(code, []).append(item)
@@ -79,6 +80,7 @@ class Report:
             "lint_warn": self.lint_warn, "dropped_hooks": self.dropped_hooks,
             "skipped_skills": self.skipped_skills, "untracked_skipped": self.untracked_skipped,
             "changes": self.changes, "py_unconverted": self.py_unconverted,
+            "sq_spliced": self.sq_spliced,
         }
 
 # ─────────────────────────────── 공통 ───────────────────────────────
@@ -179,6 +181,198 @@ def general_rewrite(text, kind, rules):
         elif r["from"] in text:
             text = text.replace(r["from"], r["to"])
     return text
+
+
+# ── 셸 따옴표 문맥 (규칙 SQ) ──
+# 치환 결과(${CLAUDE_CONFIG_DIR:-…}·${HARNESS_HOME:-…}·$HOME)는 셸이 확장해야 값이 된다.
+# 작은따옴표 안에서는 셸이 확장하지 않으므로 python3 -c '…' 같은 리터럴 소비자에게 글자 그대로 넘어가
+# 없는 경로를 열다 실패한다(v1.2.3 bin/cc _MODEL_ARG 사고). 그래서 셸 파일은 문맥을 보고 바꾼다.
+_SH_HEREDOC = re.compile(r"<<(-?)[ \t]*(\\?)(['\"]?)([A-Za-z_][A-Za-z0-9_]*)(['\"]?)")
+_SH_INNER_SHELL = re.compile(
+    r"(?:(?:^|[\s;&|(!`])(?:ba|da|k|z)?sh\s+(?:-[A-Za-z]+\s+)*-c\s*$)|(?:\beval\s+$)|(?:\bssh\b)")
+_SQ_EXPAND_TOKEN = re.compile(r"(?<!\\)\$(?:\{(?:CLAUDE_CONFIG_DIR|HARNESS_HOME|CLAUDE_PROFILES_ROOT|HOME)\b|HOME\b)")
+
+
+def sh_contexts(text):
+    """셸 소스의 문자마다 문맥을 돌려준다.
+
+    N = 셸이 확장하는 자리(따옴표 밖·큰따옴표·따옴표 없는 heredoc 본문), S = 작은따옴표,
+    A = $'…'(ANSI-C), H = 따옴표 붙은 heredoc 본문(확장 없음), C = 주석.
+    $(…)·`…` 안은 새 코드 문맥으로 본다. case 패턴 등 드문 문법은 근사한다.
+    """
+    n = len(text)
+    ctx = ["N"] * n
+    stack = [["T", 0]]          # T 최상위 코드 · X $( ) 코드 · B 역따옴표 코드 · D 큰따옴표
+    pending = []                # (탭제거, 따옴표 여부, 구분자)
+    i = 0
+    while i < n:
+        c = text[i]
+        kind = stack[-1][0]
+        if kind == "D":
+            if c == "\\":
+                i += 2
+                continue
+            if c == '"':
+                stack.pop()
+            elif c == "$" and text.startswith("$(", i):
+                stack.append(["X", 0])
+                i += 2
+                continue
+            elif c == "`":
+                stack.append(["B", 0])
+            i += 1
+            continue
+        if c == "\n" and pending:
+            j = i + 1
+            for strip, quoted, delim in pending:
+                k, found = j, None
+                while k <= n:
+                    e = text.find("\n", k)
+                    e = n if e < 0 else e
+                    line = text[k:e]
+                    if (line.lstrip("\t") if strip else line) == delim:
+                        found = (k, e)
+                        break
+                    if e >= n:
+                        break
+                    k = e + 1
+                if found is None:
+                    continue          # 끝 구분자가 없으면 heredoc 으로 보지 않는다(오판 방지)
+                if quoted:
+                    for p in range(j, found[0]):
+                        ctx[p] = "H"
+                j = min(found[1] + 1, n)
+            pending = []
+            i = j
+            continue
+        if c == "\\":
+            i += 2
+            continue
+        if c == "'":
+            ansi = i > 0 and text[i - 1] == "$"
+            k = i + 1
+            while k < n and text[k] != "'":
+                k += 2 if (ansi and text[k] == "\\") else 1
+            mark = "A" if ansi else "S"
+            for p in range(i, min(k + 1, n)):
+                ctx[p] = mark
+            i = k + 1
+            continue
+        if c == '"':
+            stack.append(["D", 0])
+            i += 1
+            continue
+        if c == "#" and (i == 0 or text[i - 1] in " \t\n;&|()"):
+            e = text.find("\n", i)
+            e = n if e < 0 else e
+            for p in range(i, e):
+                ctx[p] = "C"
+            i = e
+            continue
+        if c == "$" and text.startswith("$(", i):
+            stack.append(["X", 0])
+            i += 2
+            continue
+        if c == "`":
+            if kind == "B":
+                stack.pop()
+            else:
+                stack.append(["B", 0])
+            i += 1
+            continue
+        if kind == "X":
+            if c == "(":
+                stack[-1][1] += 1
+            elif c == ")":
+                if stack[-1][1] == 0:
+                    stack.pop()
+                else:
+                    stack[-1][1] -= 1
+        if c == "<" and text.startswith("<<", i):
+            if text.startswith("<<<", i):
+                i += 3
+                continue
+            m = _SH_HEREDOC.match(text, i)
+            if m:
+                pending.append((m.group(1) == "-", bool(m.group(2) or m.group(3)), m.group(4)))
+                i = m.end()
+                continue
+        i += 1
+    return ctx
+
+
+def _sq_region_start(ctx, k):
+    while k > 0 and ctx[k - 1] == ctx[k]:
+        k -= 1
+    return k
+
+
+def sq_literal_consumer(text, ctx, k):
+    """작은따옴표 자리 k 의 내용을 셸이 아닌 소비자(python·awk·jq 등)가 글자 그대로 받는가.
+
+    bash -c·sh -c·eval·ssh 처럼 안쪽에서 다시 셸이 확장하는 경우는 False(기존 치환 그대로 유효).
+    """
+    s = _sq_region_start(ctx, k)
+    ls = text.rfind("\n", 0, s) + 1
+    return not _SH_INNER_SHELL.search(text[ls:s])
+
+
+def sh_rewrite(rel, text, rules, report):
+    """셸 파일 치환. 작은따옴표 안 리터럴 소비자 자리는 따옴표를 잠시 닫고 큰따옴표로 확장시킨다.
+
+    예) python3 -c '…open("~/.claude/settings.json")…'
+     →  python3 -c '…open("'"${CLAUDE_CONFIG_DIR:-$HOME/.claude}"'/settings.json")…'
+    따옴표 heredoc(<<'EOF') 본문은 셸이 확장하지 않지만 용도가 갈리므로 기존대로 바꾸고 lint 경고로 남긴다.
+    """
+    for r in rules:
+        only = r.get("only_kinds")
+        if only and "sh" not in only:
+            continue
+        if r.get("regex"):
+            text = re.sub(r["from"], r["to"], text)
+            continue
+        frm, to = r["from"], r["to"]
+        if frm not in text:
+            continue
+        if "$" not in to:
+            text = text.replace(frm, to)
+            continue
+        ctx = sh_contexts(text)
+        out, s = [], 0
+        while True:
+            k = text.find(frm, s)
+            if k < 0:
+                break
+            out.append(text[s:k])
+            c = ctx[k]
+            if c in "SA" and sq_literal_consumer(text, ctx, k):
+                out.append("'\"" + to + "\"" + ("$'" if c == "A" else "'"))
+                report.sq_spliced.append(f"{rel}:{text.count(chr(10), 0, k) + 1} [{r.get('id')}]")
+            else:
+                out.append(to)
+            s = k + len(frm)
+        out.append(text[s:])
+        text = "".join(out)
+    return text
+
+
+def sq_lint_items(text):
+    """셸 확장형 토큰이 확장되지 않는 자리에 남은 곳: [(줄, 문맥 S|A|H, 토큰)]. 주석·escape(\\$) 제외."""
+    if "$" not in text:
+        return []
+    ctx = sh_contexts(text)
+    items, seen = [], set()
+    for m in _SQ_EXPAND_TOKEN.finditer(text):
+        k = m.start()
+        c = ctx[k]
+        if c in "SA" and not sq_literal_consumer(text, ctx, k):
+            continue
+        if c in "SAH":
+            n = text.count("\n", 0, k) + 1
+            if (n, c) not in seen:          # 한 줄에 겹친 토큰(${HARNESS_HOME:-$HOME…})은 1건으로
+                seen.add((n, c))
+                items.append((n, c, m.group()))
+    return items
 
 
 def _any_rule_hits(text, rules):
@@ -375,6 +569,8 @@ def transform(dst_rel, data, manifest, report):
     if not exclusive:
         if kind == "py":
             text = py_transform(dst_rel, text, manifest, report)
+        elif kind == "sh":
+            text = sh_rewrite(dst_rel, text, manifest["rewrite"], report)
         else:
             text = general_rewrite(text, kind, manifest["rewrite"])
     for r in rules:
@@ -675,6 +871,16 @@ def lint(out, manifest, report):
         kind = file_kind(rel, text)
         lines = text.split("\n")
         guarded = any(g.search(text) for g in guards)
+        # (sq) 셸 확장형이 작은따옴표(리터럴 소비자)·따옴표 heredoc 안에 남아 확장되지 않는 자리
+        if kind == "sh":
+            sq_allow = [a for a in L.get("sq_allow", []) if fnmatch.fnmatchcase(rel, a["path"])]
+            for n, c, tok in sq_lint_items(text):
+                item = f"{rel}:{n} [{c}] {tok}"
+                if c == "H" or any(not a.get("pattern") or re.search(a["pattern"], lines[n - 1])
+                                   for a in sq_allow):
+                    report.add_lint_warn("sq", item)
+                else:
+                    report.add_lint("sq", item)
         allowed = [a for a in allow if fnmatch.fnmatchcase(rel, a["path"])]
         for n, ln in enumerate(lines, 1):
             if home in ln:
@@ -783,7 +989,11 @@ def print_report(report, title):
         for x in report.py_unconverted[:MAX_SHOW]:
             print(f"    {x}")
     total = 0
-    for code in ("a", "a2", "b", "c", "d", "e", "f", "LINK_OUT"):
+    if report.sq_spliced:
+        print(f"  [sq 접합 치환] {len(report.sq_spliced)}건 (작은따옴표 리터럴 소비자 자리)")
+        for x in report.sq_spliced[:MAX_SHOW]:
+            print(f"    {x}")
+    for code in ("a", "a2", "b", "c", "d", "e", "f", "sq", "LINK_OUT"):
         items = report.lint.get(code, [])
         total += len(items)
         print(f"  lint ({code}) {'통과' if not items else f'실패 {len(items)}건'}")
