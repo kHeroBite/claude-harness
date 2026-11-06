@@ -28,6 +28,12 @@
 
 set -u
 
+# 임시파일은 전역 변수 하나로만 다룬다. EXIT trap 이 함수 local 을 가리키면 함수가 끝난 뒤
+# set -u 에서 'unbound variable' 이 나고 파일도 남는다(2026-11-06 서버 실측). exit 경로도 EXIT trap 이 지운다.
+_PSN_TMP=""
+cleanup_tmp() { [ -n "$_PSN_TMP" ] && rm -f -- "$_PSN_TMP"; _PSN_TMP=""; return 0; }
+make_tmp() { _PSN_TMP=$(mktemp) || exit 1; trap cleanup_tmp EXIT; }
+
 readonly TOKEN_RE='^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
 readonly HARNESS_RE='^/[A-Za-z0-9._/-]{1,255}$'
 
@@ -193,15 +199,15 @@ cmd_send() {
         return 0
     fi
     [ $# -eq 3 ] || usage
-    local alias="$1" project="$2" tag="$3" rh tmp rc
+    local alias="$1" project="$2" tag="$3" rh rc
     need_token "ssh 별칭" "$alias"; need_token "프로젝트" "$project"; need_tag "$tag"
     rh=$(remote_harness) || exit 2
-    tmp=$(mktemp) || exit 1
-    trap 'rm -f "$tmp"' EXIT
-    python3 -c "$PY_HELPER" sanitize >"$tmp" || exit 2
+    make_tmp
+    python3 -c "$PY_HELPER" sanitize >"$_PSN_TMP" || exit 2
     need_alias "$alias"
-    ssh_run "$alias" "$rh" recv "$project" "$tag" "$(self_host)" <"$tmp"
+    ssh_run "$alias" "$rh" recv "$project" "$tag" "$(self_host)" <"$_PSN_TMP"
     rc=$?
+    cleanup_tmp
     [ $rc -eq 0 ] || { err "ssh 전달 실패 rc=$rc"; exit 1; }
     echo "전달 완료: $alias $project [$tag]"
 }
@@ -239,18 +245,18 @@ cmd_outbox_ack() {
 
 cmd_pull() {
     [ $# -eq 2 ] || usage
-    local alias="$1" project="$2" rh tmp n rc
+    local alias="$1" project="$2" rh n rc
     need_token "ssh 별칭" "$alias"; need_token "프로젝트" "$project"
     rh=$(remote_harness) || exit 2
     need_alias "$alias"
-    tmp=$(mktemp) || exit 1
-    trap 'rm -f "$tmp"' EXIT
-    ssh_run "$alias" "$rh" outbox-take "$project" </dev/null >"$tmp"
+    make_tmp
+    ssh_run "$alias" "$rh" outbox-take "$project" </dev/null >"$_PSN_TMP"
     rc=$?
     [ $rc -eq 0 ] || { err "원격 outbox 읽기 실패 rc=$rc"; exit 1; }
-    n=$(wc -c <"$tmp" | tr -d ' ')
-    if [ "$n" = 0 ]; then echo "pulled=0 skipped=0"; return 0; fi
-    python3 -c "$PY_HELPER" ingest "$(inbox_path "$project")" "$project" <"$tmp" || exit 1
+    n=$(wc -c <"$_PSN_TMP" | tr -d ' ')
+    if [ "$n" = 0 ]; then cleanup_tmp; echo "pulled=0 skipped=0"; return 0; fi
+    python3 -c "$PY_HELPER" ingest "$(inbox_path "$project")" "$project" <"$_PSN_TMP" || exit 1
+    cleanup_tmp
     # 로컬 기록이 끝난 뒤에만 원격에서 가져간 바이트만큼 지운다(그 사이 새로 쌓인 건 남는다).
     ssh_run "$alias" "$rh" outbox-ack "$project" "$n" </dev/null
     rc=$?
