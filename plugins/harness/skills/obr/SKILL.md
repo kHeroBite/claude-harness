@@ -51,15 +51,19 @@ Step0_프로젝트_감지 (절대 규칙 — 스킵 금지):
   방법: CWD의 PROJECT.md 또는 *.sln 또는 main.py 등으로 현재 프로젝트 판별
   명령: |
     CWD=$(pwd)
-    PROJECT=$(basename "$CWD" | tr '[:upper:]' '[:lower:]')
+    if [[ "$CWD" == *"/Jarvis"* ]]; then PROJECT="jarvis"
+    elif [[ "$CWD" == *"/rtx5070"* ]]; then PROJECT="rtx5070"
+    elif [[ "$CWD" == *"/MaiX"* ]]; then PROJECT="maix"
+    elif [[ "$CWD" == *"/MARS"* ]]; then PROJECT="mars"
+    else PROJECT=$(basename "$CWD" | tr '[:upper:]' '[:lower:]'); fi
     echo "📦 프로젝트 감지: $PROJECT (CWD=$CWD)"
-  적용: Skill('oinfra_{PROJECT}') 로딩 → oinfra_{PROJECT} 빌드/배포 섹션 자동 선택
+  적용: {프로젝트 루트}/INFRA.md 읽기(필요 절만) → INFRA.md 빌드/배포 절 자동 선택
   금지: 최근 작업 맥락이나 대화 내용으로 프로젝트를 추측하는 행위 (CWD만 신뢰)
 
 Step0.5_인프라_로딩 (절대 규칙 — 스킵 금지):
-  실행: Skill('oinfra_{PROJECT}') 호출
+  실행: {프로젝트 루트}/INFRA.md 읽기(필요 절만)
   목적: 빌드/배포 명령, 경로, 환경변수 등 프로젝트 고유 설정 로딩
-  실패_시: oinfra_{PROJECT} 스킬이 없으면 경고 출력 후 otest_build/otest_run 기본 동작으로 진행
+  실패_시: INFRA.md 가 없으면 경고 출력 후 otest_build/otest_run 기본 동작으로 진행
 
 Step1_빌드_배포:
   Skill('otest_build') + Skill('otest_run') 동시 호출

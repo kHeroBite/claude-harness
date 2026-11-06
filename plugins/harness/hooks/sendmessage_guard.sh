@@ -1,8 +1,4 @@
 #!/bin/bash
-# >>> harness preamble
-_HP="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)}"
-[ -f "$_HP/hooks/harness_preamble.sh" ] && . "$_HP/hooks/harness_preamble.sh" 2>/dev/null || { [ -f "$_HP/harness_preamble.sh" ] && . "$_HP/harness_preamble.sh" 2>/dev/null; } || true
-# <<< harness preamble
 # sendmessage_guard.sh — SendMessage에서 summary 누락 방지
 # PreToolUse:SendMessage 매처
 

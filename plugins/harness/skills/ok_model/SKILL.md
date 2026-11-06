@@ -13,16 +13,18 @@ invocation:
 
 ## 모델_설정_규칙 (실증 확인됨, 2026-04-28)
 
+원칙: 모델 상세 버전은 지정하지 않는다. 별칭만 쓰며 최신판이 자동 선택된다.
+
 ```yaml
 Agent_도구_model_파라미터 (실측):
   허용_값: ["sonnet", "opus", "haiku", "fable"]만 (enum 엄격)
-  거절_예시: "opus[1m]", "claude-opus-4-7[1m]", "opus-1m" → InputValidationError
+  거절_예시: "opus[1m]", "claude-opus[1m]", "opus-1m" → InputValidationError
 
 서브에이전트_default_동작 (실측):
-  model="opus" → Opus 4.7 with 1M context (1M 자동 적용, 별도 명시 불필요)
-  model="sonnet" → Sonnet 4.6 (200K context default)
-  model="haiku" → Haiku 4.5 (default)
-  model="fable" → Claude Fable 5.1 (claude-fable-5-1), Opus 상위 Mythos 티어, adaptive thinking 기본
+  model="opus" → 최신 Opus with 1M context (1M 자동 적용, 별도 명시 불필요)
+  model="sonnet" → 최신 Sonnet (200K context default)
+  model="haiku" → 최신 Haiku (default)
+  model="fable" → 최신 Fable, Opus 상위 Mythos 티어, adaptive thinking 기본
 
 서브에이전트_effortLevel (실측 — 변경 불가):
   default: "medium" 고정
@@ -127,7 +129,7 @@ Ultrathink_재확인:
 
 > Anthropic Engineering 원칙: "Every component in a harness encodes an assumption about what the model can't do alone. Worth stress testing whenever the model improves."
 
-마지막_검토일: 2026-09-06 (claude-sonnet-4-6 / claude-opus-4-6 / claude-fable-5-1 기준)
+마지막_검토일: 2026-09-06
 
 재평가_트리거_조건 (아래 중 하나 해당 시 /oretro 또는 /oaudit 실행):
   - 새 Claude 모델 출시 (Opus/Sonnet/Haiku 버전 업)

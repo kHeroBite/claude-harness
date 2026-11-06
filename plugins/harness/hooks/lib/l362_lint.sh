@@ -1,8 +1,4 @@
 #!/bin/bash
-# >>> harness preamble
-_HP="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)}"
-[ -f "$_HP/hooks/harness_preamble.sh" ] && . "$_HP/hooks/harness_preamble.sh" 2>/dev/null || { [ -f "$_HP/harness_preamble.sh" ] && . "$_HP/harness_preamble.sh" 2>/dev/null; } || true
-# <<< harness preamble
 # l362_lint.sh — session_manager.py 수정 시 L-362 위반 정적 검사
 # 호출: write_guard.sh가 session_manager.py (또는 oio-mcp-server/*.py) 대상 write 감지 시
 # 구현: Python 3 내장 ast 모듈만 사용 (외부 의존성 금지)

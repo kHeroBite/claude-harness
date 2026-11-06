@@ -1,6 +1,6 @@
 ---
 name: osonnet
-description: "Sonnet 4.6 모델로 팀에이전트를 spawn하여 사용자 요청을 위임 처리. 사용자가 '/osonnet' 호출 시 메인은 절대 직접 처리하지 않고 Sonnet 모델 팀에이전트가 작업 수행 후 결과만 메인에 보고. 일반 작업/구현/수정/질문/분석 등 표준 난이도 작업에 사용. 파이프라인 상태(IDLE/OK/PLAN/DEV/TEST/DONE/FINISH) 무관 동작."
+description: "최신 Sonnet 모델로 팀에이전트를 spawn하여 사용자 요청을 위임 처리. 사용자가 '/osonnet' 호출 시 메인은 절대 직접 처리하지 않고 Sonnet 모델 팀에이전트가 작업 수행 후 결과만 메인에 보고. 일반 작업/구현/수정/질문/분석 등 표준 난이도 작업에 사용. 파이프라인 상태(IDLE/OK/PLAN/DEV/TEST/DONE/FINISH) 무관 동작."
 invocation:
   user_callable: true
   pipeline_callable: true
@@ -8,7 +8,7 @@ invocation:
   calls: []
 ---
 
-# osonnet — Sonnet 4.6 모델 팀에이전트 위임
+# osonnet — 최신 Sonnet 모델 팀에이전트 위임
 
 > 메인은 작업하지 않는다. 사용자 요청을 Sonnet 모델 팀에이전트에게 위임하고 결과만 받는다.
 
@@ -37,7 +37,7 @@ Agent(
   prompt="""
 사용자 요청: {원문}
 
-당신은 Sonnet 4.6 모델로 작동하는 위임 팀에이전트입니다.
+당신은 최신 Sonnet 모델로 작동하는 위임 팀에이전트입니다.
 위 사용자 요청을 처리하세요.
 
 규칙:
@@ -77,6 +77,6 @@ OK/PLAN/DEV/TEST/DONE/FINISH: 정상 spawn (write_guard 통과 — Agent 도구 
 
 | 스킬 | 모델 | 용도 |
 |------|------|------|
-| /oopus | Opus 4.7 | 복잡한 분석/설계/디버깅 |
-| /osonnet | Sonnet 4.6 | 일반 작업 (이 스킬) |
-| /ohaiku | Haiku 4.5 | 빠른 작업 (간단 답변/탐색) |
+| /oopus | 최신 Opus | 복잡한 분석/설계/디버깅 |
+| /osonnet | 최신 Sonnet | 일반 작업 (이 스킬) |
+| /ohaiku | 최신 Haiku | 빠른 작업 (간단 답변/탐색) |

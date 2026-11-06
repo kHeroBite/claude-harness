@@ -1,8 +1,4 @@
 #!/usr/bin/env bash
-# >>> harness preamble
-_HP="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)}"
-[ -f "$_HP/hooks/harness_preamble.sh" ] && . "$_HP/hooks/harness_preamble.sh" 2>/dev/null || { [ -f "$_HP/harness_preamble.sh" ] && . "$_HP/harness_preamble.sh" 2>/dev/null; } || true
-# <<< harness preamble
 # oio_fallback_guard.sh — PostToolUse: mcp__oio__bash_exec 실패 시 oio_bash_failed 플래그 설정
 # 역할: oio bash_exec 실패를 감지하여 write_guard.sh의 fallback 허용 조건 설정
 
@@ -39,7 +35,7 @@ except Exception as e:
 if [ "$IS_ERROR" = "true" ]; then
     # oio bash_exec 실패 플래그 설정 (write_guard.sh가 참조)
     # session_id.sh의 resolve_uuid로 UUID 결정
-    source "${HARNESS_HOOK_DIR}/lib/session_id.sh"
+    source "${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/session_id.sh"
     if resolve_uuid "$INPUT" 2>/dev/null && [ -n "${UUID:-}" ]; then
         touch "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/session-env/${UUID}/oio_bash_failed" 2>/dev/null || true
     fi

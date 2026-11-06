@@ -49,7 +49,9 @@ summary = {
     "avg_interruptions_per_session": round(total_interruptions/max(total,1), 2)
 }
 
-output_path = sys.argv[1] if len(sys.argv) > 1 else "$HOME/.claude/session-env/oinsights_session_meta_summary.json"
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _oi_paths import default_output
+output_path = default_output("oinsights_session_meta_summary.json", sys.argv[1] if len(sys.argv) > 1 else None)
 with open(output_path, "w") as out:
     json.dump(summary, out, ensure_ascii=False, indent=2)
 print(json.dumps(summary, ensure_ascii=False, indent=2))

@@ -35,7 +35,7 @@ oplan spawn 시 `hint_plan=oplan_debate`를 전달하여 tier와 무관하게 op
 ```
 Skill('oplan') 호출. hint_plan=oplan_debate — tier는 탐색 후 실규모로 결정, 계획 방식은 oplan_debate 우선 사용.
 사용자 요구사항: {원문}.
-Skill('oinfra_{project}') 호출.
+프로젝트 인프라는 INFRA.md 참조(경로는 프롬프트의 [INFRA_INJECT] 줄).
 PIPELINE_UUID={UUID}. 대화ID: {CONV_ID}
 ```
 

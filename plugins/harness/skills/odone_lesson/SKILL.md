@@ -19,6 +19,7 @@ invocation:
 ```yaml
 실행_순서:
   # [P2-isolation] ⓪ cross-session 스캔 제거됨 (2026-04-24)
+  # L-403: 타 세션 errors.md 스캔 제거 완료(Fix 33) — 교훈 수집은 자기 세션 session-env/${UUID}/ 에서만 한다
   # 이전: $HOME/.claude/session-env/*/errors.md 전체 순회 + 세션ID(앞8자) stdout 출력
   # 위반: §(a) 허가된 읽기 목록(state/team_name/heartbeat/config.json) 외 파일 읽기,
   #        §(c) 타 세션 UUID 접두어 stdout 노출 (앞8자도 UUID 노출에 해당)
@@ -116,6 +117,11 @@ priority_기준:
 완료_기준: ①~⑤ 모든 해당 단계 완료 (tier에 따라 생략 가능한 단계 제외)
 반환값: "odone_lesson 완료"
 ```
+
+## 재요청 감지 시 커버리지 우선 점검 (L-497)
+
+사용자가 과거와 같은 요구를 다시 하면 "이미 구현됨"으로 닫지 않는다. 먼저 기존 기능의 실제 커버리지(미탐·우회 경로)를 실측하고, 구멍이 있으면 재발로 기록해 조치한다.
+기능 존재와 문제 해결은 다르다(L-497, L-492 사례).
 
 ## 재발방지 완벽 검증 절차 (2026-04-12 신규)
 

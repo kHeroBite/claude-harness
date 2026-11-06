@@ -9,7 +9,7 @@
 ```bash
 # [P2-isolation §(c)] Fix 36: find session-env/* 전체 순회 → 자기 세션(CURRENT_UUID)만으로 제한
 # 타 세션 UUID를 echo로 stdout 출력하면 §(c) 위반이므로 UUID 출력 없이 파일 통계만 표시
-source "${HARNESS_HOOK_DIR}/lib/session_id.sh"
+source ${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/session_id.sh
 resolve_uuid ""
 CURRENT_UUID="${UUID:-}"
 if [ -z "$CURRENT_UUID" ]; then

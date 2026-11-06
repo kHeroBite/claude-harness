@@ -1,8 +1,4 @@
 #!/bin/bash
-# >>> harness preamble
-_HP="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)}"
-[ -f "$_HP/hooks/harness_preamble.sh" ] && . "$_HP/hooks/harness_preamble.sh" 2>/dev/null || { [ -f "$_HP/harness_preamble.sh" ] && . "$_HP/harness_preamble.sh" 2>/dev/null; } || true
-# <<< harness preamble
 # 메인 에이전트의 ogrill 자율 호출을 차단하는 PreToolUse:Skill hook
 
 set -u

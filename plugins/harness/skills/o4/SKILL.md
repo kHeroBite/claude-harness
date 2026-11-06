@@ -36,7 +36,7 @@ o4_분류_조건: # (→ ok/SKILL.md 수정_작업_분류 섹션 참조 — 단�
     oplan_debate: 아키텍처 전면 변경 OR 500줄+, 새 모듈 3개+ OR 이해관계자 충돌 가능성
     oplan_deep: 위 조건 미해당 시 기본값 (Scout ×1~3 + 대안 + YAGNI + SIM_PROCEDURE(5회) + oplan_review)
   - otest: Phase 0~4 전체 + UI(조건부)
-    역라우팅: 예상-실제 비교 → 불일치 시 odev/oplan 복귀 (≤10회)
+    역라우팅: 예상-실제 비교 → 불일치 시 odev/oplan 복귀 (≤20회)
   - odone Full Path: review → trans → hooks → skills → cleanup → docs → git
 
 동적_승격:

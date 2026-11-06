@@ -98,7 +98,7 @@ invocation:
   - MEMORY.md + topic 파일 전체 (ext4)
   - LESSONS.md (프로젝트 루트, NTFS → cp로 읽기)
   - 최적화 대상 SKILL.md 파일들
-위치: ~/.claude/backups/
+위치: ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/backups/
 네이밍: {파일명}.{YYYYMMDD_HHMMSS}
 보관: 동일 PREFIX별 최신 3세대, 초과분 자동 삭제
 실패_시: 경고 출력 후 계속
@@ -373,7 +373,7 @@ oplan_debate_연계:
 실패_항목: $HOME/.claude/session-env/${UUID}/logs/oinsights_deferred.json에 저장
 
 조치_유형:
-  hook_추가:    {대상: ~/.claude/hooks/, NTFS_주의: AI/.claude/hooks/ 원본 수정}
+  hook_추가:    {대상: ${HARNESS_HOME:-$HOME/.harness}/current/hooks/, NTFS_주의: AI/.claude/hooks/ 원본 수정}
   스킬_강화:    {대상: skills/{스킬명}/SKILL.md}
   CLAUDE_md:   {대상: CLAUDE.md}
   MEMORY_기록: {대상: memory/MEMORY.md, 방법: 패턴기록}
@@ -425,8 +425,8 @@ oplan_debate_연계:
     - 미적용: oinsights_deferred.json 저장
   롤백_안내: |
     Phase 0에서 백업한 원본으로 복원 가능:
-      NTFS 파일: cp ~/.claude/backups/{파일명}.{TS} → rsync
-      ext4 파일: cp ~/.claude/backups/{파일명}.{TS} {원본경로}
+      NTFS 파일: cp ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/backups/{파일명}.{TS} → rsync
+      ext4 파일: cp ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/backups/{파일명}.{TS} {원본경로}
   권장사항: "N일 후 재실행" / "facets 없으면 /insights 먼저"
 ```
 
@@ -459,18 +459,21 @@ oplan_debate_연계:
 python3 scripts/analyze_lessons_cleanup.py
 ```
 
+경로 결정 규칙(scripts/_oi_paths.py 공용): LESSONS.md·CLAUDE.md 는 ① `--lessons`/`--claude-md` 인자 ② 환경변수 `OINSIGHTS_LESSONS`/`OINSIGHTS_CLAUDE_MD` ③ `CLAUDE_PROJECT_DIR` ④ cwd 와 상위(홈에서 중단) ⑤ 최후 폴백(`/mnt/c/DATA/Project/*/`) 순으로 찾고, 결과 JSON 의 `lessons_source` 에 출처를 남긴다.
+출력 기본값은 `$CLAUDE_CONFIG_DIR/session-env/$PIPELINE_UUID/logs/`(UUID 부재 시 `session-env/oinsights/`)이며 `--output` 으로 바꾼다.
+
 ### 5.5-2~4. 선택 → 실행 → 보고
 
 ```yaml
 적용_형식: 전체 자동 적용 (사용자 확인 없이 순차 실행)
 옵션:
-  - "적용완료 N개 제거" — 스킬/hooks/CLAUDE.md 반영 항목 삭제
+  - "적용완료 N개 아카이브 이관" — 스킬/hooks/CLAUDE.md 반영 항목을 LESSONS_ARCHIVE.md 로 이관 (`python3 scripts/archive_applied_lessons.py` 기본 dry-run, `--apply` 로 실행, `--verify` 로 검증)
   - "중복 N개 제거" — 키워드 겹침 50%+ 항목 중 최신/상세 1개 유지
   - "유사 N그룹 통합" — 공유 키워드 항목을 최저번호로 통합
   - "미적용 N개 적용" — 규칙 추가 후 LESSONS.md 제거
 
 실행_검증:
-  적용완료_제거: ### L-NNN 섹션 전체 삭제 → 헤더수 확인
+  적용완료_이관: 해당 L-NNN 섹션(헤더 줄부터 다음 L- 헤더 또는 같거나 상위 레벨의 일반 헤더 직전까지, 중복 번호는 해당 line 의 섹션만)을 archive_applied_lessons.py --apply 로 LESSONS_ARCHIVE.md 에 이관 → --verify 로 헤더수(LESSONS+ARCHIVE 합계 보존) 확인
   통합: 핵심내용 재작성 → 원본삭제+통합삽입 → 전후 항목수 비교
   미적용: 스킬/hook/CLAUDE.md에 규칙추가 → 파일 존재 확인
   NTFS_주의: oio 도구 사용 (자동 rsync)
@@ -493,11 +496,11 @@ python3 scripts/analyze_lessons_cleanup.py
 ```yaml
 # [P2-isolation] §(b) 소유권 증명: leadSessionId == MY_UUID 확인 후 삭제만 허용.
 # 타 세션 소유 팀(leadSessionId != MY_UUID) 삭제 절대 금지.
-대상: ~/.claude/teams/ 하위 중 leadSessionId == MY_UUID인 팀만 (default 제외)
+대상: ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/teams/ 하위 중 leadSessionId == MY_UUID인 팀만 (default 제외)
 판정: 1) config.json.leadSessionId == MY_UUID  2) 해당 팀의 모든 멤버 pane이 tmux에서 소멸
 방법: |
   MY_UUID="${UUID}"
-  for team_dir in ~/.claude/teams/*/; do
+  for team_dir in ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/teams/*/; do
     team=$(basename "$team_dir")
     [ "$team" = "default" ] && continue
     cfg="${team_dir}config.json"
@@ -530,13 +533,13 @@ python3 scripts/analyze_lessons_cleanup.py
   python3 << 'PYEOF'
   import os, subprocess, sys
 
-  SESSION_BASE = os.path.expanduser("~/.claude/session-env")
+  SESSION_BASE = os.path.expanduser("${CLAUDE_CONFIG_DIR:-$HOME/.claude}/session-env")
   MY_UUID = os.environ.get("MY_UUID", "")
   if not MY_UUID:
     print("⚠️ MY_UUID 미설정 — 스킵")
     sys.exit(0)
 
-  SESSION_OPS = "<프로젝트 루트>/MCP-Servers/oio-mcp-server/session_ops.py"
+  SESSION_OPS = "${HARNESS_HOME:-$HOME/.harness}/current/mcp-servers/oio/session_ops.py"
   sys.path.insert(0, os.path.dirname(SESSION_OPS))
   from session_ops import session_state
 
@@ -602,7 +605,7 @@ python3 scripts/analyze_lessons_cleanup.py
 방법: |
   python3 << 'PYEOF'
   import os, time
-  base = os.path.expanduser('~/.claude/session-env')
+  base = os.path.expanduser('${CLAUDE_CONFIG_DIR:-$HOME/.claude}/session-env')
   my_uuid = '${MY_UUID}'
   now = time.time()
   # [P2-isolation] 자기 세션 내부 임시 파일(compact/ 하위 7일+ 경과)만 정리
@@ -634,24 +637,27 @@ python3 scripts/analyze_lessons_cleanup.py
 수정_파일_위치_판별:
   프로젝트_파일: CLAUDE.md, LESSONS.md 등 → 현재 프로젝트 git
   스킬_hook_파일: .claude/skills/*, .claude/hooks/* → AI 원본 프로젝트 git
-    경로: <프로젝트 루트>/ (심볼릭링크 원본)
-  MEMORY_파일: ~/.claude/projects/*/memory/ → git 미추적 (커밋 불필요)
+    경로: ${HARNESS_HOME:-$HOME/.harness}/current/ (심볼릭링크 원본)
+  MEMORY_파일: ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/*/memory/ → git 미추적 (커밋 불필요)
 
 커밋_절차:
   1. 현재 프로젝트:
-     git add {수정된 프로젝트 파일}
-     git commit -m "🔧 oinsights 자동 개선 적용 — {적용 항목 수}개 by {모델버전}"
-     git push
+     WT=$(python3 "${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/wt_lib.py" ensure --repo . --sid <UUID> | python3 -c 'import sys,json; print(json.load(sys.stdin)["worktree"])')   # 세션 worktree 확보(ensure 출력 JSON 의 worktree 키). <UUID> 는 36자 full UUID(메인=🆔 [UUID] 또는 compact 복원 `- UUID:`, 팀원=PIPELINE_UUID)
+     : "${WT:?worktree 확보 실패}"   # WT 가 비면 중단. WT=… 와 이후 명령은 같은 셸 호출 안에서 실행한다(&& 로 이어 쓰면 다른 셸에서 실행돼 WT 가 빈다)
+     git -C "$WT" add {수정된 프로젝트 파일}   # worktree 에서 커밋, 원본 직접 커밋 금지
+     git -C "$WT" commit -m "🔧 oinsights 자동 개선 적용 — {적용 항목 수}개 by {모델계열}"
+     python3 "${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/wt_lib.py" push --sid <UUID> --repo "$WT"   # 단일 push 경로, 강제 push 금지. <UUID> 는 메인=hook 이 알린 세션 UUID, 팀원=PIPELINE_UUID
 
   2. AI 원본 프로젝트 (스킬/hook 수정 시):
-     cd <프로젝트 루트>
-     git add {수정된 스킬/hook 파일}
-     git commit -m "🔧 oinsights 자동 개선 — {수정 대상 요약} by {모델버전}"
-     git push
+     WT=$(python3 "${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/wt_lib.py" ensure --repo ${HARNESS_HOME:-$HOME/.harness}/current --sid <UUID> | python3 -c 'import sys,json; print(json.load(sys.stdin)["worktree"])')   # 원본에서 직접 커밋하지 않고 worktree 경유
+     : "${WT:?worktree 확보 실패}"   # WT 가 비면 중단(같은 셸 호출 안에서 실행)
+     git -C "$WT" add {수정된 스킬/hook 파일}
+     git -C "$WT" commit -m "🔧 oinsights 자동 개선 — {수정 대상 요약} by {모델계열}"
+     python3 "${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/wt_lib.py" push --sid <UUID> --repo "$WT"   # 단일 push 경로, 강제 push 금지
 
 커밋_메시지_규칙:
   - 한국어 + 이모지 (CLAUDE.md 커밋 정책 준수)
-  - 제목 마지막에 "by {모델버전}" 추가
+  - 제목 마지막에 "by {모델계열}" 추가
   - Co-Authored-By 태그 포함
 
 주의:

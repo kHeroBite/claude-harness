@@ -1,8 +1,4 @@
 #!/bin/bash
-# >>> harness preamble
-_HP="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)}"
-[ -f "$_HP/hooks/harness_preamble.sh" ] && . "$_HP/hooks/harness_preamble.sh" 2>/dev/null || { [ -f "$_HP/harness_preamble.sh" ] && . "$_HP/harness_preamble.sh" 2>/dev/null; } || true
-# <<< harness preamble
 # cleanup_team_panes.sh — ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/session-env/${SID}/agents/ 파일 기반 pane 정리
 # 사용법: cleanup_team_panes.sh --sid <UUID> [--team-name <팀명>] [--dry-run]
 #
@@ -24,8 +20,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 # 사이클46 축① — 반대편 base 미러 (읽는 쪽이 다른 base 를 볼 수 있다)
-source "${HARNESS_HOOK_DIR}/lib/session_mirror.sh" 2>/dev/null
-type _mirror_file >/dev/null 2>&1 || _mirror_file() { :; }
+source "${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/session_mirror.sh" 2>/dev/null
+declare -F _mirror_file >/dev/null 2>&1 || _mirror_file() { :; }
 
 [ -z "$SID" ] && { echo "❌ --sid 필수"; exit 1; }
 
@@ -201,6 +197,7 @@ fi  # SKIP_AGENT_CLEANUP
 if [ "$DRY_RUN" = false ]; then
   MY_PANE=$(tmux display-message -p '#{pane_id}' 2>/dev/null || true)
   MY_SESSION=$(tmux display-message -p '#{session_name}' 2>/dev/null || true)
+  # L-312: MY_PANE 빈값이면 고아 pane 정리 스킵(메인 pane 보호)
   if [ -z "$MY_PANE" ]; then
     echo "⚠️ MY_PANE 빈값 — 고아 pane 정리 스킵 (메인 pane 보호)"
   elif [ -n "$MY_SESSION" ]; then
@@ -244,9 +241,11 @@ if [ "$DRY_RUN" = false ]; then
           CHILD_CMD=""
           if [ -n "$SPID" ]; then
             CHILD_PID=$(pgrep -P "$SPID" 2>/dev/null | head -1)
-            [ -n "$CHILD_PID" ] && CHILD_CMD=$(ps -p "$CHILD_PID" -o cmd= 2>/dev/null || true)
+            # ★열 폭 무관★ ps -ww — COLUMNS=80 이면 cmd 가 잘려 --parent-session-id 토큰이 끊긴다.
+            [ -n "$CHILD_PID" ] && CHILD_CMD=$(ps -ww -p "$CHILD_PID" -o cmd= 2>/dev/null || true)
           fi
-          if [ -n "$CHILD_CMD" ] && echo "$CHILD_CMD" | grep -qF -- "--parent-session-id $SID"; then
+          # 전체 토큰 일치 — UUID 뒤 공백/끝을 요구해 접두 오매칭 방지
+          if [ -n "$CHILD_CMD" ] && echo "$CHILD_CMD " | grep -qF -- "--parent-session-id $SID "; then
             echo "🔍 고아 에이전트 pane 감지: $SPANE (CMD=$SCMD, 자식=$CHILD_CMD)"
           else
             continue  # 자기 팀 소속 아님 → 스킵 (L-213 보호)

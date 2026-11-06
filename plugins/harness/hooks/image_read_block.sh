@@ -1,8 +1,4 @@
 #!/usr/bin/env bash
-# >>> harness preamble
-_HP="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)}"
-[ -f "$_HP/hooks/harness_preamble.sh" ] && . "$_HP/hooks/harness_preamble.sh" 2>/dev/null || { [ -f "$_HP/harness_preamble.sh" ] && . "$_HP/harness_preamble.sh" 2>/dev/null; } || true
-# <<< harness preamble
 # image_read_block.sh — PNG/JPG 등 이미지 Read 차단 (API 400 재발방지)
 # PreToolUse hook (matcher=Read)
 # 입력: stdin JSON {"tool_name":"Read","tool_input":{"file_path":"..."}}

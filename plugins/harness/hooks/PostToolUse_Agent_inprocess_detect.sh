@@ -1,8 +1,4 @@
 #!/bin/bash
-# >>> harness preamble
-_HP="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)}"
-[ -f "$_HP/hooks/harness_preamble.sh" ] && . "$_HP/hooks/harness_preamble.sh" 2>/dev/null || { [ -f "$_HP/harness_preamble.sh" ] && . "$_HP/harness_preamble.sh" 2>/dev/null; } || true
-# <<< harness preamble
 # Agent() 가 ★팀에이전트가 아니라 in-process 서브에이전트로 강등★ 되었는지 실측 탐지하는 hook
 # PostToolUse:Agent — ★차단하지 않는다. 사실을 알린다.★ (F-AGENT-2)
 #
@@ -36,15 +32,15 @@ _HP="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null
 # 진짜 문제는 "팀에이전트인 줄 알고 DEV 로 전이하는 것" 이므로,
 # ★메인이 그 사실을 알게 하는 것★ 이 정확한 처방이다. 판단은 메인이 한다.
 #
-# 비상 스위치: touch $HOME/.claude/hooks/DISABLE_INPROCESS_DETECT
+# 비상 스위치: touch ${HARNESS_HOME:-$HOME/.harness}/current/hooks/DISABLE_INPROCESS_DETECT
 # fail-open: 전 경로 exit 0. 어떤 경우에도 작업을 막지 않는다.
 
 set -u
 
-_HOOK_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd)" || _HOOK_DIR="$HOME/.claude/hooks"
-[ -r "${_HOOK_DIR}/lib/session_id.sh" ] || _HOOK_DIR="$HOME/.claude/hooks"
+_HOOK_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd)" || _HOOK_DIR="${HARNESS_HOME:-$HOME/.harness}/current/hooks"
+[ -r "${_HOOK_DIR}/lib/session_id.sh" ] || _HOOK_DIR="${HARNESS_HOME:-$HOME/.harness}/current/hooks"
 
-for _sw in "${_HOOK_DIR}/DISABLE_INPROCESS_DETECT" "$HOME/.claude/hooks/DISABLE_INPROCESS_DETECT"; do
+for _sw in "${_HOOK_DIR}/DISABLE_INPROCESS_DETECT" "${HARNESS_HOME:-$HOME/.harness}/current/hooks/DISABLE_INPROCESS_DETECT"; do
   [ -f "$_sw" ] && exit 0
 done
 
@@ -59,6 +55,19 @@ INPUT=$(timeout 5 cat 2>/dev/null) || exit 0
 resolve_uuid "$INPUT" 2>/dev/null || exit 0
 [ -z "${UUID:-}" ] && exit 0
 
+# [F-OTEAM] 메인이 name 을 준 Agent 를 띄웠으면 증표를 쓴다. 팀원·서브에이전트의 Agent 호출은 메인의 위임 증거가 아니다.
+#   in-process 강등 여부는 아래 F-AGENT-2 가 따로 알린다. 게이트는 강등을 막지 않는다(oteam 스킬이 결과 보고에 적는다).
+_OT_AID=$(echo "$INPUT" | jq -r '.agent_id // empty' 2>/dev/null)
+_OT_NM=$(echo "$INPUT" | jq -r '.tool_input.name // empty' 2>/dev/null)
+_OT_SID=$(echo "$INPUT" | jq -r '.session_id // empty' 2>/dev/null)
+if [ -z "$_OT_AID" ] && [ -z "${PIPELINE_UUID:-}" ] && [ -n "$_OT_NM" ] && [ -n "$_OT_SID" ]; then
+  if ! { . "${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/chain_agent.sh" 2>/dev/null && chain_agent_resolve 2>/dev/null; }; then
+    for _ot_b in "${CLAUDE_CONFIG_DIR:-$HOME/.claude}" "$HOME/.claude"; do
+      [ -f "$_ot_b/session-env/$_OT_SID/oteam_required" ] && : > "$_ot_b/session-env/$_OT_SID/oteam_spawned" 2>/dev/null
+    done
+  fi
+fi
+
 # ── 요청에 team_name 이 있었는지 확인 ─────────────────────────────────────
 # team_name 없이 부른 서브에이전트는 애초에 팀에이전트를 의도하지 않았으므로 대상 아님.
 _REQ_TEAM=$(echo "$INPUT" | jq -r '.tool_input.team_name // empty' 2>/dev/null)
@@ -69,9 +78,29 @@ _NAME=$(echo "$INPUT" | jq -r '.tool_input.name // "unnamed"' 2>/dev/null)
 # ── ★핵심 판정★ 내 UUID 소유 에이전트 프로세스가 실제로 존재하는가 ───────
 # 팀에이전트라면 --parent-session-id <내 UUID> 를 가진 프로세스가 반드시 있다.
 # 주의: spawn 직후 프로세스가 뜨기까지 약간의 지연이 있을 수 있어 짧게 재시도한다.
+# ★명령줄은 /proc/<pid>/cmdline 에서 읽는다★ — `ps -eo args` 는 hook 환경의 COLUMNS(tmux 상속 80)에
+#   맞춰 잘려 --parent-session-id 토큰이 통째로 사라진다(2026-10-10 실측: 항상 0건).
+#   NUL→줄바꿈 후 "--parent-session-id" 다음 줄이 UUID 와 ★전체 일치★ 하는지 본다(접두 오매칭 방지).
+#   /proc 판독이 전무하면 `ps -eww`(폭 무제한, COLUMNS 제거) 로 폴백한다.
+_count_parent_procs() {
+  local _n=0 _f _seen=0
+  for _f in /proc/[0-9]*/cmdline; do
+    [ -r "$_f" ] || continue
+    _seen=1
+    if tr '\0' '\n' < "$_f" 2>/dev/null \
+       | awk -v u="$UUID" 'p && $0==u {f=1} {p=($0=="--parent-session-id")} $0=="--parent-session-id="u {f=1} END{exit !f}'; then
+      _n=$((_n+1))
+    fi
+  done
+  if [ "$_seen" -eq 0 ]; then
+    _n=$(env -u COLUMNS ps -eww -o args= 2>/dev/null \
+         | awk -v u="$UUID" '{for(i=1;i<NF;i++) if($i=="--parent-session-id" && $(i+1)==u){c++; break}} END{print c+0}')
+  fi
+  echo "${_n:-0}"
+}
 _PROC_CNT=0
 for _try in 1 2 3; do
-  _PROC_CNT=$(ps -eo args 2>/dev/null | grep -- "--parent-session-id ${UUID}" | grep -vc "grep")
+  _PROC_CNT=$(_count_parent_procs)
   [ "${_PROC_CNT:-0}" -gt 0 ] && break
   sleep 1
 done
@@ -84,6 +113,21 @@ _TS=$(date -Iseconds 2>/dev/null || date)
 if [ "${_PROC_CNT:-0}" -gt 0 ]; then
   # 정상 — 팀에이전트 프로세스 실존. SCAN 라인만 남겨 "관측이 돌았음" 을 증명한다.
   echo "${_TS} OK name=${_NAME} team=${_REQ_TEAM} procs=${_PROC_CNT}" >> "$_LOG" 2>/dev/null
+  exit 0
+fi
+
+# ── 오진 정정: 응답이 팀원 spawn 을 증명하면 in-process 로 단정하지 않는다 ──
+# tool_response 가 팀원 spawn 성공을 증명하면 프로세스 0건은 부하로 인한 기동 지연일 수 있다.
+#   1순위: 실물 tool_response 는 dict — agent_id / teammate_id / agentId 키에 "<name>@<team>" 이 있다.
+#   2순위: 문자열(또는 기타 구조) — "agent_id: x@team" 및 JSON 직렬화 "agent_id": "x@team" 정규식.
+_RESP_ID=$(echo "$INPUT" | jq -r '.tool_response | if type=="object" then (.agent_id // .teammate_id // .agentId // empty) else empty end | strings' 2>/dev/null)
+_RESP_TXT=$(echo "$INPUT" | jq -r '.tool_response // empty | if type=="string" then . else tostring end' 2>/dev/null)
+if echo "$_RESP_ID" | grep -Eq '^[^[:space:]@]+@[A-Za-z0-9_.-]+$' \
+   || echo "$_RESP_TXT" | grep -Eq 'agent_id[\\"]*[[:space:]]*:[[:space:]]*[\\"]*[^[:space:]"@\\]+@'; then
+  echo "${_TS} DELAYED name=${_NAME} team=${_REQ_TEAM} procs=0 uuid=${UUID} (agent_id@team 응답 확인 — 기동 지연 추정)" >> "$_LOG" 2>/dev/null
+  cat <<EOF
+{"systemMessage":"ℹ️ [F-AGENT-2] ${_NAME} 프로세스가 아직 보이지 않습니다(부하로 기동 지연 가능). spawn 응답에 agent_id@team 이 있어 팀원 spawn 은 성공으로 판단합니다. spawn_ack_watch 가 150s 감시합니다."}
+EOF
   exit 0
 fi
 

@@ -15,6 +15,13 @@ invocation:
 > 메인 에이전트는 이 판정을 수행하지 않는다 (CLAUDE.md "ogrill 호출 정책" 참조).
 > 상세 절차: oplan/SKILL.md "ogrill 5축 결손 판정" 섹션 참조 (단일 출처).
 
+## 레퍼런스 조사 (계획 수립 전)
+
+- Stage_0_레퍼런스_조사: 요청에 벤치마킹·레퍼런스·경쟁 솔루션 분석이 있으면 tier 와 무관하게 Phase A 진입 전에 `Skill('oplan_research')` 의 Phase_R0(REA 필요시 판정표)를 거친다. 같은 사이클에서 이미 거쳤으면 그 결과를 재사용한다.
+- ref_root(`Skill('ocanon')` §1)가 있으면 plan root 유무와 무관하게 `<ref_root>/README.md` 색인을 읽고, 참조할 항목은 `ref:<id>@<커밋 12자>:<경로>` 표기로 계획서에 남긴다.
+- 수행 위치: 위 두 항은 0단계를 수행하는 주체가 oplan-1/2/3 spawn 전에 1회만 수행한다. 그 주체가 메인이면 oi_route_guard 가 직접 호출을 막으므로 oplan_research 의 독립_에이전트_모드(`oresearch-1`)로 맡긴다.
+- 결과 공유: 조사 요약과 참조 표기는 context_summary.md 에 넣는다. oplan-1/2/3·비판가·배심원·oplan-final 은 다시 수행하지 않는다.
+
 ## 절대규칙
 
 ```yaml
@@ -169,7 +176,7 @@ goal_json_공유 (soft hint — 2차수 통합):
   스킬_로딩_금지:
     - Skill('oplan') 호출 절대 금지 (SKILL.md 440줄 로딩 → 컨텍스트 폭발 원인)
     - Skill('oplan_debate') 호출 절대 금지 (재귀 로딩)
-    - Skill('oinfra_*') 호출 절대 금지 (PROJECT.md + 참조 파일 연쇄 로딩)
+    - INFRA.md 전체 읽기 금지(필요 절 Grep 만)
     - 프로젝트 인프라 정보는 spawn 프롬프트의 context_summary.md에서만 참조
   파일_읽기_제한:
     - context_summary.md 이외 추가 파일 읽기: 최대 2개, 각 50줄 이내
@@ -349,7 +356,7 @@ oplan-3_codex_팅김_주의:
   감지: 비판가-A(codex:adversarial-review) spawn 후 60초 이내 critique_A.md 미생성
   처리_절차 (oplan-3 codex P0-C2 고아 처리와 동일):
     1. ostatus 확인:
-       mcp__oio__bash_exec(command="bash ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/lib/ostatus_check.sh ${UUID} 비판가-A")
+       mcp__oio__bash_exec(command="bash ${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/ostatus_check.sh ${UUID} 비판가-A")
     2. 고아 감지 시 강제 종료:
        - pane_id 조회: grep "^pane_id=" ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/session-env/${UUID}/agents/비판가-A 2>/dev/null | cut -d= -f2
        - kill escalation: SIGTERM → SIGKILL → tmux kill-pane (status off 상태에서만)
@@ -621,6 +628,16 @@ immutable_잠금:
   - 보호 방법: oio intent lock
 ```
 
+## QA 원복 시나리오 선행 수립 (QA 선언 프로젝트 한정)
+
+> 사용자 원문(2026-10-10): "개발서버에서는 테스트데이터를 지우지 않아도 된다. 하지만 앞으로 qa서버에서는 데이터 원복을 위한 시나리오부터 계획하도록 하라."
+
+- 프로젝트가 QA(운영 데이터 연계) 단계를 선언(`.claude/qa_tier.json`)했으면, 계획서는 시험 항목보다 먼저 "원복 시나리오"를 세운다.
+- 항목마다 다음을 적는다. 대상 표·행 범위, 시험 전 스냅샷 방법, 시험 표식, 삭제·원복 절차, AUTO_INCREMENT·휘발 열 처리, 원복 불가 판정과 제외 사유.
+- 원복 시나리오가 판정을 통과한 항목만 QA 시험 목록에 올린다. 판정표에 없는 항목은 QA 에서 시험하지 않는다.
+- 예시 산출물은 세션 plans 디렉토리의 `qa_reversibility_draft.json` 이다.
+- 선언이 없으면 이 절은 적용하지 않는다.
+
 ## 산출물 경로
 
 ```yaml
@@ -638,6 +655,9 @@ immutable_잠금:
 ```
 
 ## 원칙
+
+- ground_truth 는 라인 번호 대신 함수명/심볼명/유니크 시그니처로 앵커링한다 (L-388).
+- Phase B 는 각 fix 항목의 기존 구현 상태(적용됨/미적용/부분)를 소스에서 직접 확인해 §4 매트릭스에 기록하고, Phase 5 는 기존 구현과 계획의 중복 여부를 필수로 점검한다 (L-391).
 
 ```yaml
 독립성: 각 에이전트는 상대 분석 결과를 받기 전까지 완전 독립 수행
@@ -661,7 +681,7 @@ critique_전파: critique.md는 debate → vote → oplan-final → Codex 검증
 컨텍스트_절약_원칙 (서브에이전트 팅김 방지 — 핵심):
   경량_우선: 서브에이전트는 경량으로, 지능은 메인이 보유한다
   스킬_재귀_금지: oplan-1/2/3/final은 Skill() 호출 일절 금지 (스킬 재귀 로딩 = 팅김 원인)
-  oinfra_금지: oplan-1/2/3은 Skill('oinfra_*') 호출 금지 (연쇄 로딩 방지)
+  INFRA_금지: oplan-1/2/3은 INFRA.md 전체 읽기 금지(필요 절 Grep 만)
   사전탐색_의무: 메인이 0단계에서 context_summary.md 생성 후 spawn — 서브에이전트 파일 읽기 최소화
   ultrathink_조건부: 프롬프트 < 1,000 토큰 + 추가 파일 < 2개인 경우에만 사용
   팅김_복구: 15분 타임아웃 + 경량 재spawn(최대 2회) + 실패 시 해당 렌즈 생략 후 계속

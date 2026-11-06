@@ -1,11 +1,7 @@
 #!/bin/bash
-# >>> harness preamble
-_HP="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)}"
-[ -f "$_HP/hooks/harness_preamble.sh" ] && . "$_HP/hooks/harness_preamble.sh" 2>/dev/null || { [ -f "$_HP/harness_preamble.sh" ] && . "$_HP/harness_preamble.sh" 2>/dev/null; } || true
-# <<< harness preamble
 # PreToolUse(Bash) — 통합 경로 보호 가드
 #
-# 1. ~/.claude/session-env/ 루트 보호
+# 1. ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/session-env/ 루트 보호
 #    - session-env/ 바로 아래에는 36자 UUID 형식 디렉토리만 허용
 #    - 루트에 직접 파일/디렉토리 생성 차단 (예: session-env/pipeline_uuid, session-env/foo)
 #
@@ -18,7 +14,7 @@ COMMAND=$(echo "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null || ec
 # 명령이 없으면 통과
 [[ -z "$COMMAND" ]] && exit 0
 
-# ── 1. ~/.claude/session-env/ 루트 쓰기/생성 보호 ──
+# ── 1. ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/session-env/ 루트 쓰기/생성 보호 ──
 # 쓰기/생성 명령(>, >>, tee, touch, mkdir, echo >)에서만 UUID 검증
 # rm, ls, cat, grep 등 읽기/삭제 명령은 검증 없이 통과
 if echo "$COMMAND" | grep -qE '(session-env|\.claude/session-env)'; then
@@ -51,7 +47,7 @@ if echo "$COMMAND" | grep -qE '(session-env|\.claude/session-env)'; then
 fi
 
 # ── 2. ~/work/ 경로 사용 금지 (폐기됨 → session-env/${UUID}/work/ 사용) ──
-# $HOME, ~, /home/{사용자} 모든 변형 감지
+# $HOME, ~, $HOME 모든 변형 감지
 EXPANDED_CMD=$(echo "$COMMAND" | sed "s|\\\$HOME|$HOME|g; s|~/|$HOME/|g")
 if echo "$EXPANDED_CMD" | grep -qE "$HOME/work(/|$)"; then
   # 읽기/삭제 명령은 허용 (정리용)

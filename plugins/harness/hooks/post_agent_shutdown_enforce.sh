@@ -1,8 +1,4 @@
 #!/bin/bash
-# >>> harness preamble
-_HP="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)}"
-[ -f "$_HP/hooks/harness_preamble.sh" ] && . "$_HP/hooks/harness_preamble.sh" 2>/dev/null || { [ -f "$_HP/harness_preamble.sh" ] && . "$_HP/harness_preamble.sh" 2>/dev/null; } || true
-# <<< harness preamble
 # post_agent_shutdown_enforce.sh — PostToolUse:Agent shutdown 누락 감지 + 자율 집행
 #
 # 역할:
@@ -25,7 +21,7 @@ _HP="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null
 #      ⇒ 제거하고 tmux pane 실존 확인으로 교체. 단 bash pane(메인 %0 포함)이 후보로
 #        들어오므로 오탐 방어 4중(no_kill/화이트리스트/self-pane 3중/dry-run)을 함께 넣었다.
 # 안전: dry-run 이 기본값이다. 실집행은 OAGENT_SHUTDOWN_ENFORCE=1 명시 시에만 일어난다.
-# 롤백: ① 즉시정지(재시작 불필요) → touch ~/.claude/hooks/.shutdown_enforce_off
+# 롤백: ① 즉시정지(재시작 불필요) → touch ${HARNESS_HOME:-$HOME/.harness}/current/hooks/.shutdown_enforce_off
 #       ② 완전원복 → cp post_agent_shutdown_enforce.sh.bak-c25-20260907 post_agent_shutdown_enforce.sh
 #       ③ 최후 → chmod -x post_agent_shutdown_enforce.sh
 # ────────────────────────────────────────────────────────────────────────────
@@ -36,7 +32,7 @@ INPUT=$(timeout 5 cat 2>/dev/null) || INPUT=""
 SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // empty' 2>/dev/null || echo "")
 
 # --- UUID 결정 ---
-source "${HARNESS_HOOK_DIR}/lib/session_id.sh" 2>/dev/null || true
+source "${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/session_id.sh" 2>/dev/null || true
 if ! resolve_uuid "$INPUT" 2>/dev/null; then
   if [[ -n "$SESSION_ID" ]]; then
     UUID="$SESSION_ID"
@@ -51,6 +47,7 @@ SESSION_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/session-env/${UUID}"
 # --- state 필터 ---
 STATE_FILE="$SESSION_DIR/state"
 [[ -f "$STATE_FILE" ]] || exit 0
+# L-383: state_read 출력 첫 필드만 사용(awk '{print $1}') — 상태 파일 부가 필드 혼입 방지
 CURRENT_STATE=$(state_read "$STATE_FILE" 2>/dev/null | awk '{print $1}')
 case "$CURRENT_STATE" in
   DEV|TEST|DONE) ;;
@@ -71,17 +68,17 @@ LOG_FILE="$LOG_DIR/shutdown_enforce.log"
 G3_ENABLED=1
 G3_MODE="${OAGENT_SHUTDOWN_ENFORCE:-dry}"
 [[ "$G3_MODE" == "0" ]] && G3_ENABLED=0
-[[ -f "$HOME/.claude/hooks/.shutdown_enforce_off" ]] && G3_ENABLED=0
+[[ -f "${HARNESS_HOME:-$HOME/.harness}/current/hooks/.shutdown_enforce_off" ]] && G3_ENABLED=0
 
 # --- G3 재사용 라이브러리 (fail-open: 로드 실패 시 G3 자동 비활성) ---
 if [[ "$G3_ENABLED" == "1" ]]; then
-  source "${HARNESS_HOOK_DIR}/lib/pane_sweeper.sh" 2>/dev/null || G3_ENABLED=0
+  source "${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/pane_sweeper.sh" 2>/dev/null || G3_ENABLED=0
 fi
 if [[ "$G3_ENABLED" == "1" ]]; then
-  source "${HARNESS_HOOK_DIR}/lib/state_machine.sh" 2>/dev/null || G3_ENABLED=0
+  source "${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/state_machine.sh" 2>/dev/null || G3_ENABLED=0
 fi
 
-# --- status 축 조회 (RALPH/PAUSE/ABORT 제외 판정용 — fail-open: 실패 시 G3 미발동) ---
+# --- status 축 조회 (ROOF/PAUSE/ABORT 제외 판정용 — fail-open: 실패 시 G3 미발동) ---
 STATUS_FILE="$SESSION_DIR/status"
 CURRENT_STATUS=""
 if [[ "$G3_ENABLED" == "1" ]]; then
@@ -149,11 +146,11 @@ for af in "$AGENTS_DIR"/*; do
     # --- G3: 2틱 연속 누락 확정 상태 — 4중 AND + self-pane 제외 + fail-open ---
     [[ "$G3_ENABLED" == "1" ]] || continue
 
-    # 조건4: status 축에 PAUSE/ABORT/RALPH 없음
-    #   RALPH: oralph/oto 루프 중 재사용 예정 에이전트를 죽이면 회귀(oplan 명시 엣지케이스) — 제외
+    # 조건4: status 축에 PAUSE/ABORT/ROOF 없음
+    #   ROOF: oroof/oto 루프 중 재사용 예정 에이전트를 죽이면 회귀(oplan 명시 엣지케이스) — 제외
     #   PAUSE/ABORT: 일시정지/긴급중단 중 물리 개입 금지
     case "$CURRENT_STATUS" in
-      *PAUSE*|*ABORT*|*RALPH*)
+      *PAUSE*|*ABORT*|*ROOF*|*RALPH*)  # ROOF-COMPAT(deprecation window 1주기 — 구 RALPH/oralph_active 인식 제거 예정)
         echo "[${TS}] G3_SKIP_STATUS name=${NAME} status=${CURRENT_STATUS}" >> "$LOG_FILE" 2>/dev/null || true
         continue
         ;;

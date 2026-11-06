@@ -48,6 +48,8 @@ ok_o1_에서_호출:
 하한_이유: 최소 4개 동시 spawn으로 병렬 처리 속도 확보
 상한_이유: 에이전트당 최대 3파일 제약 준수 (충돌 방지)
 제약: 파일 할당 매트릭스 준수 (수정 파일 중복 = 0)
+상한: 세션 동시 생존 팀원 ≤9(메인 포함 10) = max_live_teammates(9). 공식값이 남은 슬롯을 넘으면 Wave/대기열로 나눠 배정
+동시_생존_상한_이유: 적극 병렬은 유지하되 세션당 에이전트가 메인 포함 10개를 넘으면 병목이 생긴다 (사용자 지시 2026-10-11, F-AGENT-CAP 이 차단)
 ```
 
 ## 파일 할당 원칙
@@ -108,6 +110,20 @@ Phase_스킵_규칙:
 o1_작업_Phase: 없음 (비코드 파일은 의존성 없으므로 전체 병렬)
 ```
 
+## phase_batches 의존 기재 규칙 (자동 병렬의 전제 — 2026-10-10)
+
+```yaml
+목적: ok_pipeline 4.5단계 "3.5 독립 batch 병렬 집합 계산" 이 독립 batch 를 찾아 동시에 돌릴 수 있게 한다.
+규칙:
+  - depends_on_batch / extra_depends_on 에는 "실제로 결과를 읽어야 착수 가능한" 선행 batch 만 적는다.
+    관성적 N-1 연쇄(1→2→3→…) 금지 — 진짜 선행이 없으면 null.
+  - 각 batch 의 file_assignment.{에이전트}.files 를 빠짐없이 적는다(빈 files 는 병렬 판정에서 '충돌 없음'으로 보인다).
+  - 같은 파일을 두 batch 가 고치면 한쪽에 depends 를 걸거나 파일을 한 batch 로 몰아라(가드는 중첩 batch 를 동시 집합에서 뺀다).
+  - 같은 batch 안 에이전트는 파일 비중첩이 기본(수정 파일 중복 = 0). 선행이 필요한 에이전트만 agent.depends_on 을 적는다.
+  - 직렬로 둔 batch 쌍은 이유를 odev_parallel "직렬_사유" 번호로 note 에 1줄 남긴다.
+검증: 계획 확정 전 READY 집합(선행 없는 batch)과 첫 병렬 집합을 계획서에 1줄로 적는다 — 예 "첫 집합 {1}, batch 1 완료 후 {2,3}(batch 5 는 공용 파일 중첩으로 batch 2 뒤)".
+```
+
 ## 장기 개선: DAG resolver 자동화 (Argo Workflows 패턴)
 
 > **현재**: oplan이 수동으로 파일 의존성 분석 → Wave 계산
@@ -166,7 +182,7 @@ oplan이 메인에게 반환하는 phases 배열:
       agents:
         - name: "odev-1"
           persona: be-interface
-          files: [Shared/IFoo.cs]
+          files: [Mars.Shared/IFoo.cs]
           tasks: ["인터페이스 메서드 추가"]
     - phase: 1
       parallel: true           # 동시 spawn 필수 (1개 메시지 내 다중 Agent() 호출 — 순차 개별 spawn 금지)

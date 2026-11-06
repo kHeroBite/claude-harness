@@ -1,13 +1,9 @@
 #!/bin/bash
-# >>> harness preamble
-_HP="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)}"
-[ -f "$_HP/hooks/harness_preamble.sh" ] && . "$_HP/hooks/harness_preamble.sh" 2>/dev/null || { [ -f "$_HP/harness_preamble.sh" ] && . "$_HP/harness_preamble.sh" 2>/dev/null; } || true
-# <<< harness preamble
 # team_create_guard.sh — TeamCreate 전 기존 팀 잔류 차단 (L-052 재발방지)
 # PreToolUse:TeamCreate hook
 # 목적: "Already leading team" 오류 물리 차단
 #        현재 세션이 이미 팀을 리드 중이면 TeamCreate를 차단하고 TeamDelete 먼저 호출 안내
-# config.json 대신 ~/.claude/session-env/${UUID}/state + team_name 파일로 판단
+# config.json 대신 ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/session-env/${UUID}/state + team_name 파일로 판단
 
 trap 'exit 0' ERR
 
@@ -16,7 +12,7 @@ TEAM_NAME=$(echo "$INPUT" | jq -r '.tool_input.team_name // empty' 2>/dev/null |
 SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // empty' 2>/dev/null || echo "")
 
 # --- UUID 결정 ---
-source "${HARNESS_HOOK_DIR}/lib/session_id.sh"
+source "${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/session_id.sh"
 if ! resolve_uuid "$INPUT" 2>/dev/null; then
   exit 0
 fi
@@ -81,7 +77,7 @@ if [[ -f "$TEAM_NAME_FILE" ]]; then
     _MY_CACHED_TEAM_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/teams/${_MY_CACHED_TEAM}"
     if [[ ! -d "$_MY_CACHED_TEAM_DIR" ]]; then
       # 메모리-FS 불일치 감지 — TeamCreate를 차단하고 복구 절차 안내
-      source "${HARNESS_HOOK_DIR}/lib/write_error.sh" 2>/dev/null || true
+      source "${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/write_error.sh" 2>/dev/null || true
       log_hook_error "HOOK_BLOCK_MEM_FS_MISMATCH" "TeamCreate" \
         "메모리-FS 불일치: team_name=[${_MY_CACHED_TEAM}] 파일 존재하나 teams/<>/ FS 부재 — Claude 메모리 레지스트리 잔존 가능" \
         "$SESSION_ID" 2>/dev/null || true
@@ -99,7 +95,7 @@ mkdir -p "$SESSION_DIR" 2>/dev/null || true
 
 # --- lock 밖: state 파일 읽기(조기 통과 판단 데이터만 수집) ---
 # Phase B (L-431): state=OK 잔존 시 자동 PLAN 마이그레이션 (다른 활성 세션 호환 안전망)
-source "${HARNESS_HOOK_DIR}/lib/state_machine.sh" 2>/dev/null
+source "${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/state_machine.sh" 2>/dev/null
 _smach_migrate_ok_to_plan "$STATE_FILE" "$UUID" 2>/dev/null || true
 STATE=""
 if [[ -f "$STATE_FILE" ]]; then
@@ -170,7 +166,7 @@ if [[ -z "$EXISTING_TEAM" ]]; then
   exit 0
 fi
 
-source "${HARNESS_HOOK_DIR}/lib/write_error.sh" 2>/dev/null
+source "${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/write_error.sh" 2>/dev/null
 log_hook_error "HOOK_BLOCK_TEAM_DUPLICATE" "TeamCreate" "기존 리더 팀 잔류로 TeamCreate 차단: [${EXISTING_TEAM}] (state=${STATE}) → 요청 팀명: ${TEAM_NAME}" "$SESSION_ID"
 
 echo "{\"decision\":\"block\",\"reason\":\"❌ [TeamCreate 차단] 이미 리딩 중인 팀이 있습니다: [${EXISTING_TEAM}] (state=${STATE}). TeamDelete → TeamCreate 재시도. ⚠️ 활성 파이프라인 중에는 TeamDelete 후 재시도해도 차단될 수 있음 — 그 경우 /oinit 또는 세션 재시작 필요. (L-052/L-431 재발방지)\"}" | tee /dev/stderr

@@ -1,9 +1,5 @@
 #!/bin/bash
-# >>> harness preamble
-_HP="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)}"
-[ -f "$_HP/hooks/harness_preamble.sh" ] && . "$_HP/hooks/harness_preamble.sh" 2>/dev/null || { [ -f "$_HP/harness_preamble.sh" ] && . "$_HP/harness_preamble.sh" 2>/dev/null; } || true
-# <<< harness preamble
-# ui_test_guard.sh — XAML/Designer.cs 수정 시 otestuiwinforms 강제 검증
+# ui_test_guard.sh — XAML/Designer.cs 수정 시 otestuiwinforms 강제 검증 (대상: 프로젝트 루트 INFRA.md 의 INFRA-FIELDS ui_test: true)
 # PreToolUse: SendMessage hook — otest 완료 보고 차단
 
 # 내부 오류 발생 시 안전하게 allow로 종료
@@ -37,7 +33,7 @@ if echo "$MSG_CONTENT" | grep -qE "(RETEST|재테스트|재검증|역라우팅|�
 fi
 
 # UUID 결정
-source "${HARNESS_HOOK_DIR}/lib/session_id.sh" 2>/dev/null
+source "${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/session_id.sh" 2>/dev/null
 resolve_uuid "$INPUT" 2>/dev/null || UUID="${CLAUDE_SESSION_ID}"
 [[ -z "$UUID" ]] && exit 0
 
@@ -54,12 +50,13 @@ if [[ -z "$_UITG_PIPELINE_UUID" ]]; then
   _UITG_PID_WALK=$$
   _UITG_DEPTH_WALK=0
   while [[ $_UITG_DEPTH_WALK -lt 10 && -n "$_UITG_PID_WALK" && "$_UITG_PID_WALK" != "1" ]]; do
-    _UITG_CMDLINE_WALK=$(tr '\0' ' ' < "/proc/${_UITG_PID_WALK}/cmdline" 2>/dev/null)
+    _UITG_CMDLINE_WALK=$(tr '\0' ' ' 2>/dev/null < "/proc/${_UITG_PID_WALK}/cmdline")
     if [[ "$_UITG_CMDLINE_WALK" =~ --parent-session-id[[:space:]]+([0-9a-f-]{36}) ]]; then
       _UITG_PIPELINE_UUID="${BASH_REMATCH[1]}"
       break
     fi
-    _UITG_PID_WALK=$(awk '{print $4}' "/proc/${_UITG_PID_WALK}/stat" 2>/dev/null)
+    _UITG_PID_WALK=$(sed 's/^.*) //' "/proc/${_UITG_PID_WALK}/stat" 2>/dev/null | awk '{print $2}')
+    [[ "$_UITG_PID_WALK" =~ ^[0-9]+$ ]] || break
     (( _UITG_DEPTH_WALK++ )) || true
   done
 fi
@@ -95,12 +92,14 @@ for sd in "${SESSION_DIR_CANDIDATES[@]}"; do
 done
 # (기존 흐름 계속 — PROJECT_ROOT 결정, git diff 검사 등)
 
-# oinfra에서 ui_test 여부 확인
+# 프로젝트 루트 INFRA.md 의 INFRA-FIELDS ui_test 가 true 인 프로젝트만 검사 (INFRA.md·필드 부재 = 통과)
 PROJECT_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || echo "")
 [ -z "$PROJECT_ROOT" ] && exit 0
 
-UI_TEST=$(grep -r "ui_test:" "$PROJECT_ROOT/.claude/skills/" 2>/dev/null | grep "true" | head -1)
-[ -z "$UI_TEST" ] && exit 0
+source "${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/infra_path.sh" 2>/dev/null || exit 0
+INFRA=$(infra_md_path "$PROJECT_ROOT") || INFRA=""
+UI_TEST=$(infra_field "$INFRA" ui_test) || UI_TEST=""
+[ "$UI_TEST" = true ] || exit 0
 
 # XAML/Designer.cs 수정 여부 확인
 XAML_CHANGED=$(git -C "$PROJECT_ROOT" diff HEAD --name-only 2>/dev/null | grep -E "\.(xaml|axaml|Designer\.cs)$" | head -1)

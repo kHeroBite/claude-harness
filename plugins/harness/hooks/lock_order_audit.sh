@@ -1,8 +1,4 @@
 #!/usr/bin/env bash
-# >>> harness preamble
-_HP="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)}"
-[ -f "$_HP/hooks/harness_preamble.sh" ] && . "$_HP/hooks/harness_preamble.sh" 2>/dev/null || { [ -f "$_HP/harness_preamble.sh" ] && . "$_HP/harness_preamble.sh" 2>/dev/null; } || true
-# <<< harness preamble
 # PreToolUse hook — Edit/Write 도구 호출 전에 audit_fs_lock.py + audit_lock_order.py 실행.
 #
 # 목적: session_manager.py 등 oio-mcp-server 코드가 수정되기 직전에
@@ -18,7 +14,7 @@ _HP="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null
 
 set -u
 
-PROJECT_ROOT="${CLAUDE_PROJECT_DIR:-$(pwd)}"
+PROJECT_ROOT="${HARNESS_HOME:-$HOME/.harness}/current"
 OIO_DIR="${PROJECT_ROOT}/MCP-Servers/oio-mcp-server"
 AUDIT_FS_LOCK="${OIO_DIR}/tools/audit_fs_lock.py"
 AUDIT_LOCK_ORDER="${OIO_DIR}/tools/audit_lock_order.py"

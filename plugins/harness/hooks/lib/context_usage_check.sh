@@ -1,8 +1,4 @@
 #!/usr/bin/env bash
-# >>> harness preamble
-_HP="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)}"
-[ -f "$_HP/hooks/harness_preamble.sh" ] && . "$_HP/hooks/harness_preamble.sh" 2>/dev/null || { [ -f "$_HP/harness_preamble.sh" ] && . "$_HP/harness_preamble.sh" 2>/dev/null; } || true
-# <<< harness preamble
 # context_usage_check.sh — 컨텍스트 사용률 80% PAUSE 체크 (C-05)
 # AC-04: 80% 임계 실동작 / AC-05: PAUSE 이벤트 append
 set -euo pipefail

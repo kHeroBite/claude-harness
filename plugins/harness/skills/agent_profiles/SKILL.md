@@ -22,7 +22,9 @@ invocation:
   (스크롤백 -3000줄 전수 조사에서 SendMessage 호출 0건 확인)
 
 [필수 규칙]
+- SendMessage 는 지연 로드 도구 — 첫 사용 전 ToolSearch(query='select:SendMessage') 로 스키마 로드 필수 (미로드 상태 호출은 InputValidationError)
 - 파일 수정: MCP oio 최우선 (mcp__oio__file_edit/write/read). NTFS rsync 자동 처리
+- [GUARD_NO_BYPASS] 가드·time_budget 이 차단하거나 보류하면 표현을 바꾸거나 다른 도구(예: file_write 차단 후 bash_exec 쓰기)로 같은 대상에 쓰는 우회를 금지한다. 같은 도구로 재시도하거나 SendMessage 로 team-lead 에 보고한 뒤 대기하라(L-597). 실측 근거는 2026-10-16 odone-2(표현 변경)와 odone-4(file_write 차단 후 bash_exec 쓰기) 2건이다.
 
 [oio MCP 독점 — 절대 규칙 (Bash·Read·Edit·Write 사용 금지. write_guard.sh 차단)]
 | 금지 도구/명령 | oio 대체 도구 |
@@ -49,7 +51,7 @@ invocation:
 [L-022/L-110 — Windows 앱 실행 절대 금지 패턴]
 - 금지: cmd.exe /c start <앱.exe>, cmd /c start, start /B <앱.exe>, powershell.exe -Command "Start-Process ..." 등
 - 이유: WSL에서 cmd.exe/powershell.exe가 자식 Windows 프로세스 stdio를 점유한 채 종료하지 않음 → Claude/oio bash_exec 무한 블로킹 (실제 사고 L-022)
-- 대안: Skill('otest_run') 호출 또는 Skill('oinfra_{project}') 배포 섹션 참조 (골격은 oinfra_template 참조)
+- 대안: Skill('otest_run') 호출 또는 INFRA.md "배포" 절 참조 (예: <프로젝트> INFRA.md)
 - spawn 프롬프트(prompt= 파라미터) 안에 위 패턴이 포함되면 PreToolUse:Agent hook(full_task_team_guard.sh)이 즉시 차단
 
 [Serena 파라미터 정확명 — 틀리면 Pydantic 즉시 차단]
@@ -80,12 +82,20 @@ invocation:
 - summary 누락 시 "summary is required" 에러 → shutdown 응답도 실패 → pane 잔류 원인
 - structured message(shutdown_request/response 등)는 summary 불필요 + broadcast(to:"*") 불가 → 개별 전송만
 - 완료 보고 형식: SendMessage(to:"{리더명}", message:"완료 보고 내용", summary:"odev 완료 N개 파일 수정")
-- shutdown_response 형식: SendMessage(to:"{요청자}", message:{"type":"shutdown_response","request_id":"...","approve":true})
+- shutdown_response 형식 (실제 도구 입력 JSON): {"to":"team-lead","message":{"type":"shutdown_response","request_id":"<받은 id>","approve":true}}
+  - message 는 객체다. JSON 문자열로 감싸지 말 것. type/recipient/content 같은 옛 필드 금지.
+  - 실측 근거: 2026-10-06 옛 필드/문자열 형태 호출이 스키마 검증에서 거부됨.
 
 [파이프라인 활성 시 도구 제약 — hook이 차단하므로 올바른 방법을 사용하라]
 - Bash 사용 금지 → mcp__oio__bash_exec 사용 (write_guard.sh가 Bash 전면 차단)
 - 팀에이전트 내에서 서브에이전트 spawn: 자유 (PIPELINE_UUID 존재 시 허용)
 - 메인에서 서브에이전트 spawn: 파이프라인 활성 시 금지 → team_name 필수
+
+[안전분류기(auto 모드)에 덜 걸리는 작업 방식 — 거부되면 방법이 잘못됐을 수 있다]
+- 작업 디렉터리 안 파일 읽기·편집·삭제는 oio 파일 도구(file_read/file_edit/file_write/file_delete)로 대상 1개씩 한다. 셸 리다이렉션·sed -i·tee 로 파일을 고치지 않는다.
+- 셸은 좁고 명확한 단일 목적 명령만 쓴다. 넓은 와일드카드·find / ·-exec·xargs, 해석기 한 줄 프로그램(python -c·bash -c·eval·명령 치환), 내려받은 코드 실행은 피하고 스크립트 파일·oio find/search 로 바꾼다.
+- 분류기가 거부하면 같은 명령을 재시도하거나 표현만 바꾸지 않는다. 일반 작업이면 위 올바른 방법으로 바꿔 진행한다(PermissionDenied hook 이 로그에 대안을 남긴다).
+- 사용자 확인은 특별 작업(운영 배포·외부 공개/전송·되돌리기 어려운 파괴·자격증명/권한 변경·타 세션/타 사용자 자원)에만 한다. 메인 사용자 화면 세션이면 AskUserQuestion, /oto 자율 세션·팀원이면 묻지 말고 보류로 보고한다.
 ```
 
 ## 구조화 사고 블록 (복잡 판단 시 사용)
@@ -122,7 +132,7 @@ invocation:
 
 ### impl-mobile (모바일 구현 에이전트)
 기본 블록 + 추가 규칙:
-- 모바일 프로젝트 전용 (경로: oinfra_{project} 참조)
+- 모바일 프로젝트 전용 (경로: INFRA.md 참조)
 - MAUI/Blazor 패턴 참조
 
 ### scout (탐색 전용 에이전트)

@@ -138,7 +138,7 @@ Step 5:   ★ team-cleanup.sh --force + pane 잔류 재확인
   ↓
 Step 6:   잔류 팀에이전트 pane kill (v2.1.178+: TeamDelete/rm-rf 우회 제거 — 팀 디렉토리 자동 정리)
   ↓
-Step 7:   잔류 파일 정리 (agents/, evidence/, panes/, compact/)
+Step 7:   잔류 파일 정리 (agents/, evidence/, panes/, compact/, agent_keep/)
   ↓
 Step 8:   표 형태 통합 리포팅 + ofinish_cleanup_done 마커 생성
   ↓
@@ -155,8 +155,8 @@ Step 10:  재발방지 — 원인 분석 + oinit SKILL.md 자체 수정 (CASE 0�
 
 ```yaml
 명령: |
-  [ -f ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/team-report.sh ] || echo "⚠️ team-report.sh 미존재 — fallback 모드"
-  [ -f ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/team-cleanup.sh ] || echo "⚠️ team-cleanup.sh 미존재 — fallback 모드"
+  [ -f ${HARNESS_HOME:-$HOME/.harness}/current/scripts/team-report.sh ] || echo "⚠️ team-report.sh 미존재 — fallback 모드"
+  [ -f ${HARNESS_HOME:-$HOME/.harness}/current/scripts/team-cleanup.sh ] || echo "⚠️ team-cleanup.sh 미존재 — fallback 모드"
 
 Fallback_동작:
   team-report.sh 미존재 시:
@@ -237,7 +237,7 @@ Fallback_동작:
 
 ```yaml
 도구: mcp__oio__bash_exec
-명령: bash ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/team-report.sh
+명령: bash ${HARNESS_HOME:-$HOME/.harness}/current/scripts/team-report.sh
 목적: 정리 전 현재 팀에이전트/pane 현황 스냅샷 기록
 
 ⚠️ oio EXEC_ERROR (UTF-8 디코딩 실패) 시 즉시 fallback (L-361):
@@ -247,7 +247,7 @@ Fallback_동작:
     # [P2-isolation] Fix 31: 전체 session-env/*/ 순회 → 자기 세션만 확인으로 교체
     # ★bash -c 래핑 필수 — bash_exec 셸은 /bin/sh(dash) 이고 dash 에는 source 가 없다.★
     #   미래핑 시 state_read 가 rc=127 로 죽어 빈 문자열이 되고 상태 판정이 통째로 어긋난다 (2026-08-26 실측).
-    st=$(bash -c 'source "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/lib/state_machine.sh" 2>/dev/null; state_read "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/session-env/'"${UUID}"'/state"' 2>/dev/null | awk '{print $1}' || echo "?")
+    st=$(bash -c 'source "${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/state_machine.sh" 2>/dev/null; state_read "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/session-env/'"${UUID}"'/state"' 2>/dev/null | awk '{print $1}' || echo "?")
     st="${st:-?}"
     echo "UUID=${UUID} STATE=$st"
     ```
@@ -258,7 +258,20 @@ Fallback_동작:
 
 ```yaml
 도구: mcp__oio__bash_exec
-명령: bash ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/team-cleanup.sh --dry-run
+명령: PIPELINE_UUID="${UUID}" bash ${HARNESS_HOME:-$HOME/.harness}/current/scripts/team-cleanup.sh --dry-run
+
+★PIPELINE_UUID 를 반드시 붙여라 (2026-09-19 사이클143 — Fallback 0 신설과 한 쌍)★:
+  붙이지_않으면: 스크립트가 UUID 4단계 폴백 전부 실패 → 자기 세션까지 "타세션"으로 보호 →
+    ★정리가 통째로 무력화★ 되는데 화면에는 `kill 0개` 라고만 나온다.
+  실사고: 사이클143 ofinish 에서 `%11`(odev-1-2) 잔류를 이 경로로 놓쳤다.
+    `kill 0개` 를 "정리 완료"로 읽었고, 다음 /oinit 에서 프로세스를 직접 세고서야 드러났다.
+  ⇒ 스크립트 쪽 조치는 Fallback 0(PIPELINE_UUID 0순위)이고, ★이 변수를 넘기는 것은 호출자 책임★ 이다.
+
+★"kill 0개" 는 그 자체로 증거가 아니다 — 프로세스 실측과 교차하라★:
+  필수: ps -eo args | grep -- "--agent-id" | grep -v "grep " | grep -- "--parent-session-id ${UUID}"
+  0건이어야 비로소 "잔류 없음"이다. 스크립트 출력 단독으로 판정하지 마라.
+  ⚠️ 출력에 "확정하지 못했다" 경고가 보이면 ★그 실행 결과 전체가 무효★ 다 — 원인을 먼저 제거하라.
+  근거: MEMORY feedback_agent_spawn_silent_demotion (판별은 --parent-session-id 프로세스 유무로만)
 
 ⚠️ --force 실행 전 필수 확인 (L-339):
   dry-run 출력에서 현재 세션의 2.1.x pane이 "고아 pane으로 kill 예정"으로 표시될 수 있음.
@@ -295,7 +308,8 @@ Fallback_동작:
 
 ```yaml
 도구: mcp__oio__bash_exec
-명령: bash ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/team-cleanup.sh --force
+명령: PIPELINE_UUID="${UUID}" bash ${HARNESS_HOME:-$HOME/.harness}/current/scripts/team-cleanup.sh --force
+# ★PIPELINE_UUID 필수 — 사유는 Step 3 동일(누락 시 정리 전면 무력화). 한쪽만 붙이면 의미 없다.★
 
 ⚠️ --force 후 pane 잔류 재확인 필수 (L-362):
   원인: cleanup.sh가 활성 파이프라인 소속 pane을 L-328로 skip → kill 0건이어도 exit 0
@@ -379,10 +393,10 @@ Fallback_동작:
 ```yaml
 # UUID 디렉토리는 ofinish Step 4에서 일괄 삭제 (여기서 삭제 금지)
 # Step 4/5에서 정리되지 않은 팀별 잔류 파일만 정리
-대상: agents/, evidence/, panes/, compact/ (팀별 개별 파일)
+대상: agents/, evidence/, panes/, compact/, agent_keep/ (팀별 개별 파일)
 
 ★7-A. agents/ + inboxes 양쪽 base 정리 (F-ROSTER-1 — 2026-09-13 신설, 생략 금지)★
-  명령: bash -c 'source ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/lib/agent_roster_cleanup.sh; cleanup_agent_roster "${UUID}" "${TEAM_NAME}"'
+  명령: bash -c 'export ROSTER_EMIT_TASKSTOP=1; source ${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/agent_roster_cleanup.sh; cleanup_agent_roster "${UUID}" "${TEAM_NAME}"'
 
   배경 (사이클123 진단의 절반이 틀렸다):
     사이클123 은 "roster 는 Claude Code in-memory 라 우리가 못 지운다"(Issue #27639)로
@@ -407,10 +421,22 @@ Fallback_동작:
     · 타 세션 소유 정리 — 자기 UUID 하위 + 자기 소유 팀만 대상이다(세션 격리 §a/§b).
 
   한계 (숨기지 않는다):
-    FleetView 목록 표시 자체는 도구 in-memory 영역이라 이 조치로 사라지지 않는다.
-    isActive=false 멤버를 목록에서 빼는 것은 Claude Code 구현 소관이다(Issue #27639).
-    이 조치가 보장하는 것은 ★디스크가 진실을 반영하는 것★ 이며,
-    다음 세션이 잔존 파일을 "살아 있는 에이전트"로 오판하는 일을 막는다.
+    이 헬퍼는 디스크(agents/·inboxes)만 정리한다. 목록(FleetView/roster) 표시는 아래 7-B 가 맡는다.
+    (2026-10-16 실측 정정: "세션 재시작으로만 비워진다"는 틀렸다. 정상 종료 팀원은 shutdown_approved 로
+     자동 제거되고, 비정상 종료 팀원은 TaskStop 으로 정리된다.)
+
+★7-B. 프로세스 없는 팀원 TaskStop 정리 (2026-10-16 신설 — 메인만 호출 가능)★
+  입력: 1차는 7-A 헬퍼가 항상 기록하는 `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/session-env/${UUID}/logs/taskstop_pending.txt` (한 줄에 이름 1개) 이다. `ROSTER_EMIT_TASKSTOP=1` 일 때만 출력되는 `TASKSTOP_PENDING n: …` 줄은 보조다.
+  절차: 각 이름에 TaskStop(task_id=<이름>) 호출 → ListAgents(또는 TaskStop 오류의 Running teammates)로 소멸 확인.
+  판정: 대상은 `--agent-id <name>@<팀>` 프로세스가 없는 팀원뿐이다. 살아서 작업 중인 팀원에게는 호출 금지(작업 중단).
+  무해: "No task found with ID: ... Running teammates: ..." 오류는 이미 제거된 이름이라는 뜻이다. 실패해도 Step 8 로 진행한다.
+  처리 후 taskstop_pending.txt 는 자기 세션 logs 에서 삭제한다.
+
+★7-C. agent_keep/ 정리★
+  시점: Step 5~6 의 pane 정리와 7-A/7-B 의 팀원 정리가 끝난 뒤에 실행한다.
+  조건: oroof_active(또는 oroof_active.json)가 존재하면 보존한다. ROOF-COMPAT: 구 이름 oralph_active(또는 oralph_active.json)도 동일하게 보존한다(deprecation window 1주기). team_name 보존 규칙과 같다. 독립 /oinit 도 같은 보존 규칙을 따른다.
+  명령: 존재 확인 후 부재 시 `mcp__oio__dir_delete(path="$HOME/.claude/session-env/${UUID}/agent_keep", recursive=true)` 를 호출한다. 디렉터리 부재 오류는 무시한다.
+  이유: 이전 사이클 keep 사유가 남아 같은 이름의 새 팀원에게 오경고가 붙었다. teammate_idle_guard 는 keep 을 이름과 mtime 120분으로만 보고 joinedAt 은 보지 않는다.
 ```
 
 ### Step 8: 표 형태 통합 리포팅 + 완료 마커 생성
@@ -457,11 +483,10 @@ Fallback_동작:
   agents == 0 && 팀멤버 == 0 && pane > 0: 완전 고아 pane → 즉시 kill
 ```
 
-### Step 9: state IDLE 강제 전이 (강제모드 — 항상 실행)
+### Step 9: state IDLE 강제 전이 (강제모드 — 독립 실행 시만)
 
 ```yaml
-조건: 항상 실행 (ofinish 내 호출 + 독립 실행 모두)
-      ofinish 내 호출 시에는 ofinish의 후속 state 전이(IDLE)가 덮어쓰므로 무해 — 이중 안전.
+조건: 독립 실행(/oinit) 때만 실행한다. ofinish 내 호출 때는 건너뛰며 ofinish Step 8 이 IDLE 전이를 맡는다.
 
 명령: mcp__oio__session_state(uuid="${UUID}", key="state", value="IDLE", force=true)
 ⚠️ force=true 필수: 비표준 전이(PLAN/DEV/TEST/DONE → IDLE) 검증 우회
@@ -521,7 +546,7 @@ CASE_1건_이상_시: 재발방지 수단 결정 후 /o1 또는 /o2 파이프라
     3. evidence/ 파일 기반 완료 판정 (SendMessage 없이)
 
 진단-2: 에이전트 목록 ↔ pane 목록 양방향 교차 검증 (필수 — 항상 실행)
-  명령: bash ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/ostatus-diagnose.sh "$UUID"
+  명령: bash ${HARNESS_HOME:-$HOME/.harness}/current/scripts/ostatus-diagnose.sh "$UUID"
   A방향: agents/ 등록 → pane 실존 확인 (소멸/타세션/pane_id 누락 감지)
   B방향: 현재 세션 pane → agents/ 등록 확인 (bash 고아/미등록 에이전트 감지)
 ```
@@ -556,6 +581,7 @@ CASE_1건_이상_시: 재발방지 수단 결정 후 /o1 또는 /o2 파이프라
 | CASE-8 | state=IDLE 후 2.1.x pane 잔류 | 팀에이전트 프로세스 미종료 (세션 종료 시 자동 정리되나 활성 중 잔류) | --agent-id 확인 후 팀에이전트면 kill |
 | CASE-10 | pane 빈 화면 + 120초+ 무응답 | pane 초기화 실패 | pane kill → Agent(name=, team_name=)로 재spawn (v2.1.178+: 팀 자동 생성) |
 | CASE-12 | agents/ 등록 N개인데 pane 0개 + teams/<팀> 디렉토리 부재 | **Agent() 호출 시 `team_name`/`name` 누락** — 팀에이전트가 아니라 평범한 백그라운드 서브에이전트로 생성됨 (2026-09-06 실사고) | **kill 대상 아니다** (죽일 pane 자체가 없다). agents/ 파일만 정리하고 IDLE 전이. 재발방지는 `PreToolUse_Agent_team_param_guard.sh`(F-AGENT-1)가 담당 — L-968 참조. ⚠️ 이 CASE 는 **조용하다**: 에이전트는 정상 동작하고 결과도 돌아와 겉으로는 성공처럼 보인다. spawn 직후 `tmux list-panes` 로 pane 실존을 확인하는 것이 유일한 조기 발견 수단이다. 팀에이전트가 `SendMessage(to="team-lead")` 실패를 보고하면 이 CASE 를 의심하라 — 팀이 없으니 team-lead 주소도 없다. |
+| CASE-13 | cleanup.sh 가 `kill 0개` 인데 실제로는 잔류 에이전트가 있음 | **UUID 판정 불가** — 4단계 폴백 전부 실패해 자기 세션까지 "타세션"으로 보호됨. 출력에 "현재 세션 UUID 를 확정하지 못했다" 경고가 뜬다 (2026-09-19 사이클143 실사고) | 호출 시 `PIPELINE_UUID="${UUID}"` 를 붙인다(Fallback 0). **판정은 반드시 `ps -eo args \| grep -- "--parent-session-id ${UUID}"` 실측과 교차**. ⚠️ 이 CASE 는 **조용하다** — "정리할 게 없음"과 출력이 같아 성공처럼 보인다. heartbeat 임계 완화로 해결하려 들지 마라(타 세션 오인 kill 위험이 더 크다) |
 | CASE-11 | shutdown 후 Claude Code IDLE 잔류 + 완료 키워드 | shutdown_approved 받았으나 Claude Code 프로세스 IDLE statusline timer로 활성 false positive | team-cleanup.sh 키워드 매칭(L-392)으로 자동 kill 대상 강등. 수동 확인 시 capture-pane 마지막 30줄에 "완료 보고/team-lead 보고 완료/파일 작성 완료" 등 키워드 확인 |
 
 ---
@@ -602,7 +628,7 @@ UUID: {UUID}
 1. **다른 세션 pane kill 금지** — L-213 보호
 2. **SendMessage 응답 대기 기반 판정 금지** — L-331 (물리 상태 기반만 허용)
 3. **팀에이전트 spawn 금지** — L-360 (메인 세션 팅김 사고)
-4. **Step 11 생략 금지** — CASE 0건이어도 결과 요약 + 갱신 여부 판단 필수
+4. **Step 10 생략 금지** — CASE 0건이어도 결과 요약 + 갱신 여부 판단 필수
 5. **ofinish 내 호출 시 Step 9 실행 금지** — ofinish가 이후 단계 담당
 6. **kill-window 절대 금지** — segfault 위험 (L-114)
 7. **"정리 대상이 없다" 판단으로 Step 0~3 스킵 금지** — L-320

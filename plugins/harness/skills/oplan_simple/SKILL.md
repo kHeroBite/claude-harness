@@ -19,6 +19,11 @@ o2(Simple) 파이프라인 전용 계획 수립. 독자적 실행 Phase A, B, G�
 > 메인 에이전트는 이 판정을 수행하지 않는다 (CLAUDE.md "ogrill 호출 정책" 참조).
 > 상세 절차: oplan/SKILL.md "ogrill 5축 결손 판정" 섹션 참조 (단일 출처).
 
+## 레퍼런스 조사 (계획 수립 전)
+
+- Stage_0_레퍼런스_조사: 요청에 벤치마킹·레퍼런스·경쟁 솔루션 분석이 있으면 tier 와 무관하게 Phase A 진입 전에 `Skill('oplan_research')` 의 Phase_R0(REA 필요시 판정표)를 거친다. 같은 사이클에서 이미 거쳤으면 그 결과를 재사용한다.
+- ref_root(`Skill('ocanon')` §1)가 있으면 plan root 유무와 무관하게 `<ref_root>/README.md` 색인을 읽고, 참조할 항목은 `ref:<id>@<커밋 12자>:<경로>` 표기로 계획서에 남긴다.
+
 ## 실행 주체
 
 ```yaml
@@ -70,6 +75,16 @@ Step_3_TODO:
   - oplan_deep(+references/SIM_PROCEDURE.md), oplan_review
 ```
 
+## QA 원복 시나리오 선행 수립 (QA 선언 프로젝트 한정)
+
+> 사용자 원문(2026-10-10): "개발서버에서는 테스트데이터를 지우지 않아도 된다. 하지만 앞으로 qa서버에서는 데이터 원복을 위한 시나리오부터 계획하도록 하라."
+
+- 프로젝트가 QA(운영 데이터 연계) 단계를 선언(`.claude/qa_tier.json`)했으면, 계획서는 시험 항목보다 먼저 "원복 시나리오"를 세운다.
+- 항목마다 다음을 적는다. 대상 표·행 범위, 시험 전 스냅샷 방법, 시험 표식, 삭제·원복 절차, AUTO_INCREMENT·휘발 열 처리, 원복 불가 판정과 제외 사유.
+- 원복 시나리오가 판정을 통과한 항목만 QA 시험 목록에 올린다. 판정표에 없는 항목은 QA 에서 시험하지 않는다.
+- 예시 산출물은 세션 plans 디렉토리의 `qa_reversibility_draft.json` 이다.
+- 선언이 없으면 이 절은 적용하지 않는다.
+
 ## 산출물
 
 ```yaml
@@ -83,6 +98,12 @@ Step_3_TODO:
   ## 코드 탐색 결과
   - {파일}: {현재 상태 요약}
 
+  ## 정본 참조
+  - 색인: `plan/index.json`
+  - 관련: {정본 문서 경로 | 없음(사유)}
+  - 반영 예정: {문서 | 해당 없음(사유)}
+  # o2 는 1~2줄(게이트 경고만). plan root 가 없으면 "plan root 없음" 1줄. 절차·규격은 Skill('oplan') "정본 참조" 절과 Skill('ocanon') 참조.
+
   ## TODO
   - [ ] {파일}: {수정 내용} (~{N}줄)
   - [ ] {파일}: {수정 내용} (~{N}줄)
@@ -90,6 +111,16 @@ Step_3_TODO:
   ## 예상 규모
   - 파일 수: {N}개
   - 수정 줄 수: ~{N}줄
+```
+
+### file_assignment.json 생성 (필수 — 계획서 외 별도 산출물)
+
+```yaml
+경로: ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/session-env/${UUID}/file_assignment.json
+시점: TODO 확정 직후 (odev spawn 전)
+스키마: {"tier":"O2","agents":{"odev-1":{"persona":"{페르소나}","files":["{절대경로}"],"tasks":["{작업}"]}}}
+근거: 검수 게이트 F-CRUD-1(verify_crud_executed.py)이 변경 파일 교차검증 입력으로 읽는다.
+      부재 시 게이트가 git 폴백 또는 fail-closed로 떨어진다 (2026-10-06 사례).
 ```
 
 ## 범위 초과 감지 및 승격

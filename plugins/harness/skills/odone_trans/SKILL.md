@@ -50,7 +50,8 @@ review에서 발견하지 못한 논리적 위반(hook 우회, 강제 조작 등
 
 검색_방법:
   - Grep 도구 사용: pattern="{패턴}", path="{트랜스크립트}", output_mode="content", offset={시작라인}
-  - 또는 mcp__oio__bash_exec: tail -n +{시작라인} "{트랜스크립트}" | grep -nE "{패턴}"
+  - 셸(tail/grep)로 트랜스크립트를 읽지 말 것 — 진행 중 셸 명령에서 트랜스크립트 이름이 차단됨. Grep 도구 또는 mcp__oio__file_read(offset/limit) 사용
+  - 트랜스크립트를 file_read 로 통째로 읽지 말 것 — 대용량 응답 직후 팀원 oio MCP 가 끊긴 실측이 있다(L-583). Grep 으로 줄 번호를 먼저 찾고, 그 앞뒤만 offset/limit(500줄 이하)로 읽는다.
 
 오탐_필터:
   - hook 스크립트 자체의 코드 (echo "...pipeline_state" 등) → 도구 호출 컨텍스트 확인

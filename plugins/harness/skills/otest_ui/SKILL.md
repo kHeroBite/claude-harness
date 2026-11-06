@@ -5,7 +5,7 @@ invocation:
   user_callable: true
   pipeline_callable: true
   called_by: ["otest(Phase 2)"]
-  calls: [otest_winforms, otest_playwright, otest_playwright_bg, otest_ux]
+  calls: [otest_winforms_bg, otest_winforms, otest_playwright, otest_playwright_bg, otest_ux]
 ---
 
 # otest_ui — Frontend 구현 검증
@@ -48,26 +48,31 @@ otest_ui는 프로젝트 유형에 따라 아래 4개 서브스킬 중 하나를
 
 | 프로젝트 유형 | 서브스킬 | 설명 |
 |-------------|---------|------|
-| WinForms/WPF | Skill('otest_winforms') | FlaUI/UIAutomation 자동화 |
+| WinForms/WPF (기본) | Skill('otest_winforms_bg') | 백그라운드·화면 밖 제어(L0~L2), 실입력 없음 |
+| WinForms/WPF (포그라운드) | Skill('otest_winforms') | 사용자 요청 또는 bg 실패 실측 항목만 — 실입력 |
 | 웹 (Playwright) | Skill('otest_playwright') | 브라우저 자동화 |
 | 웹 (백그라운드) | Skill('otest_playwright_bg') | Playwright 백그라운드 실행 |
-| 모바일 (.NET MAUI Android) | Skill('otest_mobile') | ADB + 스크린샷 + UI dump + 좌표 클릭 |
+| 모바일 (.NET MAUI Android) | Skill('otest_mobile') | 라우터 — 실기기 연결 시 otest_mobile_phone, 없으면 otest_mobile_emulator. ADB + 스크린샷 + UI dump + 좌표 클릭 — 모바일 축 otest(otest-m-N)만 호출. 데스크톱 축 otest 는 모바일 otest 가 따로 있으면 호출하지 않는다 (otest SKILL.md "자원 축") |
+| 모바일웹 (앱 동기화 웹) | Skill('otest_mobileweb') | 웹 축 otest(otest-w-N)만 호출. 앱↔웹 parity 검증 포함, 웹 미구축이면 N/A 보고(PASS 금지). 다른 축 otest 는 호출하지 않는다 (otest SKILL.md "자원 축") |
 | 범용 (스크린샷) | Skill('otest_ux') | 스크린샷 시각분석 + API + 로그 |
 
 ```yaml
 도구_선택_순서:
-  1순위: oinfra_{project}의 ui_test.tool 값 (프로젝트별 고정)
-    otest_ui 진입 시 Skill('oinfra_{project}')에서 ui_test.tool 확인
+  1순위: INFRA.md 헤더 ui_test 값 (프로젝트별 고정)
+    otest_ui 진입 시 {프로젝트 루트}/INFRA.md 헤더에서 ui_test 확인
     값이 있으면 해당 서브스킬 즉시 호출
-  2순위: git diff 확장자 기반 자동 판정 (oinfra 미정의 시 fallback)
-    *.Designer.cs, *.xaml → otest_winforms
+  2순위: git diff 확장자 기반 자동 판정 (INFRA.md 미정의 시 fallback)
+    *.Designer.cs, *.xaml → otest_winforms_bg (포그라운드 otest_winforms 는 사용자 요청 또는 bg 실패 실측 항목만)
     *.razor, *.vue, *.tsx → otest_playwright_bg
     그 외 → otest_ux
 
 프로젝트별_고정_현황:
-  각 프로젝트의 oinfra_{project} 스킬에 UI 테스트 도구를 명시한다.
-  미정의 시 위 2순위(확장자 기반 자동 판정)로 폴백한다.
-  예: C# WinForms → otest_winforms / 웹 프론트 → otest_playwright_bg / API 전용 → otest_ux
+  Mars: otest_winforms_bg (C# WinForms)
+  mAIx: otest_winforms_bg (C# WinForms)
+  rtx5070: otest_playwright_bg (Python + HTML)
+  Jarvis: otest_ux (API 전용)
+  know: otest_ux (API 전용)
+  meTube: otest_ux (API/CLI)
 
 창_최소화:
   otest_playwright 호출 시: 창 최소화 자동 처리됨 (WSLg + xdotool)
@@ -106,7 +111,7 @@ Step_2_UI_변경_감지 (o3/o4):
 Step_3_화면_조작_재현:
   acceptance_criteria.json의 ui_flow (조작 순서) 로드
   각 화면별:
-    1. 화면 열기 (선택된 서브스킬(otest_winforms/otest_playwright/otest_ux)로 위임)
+    1. 화면 열기 (선택된 서브스킬(otest_winforms_bg/otest_playwright/otest_ux)로 위임)
     2. 입력값 설정
     3. 버튼 클릭 / 이벤트 발생
     4. 결과 상태 캡처
@@ -168,7 +173,7 @@ touch "$HOME/.claude/session-env/${UUID}/evidence/ui_test_done_skipped"  # EXT4(
 ## 스크린샷 캡처 방법 (우선순위)
 
 ```yaml
-1순위_noactivate_모드 (창 방해 없음):
+1순위_noactivate_모드 (MARS 전용 — 창 방해 없음):
   명령: {curl_cmd} -s --max-time 30 -o "{save_path}" "http://localhost:5959/api/screenshot/download?noactivate=1"
   장점: 창 활성화/포커스 변경 없이 캡처 가능 (최소화/백그라운드 상태 포함)
   동작: SW_SHOWNOACTIVATE → PrintWindow → SW_MINIMIZE (캡처 후 원상 복구)

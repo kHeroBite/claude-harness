@@ -1,8 +1,4 @@
 #!/bin/bash
-# >>> harness preamble
-_HP="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)}"
-[ -f "$_HP/hooks/harness_preamble.sh" ] && . "$_HP/hooks/harness_preamble.sh" 2>/dev/null || { [ -f "$_HP/harness_preamble.sh" ] && . "$_HP/harness_preamble.sh" 2>/dev/null; } || true
-# <<< harness preamble
 # state=IDLE 전이 후 4축 잔존 자동 검증 hook
 
 # PostToolUse:mcp__oio__session_state 매처 — session_state 호출 직후 발동
@@ -17,12 +13,44 @@ INPUT=$(timeout 5 cat 2>/dev/null || echo "")
 TOOL_KEY=$(echo "$INPUT" | jq -r '.tool_input.key // empty' 2>/dev/null || echo "")
 TOOL_VALUE=$(echo "$INPUT" | jq -r '.tool_input.value // empty' 2>/dev/null || echo "")
 
+# === conv_179065014644_r3 hook (b) — 역방향 전이 관찰 (IDLE 필터 이전) ===
+# key=state 의 모든 값을 관찰하고, key=reroute_count·value=increment 면 자동 기록과의 이중 증가를 보정한다.
+# 서브셸 + 출력 폐기 + || true 로 감싸 실패해도 아래 기존 로직과 exit 0 에 영향이 없다.
+# 세션 격리 §(a): 호출 대상 uuid 가 이 hook 이 결정한 UUID 와 다르면 관찰하지 않는다.
+if [[ "$TOOL_KEY" == "state" || ( "$TOOL_KEY" == "reroute_count" && "$TOOL_VALUE" == "increment" ) ]]; then
+  (
+    source "${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/reroute_record.sh" 2>/dev/null || exit 0
+    # UUID 결정은 session_id.sh resolve_uuid 와 같은 규칙(PIPELINE_UUID 우선, 없으면 session_id)이다.
+    # 지연을 줄이려고 jq 1회로 session_id·tool_input.uuid 를 함께 읽는다.
+    _RR_IDS=$(echo "$INPUT" | jq -r '(.session_id // "") + "\t" + (.tool_input.uuid // "")' 2>/dev/null)
+    _RR_TAB=$'\t'
+    _RR_SID="${_RR_IDS%%${_RR_TAB}*}"
+    _RR_SID="${_RR_SID//[[:space:]]/}"
+    _RR_TGT="${_RR_IDS#*${_RR_TAB}}"
+    UUID="${PIPELINE_UUID:-$_RR_SID}"
+    [[ -n "${UUID:-}" ]] || exit 0
+    export UUID
+    [[ -z "$_RR_TGT" || "$_RR_TGT" == "$UUID" ]] || exit 0
+    _RR_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/session-env/${UUID}"
+    if [[ "$TOOL_KEY" == "state" ]]; then
+      _RR_VAL="$TOOL_VALUE"
+      [[ "$_RR_VAL" == "OK" ]] && _RR_VAL="PLAN"
+      # 전이가 실제로 반영된 경우만 관찰한다 (INVALID_TRANSITION 등 실패 호출 제외)
+      _RR_CUR=$(awk 'NR==1{print $1}' "$_RR_DIR/state" 2>/dev/null)
+      [[ "$_RR_CUR" == "$_RR_VAL" ]] || exit 0
+      reroute_observe "$_RR_DIR" "" "$_RR_VAL" session_state ""
+    else
+      reroute_manual_increment_adjust "$_RR_DIR"
+    fi
+  ) >/dev/null 2>&1 || true
+fi
+
 if [[ "$TOOL_KEY" != "state" || "$TOOL_VALUE" != "IDLE" ]]; then
   exit 0
 fi
 
 # --- UUID 결정 ---
-source "${HARNESS_HOOK_DIR}/lib/session_id.sh" 2>/dev/null || true
+source "${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/session_id.sh" 2>/dev/null || true
 resolve_uuid "$INPUT" 2>/dev/null || true
 [[ -z "${UUID:-}" ]] && exit 0
 
@@ -33,9 +61,10 @@ mkdir -p "${SESSION_DIR}/logs" 2>/dev/null || true
 # 사이클46 축① — 반대편 base 미러 (읽는 쪽이 다른 base 를 볼 수 있다)
 # ★_mirror_file 만 쓴다 — _mirror_file_strict 는 미러 실패가 원 쓰기를 실패시키므로 hook 금지★
 # 라이브러리 부재 시에도 hook 이 그대로 동작하도록 no-op 폴백을 정의한다.
-source "${HARNESS_HOOK_DIR}/lib/session_mirror.sh" 2>/dev/null || true
-type _mirror_file >/dev/null 2>&1 || _mirror_file() { :; }
-type _mirror_delete >/dev/null 2>&1 || _mirror_delete() { :; }
+# L-462: session_mirror.sh 부재/실패 시 no-op 폴백(|| true + _mirror_* 미정의 폴백)으로 hook 무중단
+source "${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/session_mirror.sh" 2>/dev/null || true
+declare -F _mirror_file >/dev/null 2>&1 || _mirror_file() { :; }
+declare -F _mirror_delete >/dev/null 2>&1 || _mirror_delete() { :; }
 
 # --- 무한 루프 가드: cleanup_verify_running 마커 확인 ---
 RUNNING_MARKER="${SESSION_DIR}/cleanup_verify_running"
@@ -105,6 +134,7 @@ if [[ ${#STALE_FILES[@]} -gt 0 ]]; then
   # team_name 파일 비우기
   if [[ -f "$TEAM_NAME_FILE" ]] && [[ -n "$TEAM_NAME_VALUE" ]]; then
     truncate -s 0 "$TEAM_NAME_FILE" 2>/dev/null || rm -f "$TEAM_NAME_FILE" 2>/dev/null || true
+    # L-463: team_name·classification·status·entry_tier 4축 정리 지점마다 잔존 시 _mirror_file, 부재 시 _mirror_delete(삭제/truncate 양 경로)
     # truncate 성공(파일 존재, 빈 내용)이면 _mirror_file, rm 성공(파일 부재)이면 _mirror_delete
     if [[ -f "$TEAM_NAME_FILE" ]]; then _mirror_file "$TEAM_NAME_FILE" || true; else _mirror_delete "$TEAM_NAME_FILE" || true; fi
     echo "${TIMESTAMP} INFO cleaned team_name" >> "$LOG_FILE" 2>/dev/null || true

@@ -7,11 +7,11 @@
 조건: 이 세션에서 공용 리소스를 수정한 경우에만 실행
 
 공용_리소스_정의:
-  공용_스킬: ~/.claude/skills/ 내 범용 스킬 (ok, oplan, odev, otest, odone 등)
-  공용_hook: ~/.claude/hooks/ 내 모든 .sh 파일
-  공용_설정: ~/.claude/settings.json, ~/.claude/settings.local.json
-  프로젝트_CLAUDE_md: /mnt/c/work/{ProjA,ProjB,ProjC}/CLAUDE.md (하드링크)
-  프로젝트_스킬: /mnt/c/work/{ProjA,ProjB,ProjC}/.claude/skills/ 내 범용 스킬 (하드링크)
+  공용_스킬: ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/skills/ 내 범용 스킬 (ok, oplan, odev, otest, odone 등)
+  공용_hook: ${HARNESS_HOME:-$HOME/.harness}/current/hooks/ 내 모든 .sh 파일
+  공용_설정: ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json, ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.local.json
+  프로젝트_CLAUDE_md: /mnt/c/DATA/Project/{Mars,AI,MaiX}/CLAUDE.md (하드링크)
+  프로젝트_스킬: /mnt/c/DATA/Project/{Mars,AI,MaiX}/.claude/skills/ 내 범용 스킬 (하드링크)
 
 검증_항목:
 
@@ -24,7 +24,7 @@
 
   2_hook_존재_검증:
     대상: 이 세션에서 생성/수정된 hook 파일
-    방법: ls -la ~/.claude/hooks/{hook명} 존재 + 실행 권한 확인
+    방법: ls -la ${HARNESS_HOME:-$HOME/.harness}/current/hooks/{hook명} 존재 + 실행 권한 확인
     PASS: 파일 존재 + chmod +x
     FAIL: 파일 누락 또는 실행 권한 없음
 
@@ -45,7 +45,7 @@
   ┌────────────────────────────────────────┐
   │ 리소스               │ 상태 │ 프로젝트 │
   ├──────────────────────┼──────┼──────────┤
-  │ {스킬/hook/설정 이름}│ ✅/❌│ ProjA,ProjB,ProjC│
+  │ {스킬/hook/설정 이름}│ ✅/❌│ Mars,AI,MaiX│
   └──────────────────────┴──────┴──────────┘
 
 FAIL_시_자동_수정:

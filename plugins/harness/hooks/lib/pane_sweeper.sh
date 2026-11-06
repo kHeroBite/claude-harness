@@ -1,8 +1,4 @@
 #!/bin/bash
-# >>> harness preamble
-_HP="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)}"
-[ -f "$_HP/hooks/harness_preamble.sh" ] && . "$_HP/hooks/harness_preamble.sh" 2>/dev/null || { [ -f "$_HP/harness_preamble.sh" ] && . "$_HP/harness_preamble.sh" 2>/dev/null; } || true
-# <<< harness preamble
 # pane_sweeper.sh — bash 고아 pane 감지/정리 공통 유틸리티
 # 배경: teammateMode=tmux에서 팀에이전트 claude 종료 후 부모 bash가 잔류 → pane이 bash 상태로 남음
 # 원칙: LLM 의지(ok shutdown_with_verify)에 의존하지 않고 hook에서 물리적 정리

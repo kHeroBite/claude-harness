@@ -75,13 +75,14 @@ Step 8: 재개 실행 — 단계별 spawn + 파이프라인 복귀
 ## Step 1: UUID 탐색
 
 ```yaml
-방법: mcp__oio__bash_exec로 ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/session-env/*/state 순회
+# L-403/L-405: 타 세션 session-env/*/ 순회 금지(§(a)(c)) — 자기 UUID(SELF_UUID) 디렉터리만 조회하고 SELF_UUID 빈값은 fail-closed. 아래 스크립트가 그 구현이다.
+방법: mcp__oio__bash_exec로 ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/session-env/${SELF_UUID}/state 조회(자기 세션만)
 스크립트: |
   UUID=""
   CANDIDATES=()
   # §(a) 자기 세션 UUID 확정 (쓰기 경계 기준)
   # oresume은 자기 세션 파이프라인만 재개 가능 — 타 세션 state 쓰기는 §(a) 위반
-  SELF_UUID=$(source "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/lib/session_id.sh" 2>/dev/null && resolve_uuid "" 2>/dev/null && echo "${UUID:-}" || echo "")
+  SELF_UUID=$(source "${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/session_id.sh" 2>/dev/null && resolve_uuid "" 2>/dev/null && echo "${UUID:-}" || echo "")
   # [P2-isolation §(a)(c)] Fix 35: SELF_UUID 빈값 → 타 세션 재개 위험 — fail-closed
   if [ -z "$SELF_UUID" ]; then
     echo "❌ SELF_UUID 결정 실패 — oresume 중단 (§(a) fail-closed, 타 세션 재개 금지)" >&2
@@ -92,7 +93,7 @@ Step 8: 재개 실행 — 단계별 spawn + 파이프라인 복귀
   if [ -d "$_dir" ]; then
     # ★bash -c 래핑 필수 — bash_exec 셸은 /bin/sh(dash), dash 에는 source 가 없다.★
     #   미래핑 시 state_read rc=127 → 빈값 → IDLE 로 오폴백하여 ★중단된 파이프라인을 IDLE 로 오판★한다 (2026-08-26 실측).
-    _state=$(bash -c 'source "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/lib/state_machine.sh" 2>/dev/null; state_read "'"${_dir}"'state"' 2>/dev/null | awk '{print $1}')
+    _state=$(bash -c 'source "${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/state_machine.sh" 2>/dev/null; state_read "'"${_dir}"'state"' 2>/dev/null | awk '{print $1}')
     _state="${_state:-IDLE}"
     # Phase B: stage에서 OK 제거 (PLAN/DEV/TEST/DONE/FINISH/EARLY_TERM/ERROR만 비IDLE)
     # state=PLAN AND classification=OK 케이스 = 기존 OK 진입 시점 (Step 7 OK_START 매핑 참조)
@@ -105,11 +106,72 @@ Step 8: 재개 실행 — 단계별 spawn + 파이프라인 복귀
   fi
   echo "총 ${#CANDIDATES[@]}개 비IDLE 파이프라인 발견"
 
-분기:
-  0개: "✅ 재개할 파이프라인 없음. /oo로 새 작업을 시작하세요." 출력 후 종료
+분기 (★질문 없음 — 2026-10-11 사용자 지시 "답변 요구로 자율주행을 막지 마라"★):
+  0개: ★바로 종료하지 않는다.★ 아래 "재기동_복원" 을 먼저 실행한다.
+       resume_restore.py --check 가 rc=3(보존본 없음·완료된 파이프라인)일 때만
+       "✅ 재개할 파이프라인 없음. /oo로 새 작업을 시작하세요." 출력 후 종료한다.
+       rc=4(보존본 파싱 실패)면 "⚠️ [재기동 복원 불가] {reason}" 1줄 출력 후 종료한다(현행 동작 이하로 나빠지지 않는다).
+       rc=5(reason=state_checkpoint_mismatch)면 live state 나 완료 시각(finish_at) 이후 저장된 보존본은 진행 중(PLAN|DEV|TEST|DONE)인데 checkpoint 는 FINISH_DONE/ofinish_done 으로 닫힌 불일치다.
+       ★자동 재개도, "재개할 파이프라인 없음(완료)" 판정도 하지 않는다.★ live_state·preserved_state·last_event 를 사용자에게 보고하고 state·checkpoint.jsonl 을 수동으로 확인한 뒤 종료한다.
   1개: 해당 UUID 자동 선택
-  복수: AskUserQuestion으로 사용자에게 UUID 선택 요청
-    형식: "재개할 파이프라인을 선택하세요:\n  1. UUID={uuid1} 상태={state1}\n  2. UUID={uuid2} 상태={state2}"
+  복수: 자기 UUID 만 조회하므로 구조상 발생하지 않는다. 발생하면 질문하지 않고 SELF_UUID 와 같은 것을 고른다
+        (근거 1줄 출력). 타 세션 후보는 §(a) 에 따라 절대 고르지 않는다.
+
+# ★재기동 복원 (계획 s10D — 2026-10-11 신설)★
+재기동_복원:
+  배경: |
+    Windows 재기동·WSL 완전 종료·IO 정지 뒤에는 SessionStart.sh 의 boot-stale 정리가 state 를 IDLE 로 바꾸고
+    classification·team_name·entry_tier·status 등을 지운다. 첫 입력에서 UserPromptSubmit.sh _reset_idle 이
+    conv_id 도 새 값으로 바꾼다. 그래서 위 후보 조회는 0개가 된다.
+    삭제 직전 lib/resume_preserve.sh 의 rp_save 가 resume_preserve/<epoch>_<reason>/ 에 사본과 latest.json 을 남기고,
+    PostToolUse_agent_snapshot.sh(async)가 팀원별 상태를 agent_state/<name>.json 에 주기 저장한다.
+    이 절차는 그 두 사본으로 파이프라인을 되살린다.
+  정직_고지:
+    - 메인 대화는 공식 resume(claude --resume / /resume)으로 이어진다.
+    - ★팀원 대화 원본의 재개는 공식 미지원이다★ — https://code.claude.com/docs/en/agent-teams Limitations
+      ("/resume and /rewind do not restore in-process teammates … tell the lead to spawn new teammates").
+      그래서 저장된 요약 컨텍스트(spawn 원문·마지막 지시·마지막 보고·TODO·결과 파일)로 ★같은 이름을 재spawn★ 한다.
+    - 서브에이전트는 같은 세션 resume 뒤 SendMessage(agentId)로 재개된다(https://code.claude.com/docs/en/sub-agents). (agentId 목록은 --plan 의 subagents[])
+  절차 (사용자 확인 없이 진행한다):
+    1. 판정 — bash -c 로 감싼다(bash_exec 는 dash):
+       mcp__oio__bash_exec(command="bash -c 'S=$HOME/.claude/session-env/{SELF_UUID}; python3 ${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/resume_restore.py --check \"$S\"; echo rc=$?'")
+       # {SELF_UUID} 는 위에서 확정한 값으로 치환한다. 경로 base 는 $HOME/.claude 다(CLAUDE_CONFIG_DIR 쪽은 /tmp 심볼릭링크).
+       rc=3 → 위 "0개" 분기대로 종료. rc=4 → 1줄 출력 후 종료. rc=0 → 2번.
+       rc=0 은 state_source=checkpoint 와 state_source=preserve_fallback 두 가지다. checkpoint 에 STATE_TRANSITION 만 있어도 보존 state 가 PLAN|DEV|TEST|DONE 이면 preserve_fallback 으로 rc=0 이 나온다.
+       state_source=preserve_fallback 이면 last_event 가 비어 있으므로 Step 8 은 last_event 가 아니라 restore.state 단계의 시작부터 밟는다.
+       rc=5 → state·checkpoint 불일치다. 자동 재개·완료 판정을 금지하고 "⚠️ [state·checkpoint 불일치] live={live_state} 보존본={preserved_state} 마지막={last_event} — 메타 수동 확인 필요" 를 사용자에게 보고한 뒤 종료한다.
+    2. 계획 — 현재 메인 sessionId 를 알면 --lead-session 으로 넘긴다(재기동 뒤 팀 리드 sessionId 가 UUID 와 다를 수 있다):
+       python3 ${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/resume_restore.py --plan "$S" [--lead-session <현재 sessionId>]
+       출력 JSON: restore{state,classification,entry_tier,status,conv_id,team_name_current,auto,oroof_active_src,oroof_active_json_src,oroof_live_exists,goal_src,goal_live_exists,goal_locked,rollback_hash,roof_gate,auto_roof_mismatch}, boot_changed, last_event, state_source, agents[], subagents[], stale_agent_records[](boot_changed==true 일 때만)
+       부산물: work/respawn/<name>.md (partial·missing 팀원만), agent_state/restore_log.jsonl
+    3-0. 자율모드 부속 복원 (state·status 보다 먼저 — 아래 메타 복원보다 앞선다).
+       (a) restore.goal_src 가 있고 restore.goal_live_exists==false 면 mcp__oio__file_copy(source=restore.goal_src, destination="$HOME/.claude/session-env/{SELF_UUID}/goal.json") 로 복원한다.
+           근거: file_write 는 계약 시점 auto_script 실행으로 F-GOALAS-1 거짓 차단을 부른다. file_copy 는 P2 정적 전용이다. live goal 이 이미 있으면 새 계약이 우선이므로 덮어쓰지 않는다.
+           차단되면 표현을 바꿔 재시도하지 않고(L-597) 보고에 "goal 미복원" 을 남긴다.
+       (b) restore.oroof_active_src·restore.oroof_active_json_src 가 있고 restore.oroof_live_exists==false 면 각각 file_copy 한다(destination 파일명은 원래 이름 그대로).
+       (c) restore.auto 가 비어 있지 않으면 mcp__oio__session_state(uuid=SELF_UUID, key="auto", value=restore.auto) 로 쓴다.
+       (d) restore.rollback_hash 가 비어 있지 않으면 mcp__oio__session_state(uuid=SELF_UUID, key="rollback_hash", value=restore.rollback_hash) 로 쓴다.
+       (e) restore.auto_roof_mismatch==true 면 보존본 자체가 깨진 oto 계약이다. oroof_active 나 ROOF 를 새로 만들지 않는다(위조 금지).
+           "⚠️ [재기동 복원] auto=ON 인데 ROOF 게이트 보존본 없음 — oto_entry_guard F-OTO-0b 가 state 복원을 막는다" 를 보고하고 종료한다.
+       (f) 옛 pane 기록 무효화 (boot_changed==true 일 때만, 팀원 재spawn 보다 먼저): plan.stale_agent_records 각 항목에 대해
+           mcp__oio__file_read 로 agents/<name>(항목의 file 절대경로)을 읽은 뒤, mcp__oio__file_write(overwrite=true) 로 "원문 그대로 + 끝에 shutdown_sent=true 와 stale_boot=<restore 시각 epoch> 2줄" 을 덧붙여 쓴다.
+           근거: 정규 파일을 공백 아닌 내용으로 덮어쓰는 것은 write_guard H-1 대상이 아니다(사이클194 (e)). shutdown_sent=true 는 full_task_team_guard L-DUP1 이 명시한 통과 경로이고, 재기동으로 옛 프로세스가 전부 죽었으므로 사실 표기다.
+           금지: agents/<name> 삭제·copy·move·rename·이름 변경, <name>.failed 마커 위조, 팀원 이름 바꾸기 우회. 같은 이름 재spawn 이 정답이며 차단되면 L-597 로 보고하고 대기한다.
+           boot_changed==false 이면 옛 pane 이 살아 있을 수 있으므로 무효화하지 않고 L-DUP1 판정을 그대로 받는다.
+       status 는 아래 메타 복원이 보존 문자열(ROOF 포함, 구 세션의 RALPH 도 그대로 — ROOF-COMPAT)을 그대로 복원하므로 status_add 를 따로 부르지 않는다. 부른다면 bash -c 'source …state_machine.sh; status_add …' 로만 부른다(dash).
+    3. 메타 복원 — 스크립트는 메타를 직접 쓰지 않는다(write_guard Fix 3·O7). 메인이 3-0 다음에 순서대로 적는다.
+       mcp__oio__session_state(uuid=SELF_UUID, key="conv_id",        value=restore.conv_id,        force=True)
+       mcp__oio__session_state(uuid=SELF_UUID, key="classification", value=restore.classification, force=True)  # 빈값이면 생략
+       mcp__oio__session_state(uuid=SELF_UUID, key="entry_tier",     value=restore.entry_tier,     force=True)  # 빈값이면 생략
+       mcp__oio__session_state(uuid=SELF_UUID, key="status",         value=restore.status,         force=True)  # 빈값이면 생략
+       mcp__oio__session_state(uuid=SELF_UUID, key="team_name",      value=restore.team_name_current, force=True)
+         # team_name_current 가 빈값이면(소유 팀 없음·모호) 쓰지 않는다 — §(b) fail-closed. Step 8 사전조건_2 가 팀을 새로 만든다.
+       mcp__oio__session_state(uuid=SELF_UUID, key="state",          value=restore.state,          force=True)  # ★state 는 마지막★
+       state 기록이 hook(oto/done_gate 등)에 막히면 직전 단계(DEV)로 기록하고 Step 8 이 그 단계부터 다시 밟는다.
+    4. 출력(1줄): "🔁 [재기동 복원] conv_id={conv_id} state={state} last_event={last_event} 재spawn 대상 {n}명(완료 {m}명 제외) auto={restore.auto|-} goal={복원|유지|없음} 서브 {len(plan.subagents)}명"
+    4-1. 서브에이전트 재개: plan.subagents 각 원소에 SendMessage(to=<agent_id>, message="재기동으로 중단됐다. 같은 지시로 이어서 진행하고 결과를 보고하라.") 를 보낸다.
+       정직 고지: 프로세스 재시작(--continue) 뒤 agentId 로 재개가 되는지는 이 하네스에서 실측하지 않았다(추정). 실패하면 그 agent_id 와 transcript_hint 를 보고에 남기고, 그 서브에이전트의 일은 메인이 계획서 기준으로 다시 수행한다.
+    5. CANDIDATES 에 "$SELF_UUID {state}" 를 넣고 Step 2 로 진행한다. --plan JSON 은 Step 3·4·8 에서 그대로 재사용한다.
 
 # [P2-isolation §(a)(c)] Fix 35: SELF_UUID 빈값 → 모든 경우 fail-closed (후보 수 무관)
 # 이전 fallback "1개 후보 + SELF_UUID 불명 시 해당 UUID 사용" 제거 — 그 1개가 타 세션일 수 있음
@@ -276,11 +338,21 @@ current_phase_batch_감지:
       │ 요약: 활성 {n}개 / 완료 {n}개 / 좀비 {n}개 / 사망 {n}개 │
       └──────────────────────────────────────────────────┘
 
-  5_후속_판단:
+  0_재기동_복원_경로 (Step 1 재기동_복원을 거친 경우 — 위 1~4 보다 먼저 본다):
+    조건: --plan 출력의 boot_changed=true
+    처리: ★tmux pane 조회를 건너뛰고 등록된 팀원 전원을 '사망' 으로 판정한다.★
+          재기동 뒤 pane 번호(%N)는 다른 프로세스에 재사용될 수 있어 pane 조회 결과를 믿을 수 없다.
+          완료 여부는 --plan 의 agents[].status(completed|partial|missing)를 그대로 쓴다.
+          아래 "진행중 → 계속 대기" 판단은 이 경로에서 쓰지 않는다.
+    boot_changed=false (같은 부팅 안의 비정상 종료): 기존 1~4 절차대로 pane 물리 상태를 본다.
+
+  5_후속_판단 (★질문 없음 — 보수적 자율 판단★):
     전원_사망_또는_완료: checkpoint + work/ 파일 기반 재개 (Step 4~8)
     일부_활성_진행중:
       - 완료 판정된 에이전트 → 재spawn 불필요 (shutdown_request 발송)
-      - 진행중 에이전트 → 사용자에게 선택지 제시 (계속 대기 vs /ofinish로 강제 정리)
+      - 진행중(활성) 에이전트 → ★질문하지 않고 그대로 둔다(계속 대기).★ 살아 있는 팀원을 재spawn 하면
+        같은 이름이 둘이 되고, 강제 정리는 진행 중 작업을 잃는다 — 둘 다 보수적이지 않다.
+        근거 1줄 출력: "⏳ [oresume] {이름} 활성·진행중 — 재spawn·정리하지 않고 결과 보고를 기다린다."
       - 좀비 에이전트 → 즉시 kill 후 재spawn 대상
     전원_활성_진행중:
       "파이프라인이 아직 진행 중입니다. 대기 또는 /ofinish로 강제 정리하세요." 안내 후 종료
@@ -310,6 +382,8 @@ SendMessage_절대_금지_패턴 (L-331):
         "⚠️ [잔류물 무시] {파일명} conv_id={저장값|부재} ≠ 현재 {현재값} — 미존재로 취급한다."
   원칙: 판단이 서지 않으면 ★미존재(재수행)★ 쪽으로 기운다. 중복 수행은 비용일 뿐이지만
         잘못된 스킵은 "하지 않은 일을 완료로 보고"하는 침묵 실패다.
+  재기동_복원_뒤: 재기동 복원 뒤 현재 conv_id 는 보존 conv_id 로 되돌려져 있다. 되돌리기 전이라면 Step 1 복원을 먼저 하라.
+        (되돌리기 전 새 conv_id 로 이 게이트를 돌리면 완료된 결과까지 전부 잔류물로 버려진다. 게이트 기준은 그대로 둔다.)
   배경: work/ 는 사이클을 넘어 누적되므로 이름·경로가 같은 옛 산출물이 그대로 남는다.
         사이클25 odone 진입 시 사이클15 잔류물(status:"completed")이 실제로 발견됐다.
 
@@ -350,11 +424,15 @@ COMPATIBLE:
 
 STALE:
   판정_방법: 교집합 있음 (파이프라인이 수정하려는 파일이 외부에서 변경됨)
-  처리: AskUserQuestion으로 3가지 선택지 제시
-    선택지:
-      1. 리셋+재시작: checkpoint 삭제 + state→IDLE + "/oo로 새로 시작하세요" 안내
-      2. 강제 재개: 외부 변경 무시하고 재개 (⚠️ 충돌 위험)
-      3. 수동 확인: 사용자가 직접 코드 확인 후 결정 (/oresume 재호출 안내)
+  처리 (★질문 없음 — 보수적 자율 판단, 2026-10-11 사용자 지시★):
+    선택: "재개 + 교집합 파일 재검토" 로 진행한다. checkpoint 삭제·리셋(파괴적)도, 외부 변경 무시(충돌 위험)도 하지 않는다.
+    절차:
+      1. 교집합 파일을 담당한 팀원은 Step 4 판정이 completed 여도 ★partial 로 강등★한다(재검토 대상).
+      2. 그 팀원의 재spawn 프롬프트에 "외부 변경 파일: {목록} — 현재 내용을 다시 읽고, 이미 한 수정이
+         남아 있는지 확인한 뒤 이어서 작업하라. 외부 변경을 되돌리지 마라." 를 덧붙인다.
+      3. 근거 1줄 출력: "⚠️ [STALE 자율재개] 외부 변경 {n}파일 — 담당 {이름들} 재검토로 재개한다(리셋·강제 재개 안 함)."
+    리셋이 필요하다고 판단되면(교집합이 계획서 수정 대상의 절반 이상 등) 리셋하지 말고 PLAN 재개로 돌린다
+    (계획을 현재 코드 기준으로 다시 세운다 — checkpoint 는 보존).
 
 git_sha_미존재 (checkpoint에 git_sha 필드 없음):
   처리: COMPATIBLE로 간주 + 경고 출력
@@ -502,7 +580,8 @@ batch_우선순위_규칙:
   절차:
     - Step 3에서 수집한 에이전트별 물리 상태(활성/좀비/사망/완료) 참조
     - 활성 + evidence/work 완료 판정 → shutdown_request 발송 후 재개
-    - 활성 + 미완료 판정 → 사용자에게 "계속 대기 vs /ofinish 강제 정리" 선택지 제시
+    - 활성 + 미완료 판정 → 질문하지 않고 계속 대기한다(Step 3 5_후속_판단과 같은 보수적 판단 — 재spawn·강제 정리 안 함)
+    - boot_changed=true(재기동 복원) → pane 조회 없이 전원 사망으로 보고 --plan 의 status 로 재spawn 대상을 정한다
     - 좀비(CMD=bash)/사망(pane 소멸)/CASE-8(--agent-id 있는 claude 고아) → 재spawn 대상으로 분류
   절대_금지: SendMessage로 응답 대기 (L-331)
 
@@ -524,9 +603,11 @@ PLAN_재개:
   원칙: PLAN은 증분 불가 → oplan 재spawn
 
   사전_확인:
-    plans/oplan_*.md 존재 + 파일 내용에 TODO/파일할당 포함:
-      → PLAN_DONE으로 간주 가능
-      → "계획서가 이미 존재합니다. PLAN 완료로 간주하고 DEV로 진행할까요?" AskUserQuestion
+    plans/oplan_*.md 존재 + 파일 내용에 TODO/파일할당 포함 + 그 계획서가 마지막 PLAN_START 이후에 수정됨:
+      → ★질문 없이★ PLAN_DONE 으로 간주하고 DEV 로 진행한다.
+      → 근거 1줄 출력: "📋 [oresume] 계획서 {파일} 에 TODO·파일할당 존재 — PLAN 완료로 보고 DEV 로 진행한다."
+    위 세 조건 중 하나라도 확인되지 않음(판단이 서지 않음):
+      → 보수적으로 oplan 재spawn (계획을 다시 세우는 쪽이 낡은 계획으로 구현하는 쪽보다 안전하다)
     plans/ 미존재 또는 내용 불완전:
       → oplan 재spawn 필수
 
@@ -572,6 +653,31 @@ DEV_재개:
     6. Agent spawn (미완료 에이전트 수만큼)
 
     7. 모든 odev 완료 → TEST 재개로 진행 (ok_pipeline 로직 재활용)
+
+  재기동_복원_경로 (Step 1 재기동_복원을 거친 경우 — DEV/TEST/DONE 공통, 위 3~6 을 대신한다):
+    근거: resume_restore.py --plan 출력의 agents[] (Step 1 에서 받은 JSON 을 그대로 쓴다)
+    판정별_처리:
+      completed → 재spawn 하지 않는다 (work/respawn/<name>.md 도 만들어지지 않는다)
+      partial   → ★같은 이름★으로 재spawn. 프롬프트 = work/respawn/<name>.md 전문
+      missing   → ★같은 이름★으로 재spawn. 프롬프트 = work/respawn/<name>.md 전문
+    프롬프트: work/respawn/<name>.md 는 spawn 원문 + "## 재기동 복원 컨텍스트"(마지막 지시·마지막 보고·
+              완료 TODO(재수행 금지)·남은 TODO·files_modified·원본 트랜스크립트 경로·"질문 없이 이어서 진행하라")다.
+              메인이 내용을 요약·재작성하지 않고 file_read 로 읽어 그대로 Agent(name=<name>, prompt=...) 에 넣는다.
+              (팀원 대화 원본 재개는 공식 미지원 — https://code.claude.com/docs/en/agent-teams — 이 요약이 유일한 연속성 수단이다.)
+    같은_이름_재spawn: 이전 인스턴스는 재기동으로 사라졌다. 같은 이름 재spawn 의 유휴 가드 오판은 10B B-5(teammate_idle_guard)가 해소한다.
+
+    ★상한 처리 (팀원 9 = 메인 포함 10, 2026-10-11 사용자 지시)★:
+      재spawn 이 F-AGENT-CAP("이 세션의 동시 생존 팀에이전트가 상한 9개에 도달했습니다")에 걸리면
+      질문하지 않고 차단 안내에 붙은 "회수 후보" 목록을 그 순서대로 회수한 뒤 같은 spawn 을 다시 보낸다.
+        1순위(완료 보고 후 유휴) → 먼저 회수한다.
+        2순위(agent_keep 역라우팅·재작업 대기, result.json 완료) → 1순위로 모자랄 때 회수한다.
+              회수했다면 agent_keep/<이름> 을 지우고, 필요할 때 work/<이름>_result.json 을 근거로 같은 역할을 다시 spawn 한다.
+        작업 중 팀원 → ★절대 회수하지 않는다★ (후보 목록에도 오르지 않는다).
+      회수 방법: 후보에게 SendMessage(to=<이름>, message={"type":"shutdown_request"}) → pane 소멸 확인 → 재시도.
+      "회수 후보 없음" 이면: 남은 재spawn 은 대기열로 두고, 팀원이 끝날 때마다 하나씩 보낸다(순서 = agents[] 순서).
+      근거 1줄 출력: "🚦 [oresume 상한] 회수 {이름들} → 재spawn {이름}" 또는 "🚦 [oresume 대기열] {남은 이름들}"
+
+    출력(재spawn 마다 1줄): "🔁 [재spawn] {name} ({status}) ← work/respawn/{name}.md"
 ```
 
 #### TEST 재개
@@ -593,7 +699,7 @@ TEST_재개:
           Skill('otest') 호출하여 스킬 로딩 후 실행.
           ★ 재개 모드: Phase {N-1}까지 완료됨. Phase {N}부터 시작.
           완료된 Phase: [{phases_completed 목록}]
-          프로젝트 컨텍스트: Skill('oinfra_{project}') 호출"
+          프로젝트 컨텍스트: 프로젝트 인프라는 INFRA.md 참조(경로는 프롬프트의 [INFRA_INJECT] 줄)"
 
     4. 상태 설정:
        mcp__oio__session_state(uuid="${UUID}", key="state", value="TEST", force=True)
@@ -626,7 +732,7 @@ DONE_재개:
           Skill('odone') 호출하여 스킬 로딩 후 실행.
           ★ 재개 모드: 완료된 서브스텝: [{substeps_completed 목록}].
           {미완료 서브스텝}부터 시작하라.
-          프로젝트 컨텍스트: Skill('oinfra_{project}') 호출"
+          프로젝트 컨텍스트: 프로젝트 인프라는 INFRA.md 참조(경로는 프롬프트의 [INFRA_INJECT] 줄)"
 
     4. 상태 설정:
        mcp__oio__session_state(uuid="${UUID}", key="state", value="DONE", force=True)
@@ -670,7 +776,9 @@ BATCH_재개:
          존재 + 30분 이상 경과(stale) → 강제 해제 (mcp__oio__file_delete) + 경고 출력
            출력: "⚠️ stale phase_batch.lock 감지 ({age}분 경과). 강제 해제 후 진행합니다."
          존재 + 30분 미만 → Lock 해제 대기 (5초 간격, 최대 60초)
-           타임아웃 시: "⚠️ phase_batch.lock이 해제되지 않습니다. 수동 확인 필요." AskUserQuestion
+           타임아웃 시(질문 없음): 살아 있는 Lock 을 강제 해제하지 않는다(2PC 보호).
+             "⏳ [oresume] phase_batch.lock 보유 중 — 이번 재개는 Batch 재진입을 건너뛴다. 30분 경과 시 stale 로 해제된다." 출력 후
+             BATCH 재개만 중단하고 나머지 재개 절차는 계속한다.
 
     1. checkpoint.jsonl에서 마지막 BATCH_NEXT 이벤트의 batch 번호 추출:
        mcp__oio__bash_exec("grep BATCH_NEXT ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/session-env/${UUID}/checkpoint.jsonl | tail -1")
@@ -695,7 +803,9 @@ BATCH_재개:
        경로_우선순위:
          ① ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/session-env/${UUID}/file_assignment_batch_${next_batch}.json (batch별 스냅샷)
          ② ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/session-env/${UUID}/file_assignment.json (fallback)
-       스냅샷 없음 + fallback도 없음: "⚠️ file_assignment 손상" AskUserQuestion
+       스냅샷 없음 + fallback도 없음(질문 없음): 계획서(plans/oplan_*.md)의 배정 표 또는 agent_state/<name>.json 의
+         files_owned 로 대신한다. 둘 다 없으면 보수적으로 PLAN 재개로 돌린다(배정을 추측하지 않는다).
+         출력: "⚠️ [oresume] file_assignment 손상 — {대체 출처} 로 대신한다."
        복원 방법: batch별 스냅샷을 file_assignment.json으로 복사 (ok_pipeline이 읽는 경로)
 
     6. depends_on_batch 의존성 검증:
@@ -755,14 +865,18 @@ ok_pipeline_로딩:
 절대_금지:
   - checkpoint 없이 중간 단계 재개 (state만으로는 서브스텝 식별 불가 → 해당 단계 처음부터)
   - 완료된 에이전트 재spawn (리소스 낭비 + 중복 작업)
-  - STALE 상태에서 사용자 확인 없이 강제 재개
+  - STALE 상태에서 외부 변경을 무시한 강제 재개 (교집합 담당 팀원 재검토 강등 없이 재개 — Step 5 참조)
+  - 사용자에게 답변을 요구해 재개를 멈추는 것 (AskUserQuestion — 2026-10-11 사용자 지시. 판단은 보수적 자율로 한다)
+  - 재기동 복원 전에 Step 4 conv_id 게이트 실행 (새 conv_id 로 완료 결과가 전부 버려진다)
+  - resume_restore.py 결과 없이 재기동 뒤 팀원을 '활성' 으로 판정 (pane 번호 재사용 — boot_changed=true 면 전원 사망)
   - oresume을 팀에이전트로 spawn (메인 전용)
   - REROUTE 무효화 적용 없이 checkpoint 파싱
 
 권장:
   - compact 후 항상 /oresume 실행
   - 재개 전 진행도 시각화로 현재 상태 확인
-  - STALE 판정 시 리셋+재시작 권장 (강제 재개는 충돌 위험)
+  - STALE 판정 시 교집합 담당 팀원 재검토로 재개 (리셋은 checkpoint 를 잃고, 무시한 강제 재개는 충돌 위험)
+  - 재기동·WSL 종료 뒤에는 메인 첫 행동으로 /oresume (SessionStart 가 "🔁 [재기동 복원 가능]" 을 출력한다)
   - 복수 파이프라인 발견 시 오래된 것은 /ofinish로 정리 후 재개
 
 역할_경계:

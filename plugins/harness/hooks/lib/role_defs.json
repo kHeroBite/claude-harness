@@ -1,0 +1,43 @@
+{
+  "_comment": "세션 롤 단일 정본(ADR-009). 롤 추가·변경은 이 파일만 고친다. 별칭은 대소문자 무시이며 롤 사이에 겹치면 안 된다. hook·하네스는 롤이 아니라 AI 프로젝트 전유(CLAUDE.md 하네스 수정 일원화)이므로 인계로 처리한다.",
+  "version": 1,
+  "default": "all",
+  "roles": [
+    {
+      "id": "all",
+      "display": "전체",
+      "aliases": ["all", "전체", "범용", "기본", "full", "none"],
+      "duty": "제한 없음"
+    },
+    {
+      "id": "plan",
+      "display": "기획",
+      "aliases": ["plan", "기획", "설계", "문서", "요구사항", "pm", "planner"],
+      "duty": "요구사항·설계·plan/ 정본·화면기획·문서"
+    },
+    {
+      "id": "front",
+      "display": "프론트엔드",
+      "aliases": ["front", "frontend", "fe", "프론트", "프론트엔드", "ui", "화면", "클라이언트"],
+      "duty": "UI·화면·클라이언트 코드·스타일"
+    },
+    {
+      "id": "back",
+      "display": "백엔드",
+      "aliases": ["back", "backend", "be", "백엔드", "백", "서버", "api", "db", "디비", "데이터", "데이터베이스", "data"],
+      "duty": "API·서버·비즈니스 로직·DB 스키마·쿼리·마이그레이션"
+    },
+    {
+      "id": "qa",
+      "display": "시험",
+      "aliases": ["qa", "test", "tester", "시험", "테스트", "검증"],
+      "duty": "테스트 작성·실행·검증·결함 재현 보고"
+    },
+    {
+      "id": "ops",
+      "display": "인프라",
+      "aliases": ["ops", "infra", "devops", "인프라", "배포", "운영", "빌드", "설정"],
+      "duty": "빌드·배포·환경설정·CI"
+    }
+  ]
+}

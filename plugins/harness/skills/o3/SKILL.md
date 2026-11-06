@@ -34,7 +34,7 @@ o3_분류_조건: # (→ ok/SKILL.md 수정_작업_분류 섹션 참조 — 단�
     Quick: 파일 3개 이하, 패턴 반복, 영향도 제한적
     Deep: 파일 4개+, 새 패턴, 인터페이스 변경 → oplan_deep(+references/SIM_PROCEDURE.md) + oplan_review
   - otest: Phase 0(예상)→1(빌드)→2(테스트)→3(품질)→4(비교)
-    역라우팅: 예상-실제 비교 → 불일치 시 odev/oplan 복귀 (≤10회)
+    역라우팅: 예상-실제 비교 → 불일치 시 odev/oplan 복귀 (≤20회)
   - odone Fast Path: review → docs → git
 
 동적_승격:

@@ -259,7 +259,7 @@ FP_규칙:
 
 글로벌_스킬_스캔:
   자동_실행: 자동 판단으로 진행 (AskUserQuestion 없이)
-  경로: ~/.claude/skills/ + ~/.claude/settings.json hooks
+  경로: ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/skills/ + ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json hooks
 
 심각도:
   CRITICAL: 크레덴셜 유출 시도, 프롬프트 인젝션
@@ -340,7 +340,7 @@ C#_고유_검사:
   판정:
     서버가 세션/레지스트리에서 재도출하지 않고 요청 값을 그대로 필터에 사용 → ★HIGH★
   정본: 요청 모델에서 그 필드를 ★제거★하고 서버가 결정한다
-        (예: `ServerBundleRegistry.PortOf(세션)`. 요청의 `ServerPort` 를 신뢰하지 않는다)
+        (예: Mars — `ServerBundleRegistry.PortOf(세션)`. 요청의 `ServerPort` 를 신뢰하지 않는다)
   파생: 서버 필터가 재적용돼야 하는 데이터는 ★푸시에 본문을 싣지 않는다★.
         되조회를 강제해야 필터(예: "다시보지않기")가 서버에서 다시 걸린다.
 

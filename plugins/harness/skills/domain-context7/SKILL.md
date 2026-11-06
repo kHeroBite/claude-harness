@@ -29,6 +29,8 @@ Context7 MCP 서버를 사용하여 최신 라이브러리 문서를 실시간�
 
 ## 사용 방법
 
+> context7 MCP 는 상시 연결이 아니다. mcp-context7 온디맨드 에이전트를 name 없이(팀원은 name·team_name 없이 일반 서브에이전트로) 띄우고, 위 도구는 그 mcp-context7 서브에이전트 안에서 호출한다.
+
 ### 명시적 요청
 ```
 use context7: Entity Framework Core에서 트랜잭션 처리 방법
@@ -59,7 +61,7 @@ react, vue, express, axios
 
 - 인터넷 연결 필수
 - 첫 호출 2-3초 / 캐싱 후 즉시
-- 마이너/비공개 라이브러리 미지원
+- 마이너/사내 라이브러리 미지원
 - 최신 버전 기본, 구버전 시 명시
 
 ## 체크리스트

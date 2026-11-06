@@ -23,9 +23,45 @@ DEFAULT_TIMEOUT_MS = 120_000
 _fg_semaphore = _threading.Semaphore(20)  # 데몬 제거 + fail-fast 도입에 맞춰 보수적 축소
 
 # D-state cooldown — 최근 D-state 감지 시각 기록 (원인 8)
-# bash_exec 진입부에서 이 flag 확인 후 /mnt/c 경로면 fail-fast 반환
+# bash_exec 진입부에서 이 flag 확인 후 /mnt/c 경로면 _wait_ntfs_ready 로 백오프 대기·재판정
 _last_dstate_detected_at = 0.0
 _DSTATE_COOLDOWN_SEC = 30
+_NTFS_BACKOFF_SEC = (1, 2, 4, 8, 8)
+
+# 스레드 포화 시 재측정 간격·최대 대기 (즉시 실패 대신 대기 후 재판정)
+_SATURATION_BACKOFF_SEC = (1, 2, 4, 8)
+_SATURATION_WAIT_MAX_SEC = 15
+
+
+def _ntfs_probe(path: str) -> bool:
+    """NTFS 경로가 2초 안에 응답하는지 stat 으로 확인한다."""
+    try:
+        r = subprocess.run(
+            ["timeout", "2", "stat", "-c", "%Y", path],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5,
+        )
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+def _wait_ntfs_ready(path: str, budget_sec: float, probe=None) -> bool:
+    """D-state 감지 후 NTFS 응답을 1·2·4·8·8초 백오프로 budget_sec 안에서 재판정한다.
+
+    응답하면 True, 예산 안에 끝내 응답이 없으면 False. probe 는 테스트 주입용이다.
+    """
+    _probe = probe or _ntfs_probe
+    if _probe(path):
+        return True
+    waited = 0.0
+    for d in _NTFS_BACKOFF_SEC:
+        if waited + d > budget_sec:
+            break
+        time.sleep(d)
+        waited += d
+        if _probe(path):
+            return True
+    return False
 
 # BG 프로세스 추적 registry (Codex CR-4).
 # 구조: {pid: {"proc": Popen, "log_path": str, "cmd": str[:200], "started": float}}
@@ -43,7 +79,7 @@ BG_LOG_TTL_SECONDS = 7 * 24 * 3600
 def _bg_log_dir() -> str:
     """백그라운드 로그/임시파일 저장 디렉토리를 반환한다 (L-541 재발방지).
 
-    /tmp 직하위 사용 금지 (CLAUDE.md 임시파일 위치 규칙 — 다중 세션 충돌 + NTFS Defender 무관 EXT4 격리).
+    /tmp 직하위 사용 금지 (CLAUDE.md 임시파일 위치 규칙 — 다중 세션 충돌 + NTFS 백신 검사 무관 EXT4 격리).
     우선순위:
       1) OIO_BG_DIR 환경변수 (명시 지정 시)
       2) $CLAUDE_CONFIG_DIR/oio-bg (하네스 세션 config 루트 — EXT4, 세션군 격리)
@@ -360,6 +396,216 @@ def _split_and_commands(command: str) -> list:
     return [c for c in commands if c.strip()]
 
 
+# ── 분할 변수 경고 (사이클167 C16) ──────────────────────────────────────────
+# _split_and_commands 가 && 구간을 ★별도 셸 프로세스★로 실행하므로, 앞 구간의
+# 셸 변수 대입은 뒤 구간에 전달되지 않는다(`D=/x && ls $D` → ls 가 빈 인자로 실행).
+# 실행 동작은 바꾸지 않고 결과 JSON 의 split_var_warnings + stderr 문구로만 알린다.
+#
+# 판정 규칙 (오탐 억제 우선):
+#   정의 = 구간 최상위(괄호·백틱 밖, 따옴표 밖)의 단독 대입문 `X=…`(뒤에 명령이 붙는
+#          `X=1 cmd` 는 그 명령 전용 환경이라 제외), `export/readonly/local/declare/typeset X`,
+#          `read [-opts] X…`, `for X in`.
+#   참조 = 작은따옴표 밖의 `$X` / `${X}` (백슬래시 이스케이프 제외).
+#   경고 = 구간 i 에서 정의, 구간 j>i 에서 참조, 구간 j 자신에는 정의 없음.
+# 알려진 한계: `export X=1 && bash -c 'echo $X'` 처럼 작은따옴표 안 참조는 잡지 않는다.
+
+_SV_NAME_RE = None
+_SV_USE_RE = None
+_SV_DECL_WORDS = ("export", "readonly", "local", "declare", "typeset")
+_SV_LEAD_KEYWORDS = ("then", "do", "else", "elif", "if", "while", "until", "{", "!", "time")
+_SV_READ_OPTS_WITH_ARG = ("-p", "-d", "-t", "-u", "-n", "-N", "-i")
+
+
+def _sv_mask(segment: str, mask_double: bool, mask_parens: bool) -> str:
+    """따옴표/괄호 내부 문자를 '_' 로 가린 사본을 만든다(길이·단어 경계 보존).
+
+    mask_double=False 면 큰따옴표 내부는 남긴다(그 안의 $X 는 확장되므로 참조로 센다).
+    mask_parens=True 면 ( … ) · 백틱 내부도 가린다(서브셸·명령치환 안의 대입은 정의가 아니다).
+    """
+    out = []
+    in_single = in_double = in_back = False
+    depth = 0
+    prev = ''
+    for ch in segment:
+        if in_single:
+            if ch == "'":
+                in_single = False
+                out.append(ch)
+            else:
+                out.append('_')
+        elif ch == "'" and not in_double and prev != '\\':
+            in_single = True
+            out.append(ch)
+        elif ch == '"' and prev != '\\':
+            in_double = not in_double
+            out.append(ch)
+        elif in_double:
+            out.append('_' if (mask_double or (mask_parens and depth > 0)) else ch)
+        elif ch == '`' and prev != '\\':
+            in_back = not in_back
+            out.append(ch)
+        elif in_back:
+            out.append('_' if mask_parens else ch)
+        elif ch == '(':
+            depth += 1
+            out.append(ch)
+        elif ch == ')':
+            depth = max(0, depth - 1)
+            out.append(ch)
+        elif mask_parens and depth > 0:
+            out.append('_')
+        else:
+            out.append(ch)
+        prev = ch
+    return ''.join(out)
+
+
+def _sv_defined_vars(segment: str) -> set:
+    """구간 최상위에서 셸 변수로 정의되는 이름 집합."""
+    import re as _re
+    global _SV_NAME_RE
+    if _SV_NAME_RE is None:
+        _SV_NAME_RE = _re.compile(r'^([A-Za-z_][A-Za-z0-9_]*)(\+?=|$)')
+    masked = _sv_mask(segment, mask_double=True, mask_parens=True)
+    names = set()
+    for stmt in _re.split(r'[;\n|&]', masked):
+        words = stmt.split()
+        while words and words[0] in _SV_LEAD_KEYWORDS:
+            words = words[1:]
+        if not words:
+            continue
+        head = words[0]
+        if head in _SV_DECL_WORDS:
+            for w in words[1:]:
+                if w.startswith('-'):
+                    continue
+                m = _SV_NAME_RE.match(w)
+                if m:
+                    names.add(m.group(1))
+        elif head == 'read':
+            rest = words[1:]
+            k = 0
+            while k < len(rest):
+                w = rest[k]
+                if w == '-a' and k + 1 < len(rest):
+                    m = _SV_NAME_RE.match(rest[k + 1])
+                    if m and m.group(2) == '':
+                        names.add(m.group(1))
+                    k += 2
+                    continue
+                if w in _SV_READ_OPTS_WITH_ARG:
+                    k += 2
+                    continue
+                if w.startswith('-'):
+                    k += 1
+                    continue
+                m = _SV_NAME_RE.match(w)
+                if m and m.group(2) == '':
+                    names.add(m.group(1))
+                k += 1
+        elif head == 'for':
+            if len(words) >= 2:
+                m = _SV_NAME_RE.match(words[1])
+                if m and m.group(2) == '':
+                    names.add(m.group(1))
+        else:
+            # 단독 대입문만 정의로 인정 — `X=1 cmd` 는 cmd 전용 환경이라 셸 변수가 아니다.
+            assigns = []
+            for w in words:
+                m = _SV_NAME_RE.match(w)
+                if m and m.group(2) in ('=', '+='):
+                    assigns.append(m.group(1))
+                else:
+                    assigns = None
+                    break
+            if assigns:
+                names.update(assigns)
+    return names
+
+
+def _sv_used_vars(segment: str) -> set:
+    """작은따옴표 밖에서 $X / ${X} 로 참조되는 이름 집합."""
+    import re as _re
+    global _SV_USE_RE
+    if _SV_USE_RE is None:
+        _SV_USE_RE = _re.compile(r'(?<!\\)\$\{?([A-Za-z_][A-Za-z0-9_]*)')
+    masked = _sv_mask(segment, mask_double=False, mask_parens=False)
+    return set(_SV_USE_RE.findall(masked))
+
+
+def _detect_split_var_warnings(commands: list) -> list:
+    """&& 분할 구간 목록에서 '앞 구간 정의 → 뒤 구간 참조' 변수를 찾는다.
+
+    반환: [{"var": "D", "defined_in": 1, "used_in": 2}, …] (구간 번호 1-base).
+    구간이 2개 미만이면 빈 목록.
+    """
+    if not commands or len(commands) < 2:
+        return []
+    defs = [_sv_defined_vars(c) for c in commands]
+    warnings = []
+    seen = set()
+    for j in range(1, len(commands)):
+        used = _sv_used_vars(commands[j])
+        for var in sorted(used):
+            if var in defs[j]:
+                continue
+            for i in range(j - 1, -1, -1):
+                if var in defs[i]:
+                    key = (var, j)
+                    if key not in seen:
+                        seen.add(key)
+                        warnings.append({"var": var, "defined_in": i + 1, "used_in": j + 1})
+                    break
+    return warnings
+
+
+def _format_split_var_stderr(warnings: list) -> str:
+    """split_var_warnings 를 사람이 읽는 stderr 경고 문구로 만든다."""
+    lines = []
+    for w in warnings:
+        lines.append(
+            f"[oio] ⚠️ split_var_warning: 변수 {w['var']} 가 구간 {w['defined_in']} 에서 정의되고 "
+            f"구간 {w['used_in']} 에서 참조됩니다. oio 는 && 구간을 별도 셸로 실행하므로 "
+            f"앞 구간의 변수가 뒤 구간에 전달되지 않습니다(빈 값). "
+            f"';' 로 한 구간에 묶거나 bash -c '…' 로 감싸세요."
+        )
+    return "\n".join(lines)
+
+
+# ── 셸 상태 변경 감지 → 단일 셸 실행 (사이클191 ⑦) ─────────────────────────
+# && 구간을 별도 셸로 돌리면 앞 구간의 cd·변수 정의·셸 옵션이 뒤 구간에 전달되지 않는다
+# (`cd /x && ls` 가 원래 디렉터리를 나열). 마지막 구간을 제외한 어느 구간이든 셸 상태를
+# 바꾸면 분할을 포기하고 원문 전체를 셸 하나로 실행한다(셸 의미론 보존). 이 경우 잃는 것은
+# 구간별 타임아웃 메시지(명령 i/N)뿐이며 && 실패 중단은 셸이 그대로 수행한다.
+_SS_STATE_CMDS = (
+    "cd", "pushd", "popd", "export", "unset", "alias", "unalias", "set", "shopt",
+    "umask", "source", ".", "readonly", "declare", "local", "typeset", "trap",
+    "ulimit", "hash", "enable",
+)
+
+
+def _segment_changes_shell_state(segment: str) -> bool:
+    """구간 최상위(서브셸·따옴표 밖)에서 셸 상태를 바꾸는 문장이 있는가."""
+    import re as _re
+    if _sv_defined_vars(segment):
+        return True
+    masked = _sv_mask(segment, mask_double=True, mask_parens=True)
+    for stmt in _re.split(r'[;\n|&]', masked):
+        words = stmt.split()
+        while words and words[0] in _SV_LEAD_KEYWORDS:
+            words = words[1:]
+        if words and words[0] in _SS_STATE_CMDS:
+            return True
+    return False
+
+
+def _needs_single_shell(commands: list) -> bool:
+    """분할 목록 중 마지막을 제외한 구간에 셸 상태 변경이 있으면 True."""
+    if not commands or len(commands) < 2:
+        return False
+    return any(_segment_changes_shell_state(c) for c in commands[:-1])
+
+
 def _wrap_dotnet_via_cmd(command: str) -> str:
     """dotnet 명령을 cmd.exe /c dotnet으로 자동 래핑. 이미 cmd.exe로 래핑된 경우 스킵."""
     import re
@@ -411,46 +657,54 @@ def bash_exec(
     except Exception:
         pass  # 어떤 예외도 명령 실행을 막지 않는다 — fail-open
 
+    # 스레드 포화 — 즉시 실패하지 않고 1·2·4·8초 간격으로 최대 15초 다시 센다 (계획 conv_179163042411 §4-4)
     active = _threading.active_count()
+    if active >= 35:
+        _waited = 0.0
+        for _d in _SATURATION_BACKOFF_SEC:
+            if _waited + _d > _SATURATION_WAIT_MAX_SEC:
+                break
+            time.sleep(_d)
+            _waited += _d
+            active = _threading.active_count()
+            if active < 35:
+                break
     if active >= 35:
         return {
             "success": False,
             "error": "THREADPOOL_SATURATION",
-            "message": f"threadpool 포화 ({active}/40) — 이전 BG 작업 완료 후 재시도",
+            "message": f"threadpool 포화 ({active}/40) — 자동 대기 {_SATURATION_WAIT_MAX_SEC}초 후에도 포화",
             "exit_code": -1,
-            "suggestion": "run_in_background=true 호출 감소 또는 대기 후 재시도",
+            "retry_after_sec": 15,
+            "suggestion": "자동 대기 후에도 포화 — 같은 호출을 15초 뒤 다시 하라(run_in_background=true 호출 감소)",
         }
 
     # ═══════════════════════════════════════════════════════════
-    # Fail-fast #2: NTFS D-state 최근 감지 (원인 8)
-    # 최근 _DSTATE_COOLDOWN_SEC 내 D-state 감지된 적 있고,
-    # 이번 명령이 /mnt/c/ 경로를 다룬다면 즉시 에러 반환
+    # #2: NTFS D-state 최근 감지 (원인 8)
+    # 최근 _DSTATE_COOLDOWN_SEC 내 D-state 감지된 적 있고 이번 명령이 /mnt/c/ 경로를 다루면,
+    # 즉시 실패하지 않고 서버 안에서 백오프 대기하며 NTFS 응답을 재판정한다(_wait_ntfs_ready).
+    # 응답이 돌아오면 감지 시각을 지우고 진행, 끝내 지연이면 retry_after_sec 와 함께 오류를 돌려준다.
     # ═══════════════════════════════════════════════════════════
     if (time.time() - _last_dstate_detected_at) < _DSTATE_COOLDOWN_SEC:
         _workdir = working_dir or ""
         _cmd_str = command if command is not None else ""
         if "/mnt/c" in str(_cmd_str) or (_workdir and str(_workdir).startswith("/mnt/c")):
-            return {
-                "success": False,
-                "error": "NTFS_DSTATE_BLOCK",
-                "message": "NTFS I/O 블로킹 (최근 D-state 감지) — Windows AV 또는 DrvFs 지연",
-                "exit_code": -1,
-                "suggestion": "Windows Defender 제외 등록 또는 30초 후 재시도",
-            }
+            _probe_path = str(_workdir) if (_workdir and str(_workdir).startswith("/mnt/c")) else "/mnt/c"
+            _wait_budget = min(25.0, max(1.0, (timeout_ms or DEFAULT_TIMEOUT_MS) / 1000.0 / 2.0))
+            if _wait_ntfs_ready(_probe_path, _wait_budget):
+                globals()["_last_dstate_detected_at"] = 0.0
+            else:
+                return {
+                    "success": False,
+                    "error": "NTFS_DSTATE_BLOCK",
+                    "message": f"NTFS I/O 지연 (최근 D-state 감지) — 서버 자동 대기 {_wait_budget:.0f}초 후에도 응답 없음",
+                    "exit_code": -1,
+                    "retry_after_sec": 30,
+                    "suggestion": "자동 대기 후에도 지연 — 같은 호출을 30초 뒤 다시 하라",
+                }
 
-    # L-303 재발방지 (F10 이중 차단): LLM이 명시적으로 run_in_background=true를 보내면 에러 반환.
-    # (자동 감지(_LONG_RUNNING_PATTERNS)만 허용 — LLM 의도적 background 요청은 블로킹 버그 유발)
-    # write_guard.sh가 1차 방어, 본 체크가 2차(서버) 방어.
-    if run_in_background:
-        return {
-            "success": False,
-            "error": (
-                "🚫 [L-303] run_in_background=true 금지 — oio bash_exec 무한 블로킹 버그 유발. "
-                "대신 foreground + timeout_ms 사용. 장시간 명령은 자동 감지(_LONG_RUNNING_PATTERNS)로만 background 전환 허용."
-            ),
-            "exit_code": -1,
-            "l303_violation": True,
-        }
+    # L-303(F10) 명시 run_in_background 차단은 2026-10-31 해제했다. 아래 백그라운드 경로
+    # (start_new_session + supervisor, Codex CR-4)가 자동 감지와 명시 요청을 같은 방식으로 처리한다.
 
     # dotnet → cmd.exe 자동 래핑 (WSL에서 dotnet 직접 실행 금지)
     command = _wrap_dotnet_via_cmd(command)
@@ -610,6 +864,14 @@ def _bash_exec_fg(
     try:
         # && 분리 실행: 각 명령을 개별 실행, 이전 명령 실패 시 중단
         commands = _split_and_commands(command)
+        # 셸 상태 변경(cd·변수 정의 등)이 있으면 분할 없이 단일 셸로 실행 (사이클191 ⑦)
+        _single_shell = False
+        try:
+            if _needs_single_shell(commands):
+                commands = [command]
+                _single_shell = True
+        except Exception:
+            pass  # 판정 실패 시 기존 분할 동작 유지(fail-open)
 
         all_stdout = []
         all_stderr = []
@@ -762,6 +1024,8 @@ def _bash_exec_fg(
             "timed_out": False,
             "commands_total": len(commands),
         }
+        if _single_shell:
+            response["single_shell"] = "state_change"
 
         if sensitive:
             response["warnings"] = [
@@ -774,6 +1038,18 @@ def _bash_exec_fg(
             response = _output_filter.maybe_apply(command, response)
         except Exception:
             pass  # 필터 실패는 명령 결과를 훼손하지 않는다 — fail-open
+
+        # ── 분할 변수 경고 (C16) — 실행 동작 불변, 결과에 경고만 덧붙인다(fail-open) ──
+        # 필터 뒤에 붙여 필터가 경고 문구를 압축·제거하지 못하게 한다.
+        try:
+            _sv_warnings = _detect_split_var_warnings(commands)
+            if _sv_warnings:
+                response["split_var_warnings"] = _sv_warnings
+                _sv_msg = _format_split_var_stderr(_sv_warnings)
+                _prev_err = response.get("stderr") or ""
+                response["stderr"] = (_prev_err + ("\n" if _prev_err and not _prev_err.endswith("\n") else "") + _sv_msg)
+        except Exception:
+            pass  # 경고 계산 실패는 명령 결과를 훼손하지 않는다
 
         return response
 

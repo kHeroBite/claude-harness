@@ -71,7 +71,7 @@ entry_tier_기록:
 ```
 Skill('oplan_simple') 호출.
 사용자 요구사항: {원문}.
-Skill('oinfra_{project}') 호출.
+프로젝트 인프라는 INFRA.md 참조(경로는 프롬프트의 [INFRA_INJECT] 줄).
 ```
 
 ## 주의

@@ -1,8 +1,4 @@
 #!/bin/bash
-# >>> harness preamble
-_HP="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)}"
-[ -f "$_HP/hooks/harness_preamble.sh" ] && . "$_HP/hooks/harness_preamble.sh" 2>/dev/null || { [ -f "$_HP/harness_preamble.sh" ] && . "$_HP/harness_preamble.sh" 2>/dev/null; } || true
-# <<< harness preamble
 # state_machine.sh — state 전이 단일 진입점 (F1, jury V4 C unanimous 12/12)
 #
 # 목표: state 파일 쓰기는 반드시 state_transition()을 경유해야 한다.
@@ -44,6 +40,44 @@ fi
 # 미러 라이브러리 부재 시에도 동작하도록 no-op 폴백을 둔다 (fail-soft).
 if ! declare -f _mirror_file >/dev/null 2>&1; then
   _mirror_file() { return 0; }
+fi
+
+# === conv_179065014644_r3 hook (b) — 역방향 전이 자동 기록 라이브러리 로드 ===
+# reroute_observe 는 항상 rc=0 (fail-soft) — 전이 결과·반환값에 영향이 없다.
+# 라이브러리 부재·로드 실패 시 no-op 폴백으로 종전 동작과 같다.
+if ! declare -f reroute_observe >/dev/null 2>&1; then
+  _SMACH_RR_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/reroute_record.sh"
+  # shellcheck source=/dev/null
+  [ -f "$_SMACH_RR_LIB" ] && . "$_SMACH_RR_LIB" 2>/dev/null
+fi
+if ! declare -f reroute_observe >/dev/null 2>&1; then
+  reroute_observe() { return 0; }
+fi
+
+# === state_write 관찰 래퍼 (hook (b)) ===
+# session_id.sh 의 state_write 를 _smach_state_write_orig 로 보존하고, 같은 시그니처·같은 반환값의
+# 래퍼를 둔다. 쓰기 전 현재 값을 읽고, 쓰기 성공(rc=0) 뒤에만 reroute_observe 를 호출한다.
+# 재source 시 이중 래핑(무한 재귀)을 막기 위해 현재 state_write 가 이미 래퍼면 건너뛴다.
+# session_id.sh 가 뒤에 다시 source 되면 원본이 복원되며, 그때는 관찰 없이 종전 동작이다.
+if declare -f state_write >/dev/null 2>&1 \
+   && ! declare -f state_write 2>/dev/null | grep -q '_smach_state_write_orig'; then
+  eval "$(declare -f state_write | sed '1s/^state_write /_smach_state_write_orig /')"
+  if declare -f _smach_state_write_orig >/dev/null 2>&1; then
+    state_write() {
+      local _SW_PREV=""
+      if [ -f "$1" ]; then
+        _SW_PREV=$(awk 'NR==1{print $1}' "$1" 2>/dev/null)
+      fi
+      [ -z "$_SW_PREV" ] && _SW_PREV="IDLE"
+      _smach_state_write_orig "$@"
+      local _SW_RC=$?
+      if [ "$_SW_RC" -eq 0 ]; then
+        reroute_observe "$(dirname "$1")" "$_SW_PREV" "$(printf '%s' "$2" | awk '{print $1}')" \
+          state_write "$(printf '%s' "$2" | awk '{print $4}')" 2>/dev/null || true
+      fi
+      return $_SW_RC
+    }
+  fi
 fi
 
 # 알려진 state 목록 (CLAUDE.md / ok SKILL 기준 — Phase B 마이그레이션 적용)
@@ -187,6 +221,8 @@ state_transition() {
     # 사이클46 축② — 반대편 base 미러.
     # ★위 while 루프의 flock 서브셸이 이미 종료된 지점★이므로 불변식 3(lock 미획득)을 만족한다.
     _mirror_file "$STATE_FILE"
+    # hook (b) — 역방향 전이 자동 기록 (FROM 은 CAS 로 확정된 값). 항상 rc=0.
+    reroute_observe "$_PARENT" "$FROM" "$TO" state_transition "$REASON" 2>/dev/null || true
     # checkpoint 기록 (실패해도 silent — 파이프라인 계속)
     local _CW
     _CW="$(dirname "${BASH_SOURCE[0]}")/checkpoint_write.sh"
@@ -220,7 +256,7 @@ state_current() {
 # === status 축 헬퍼 (3-axis pipeline flags — set 표현) ===
 # 형식: 단일 라인 파이프 OR + 알파벳 정렬. 빈 = NONE.
 # sentinel(UNKNOWN, __LOCK_FAIL__) 등재 거부.
-_STATUS_VALID_TOKENS="ABORT PAUSE RALPH"
+_STATUS_VALID_TOKENS="ABORT PAUSE RALPH ROOF"  # ROOF-COMPAT(deprecation window 1주기 — 구 RALPH/oralph_active 인식 제거 예정)
 _status_is_valid() {
   case " $_STATUS_VALID_TOKENS NONE " in *" $1 "*) return 0 ;; *) return 1 ;; esac
 }
@@ -267,7 +303,11 @@ status_remove() {
   local F="$1"; local TOKEN="$2"
   local CUR; CUR=$(status_read "$F" 2>/dev/null)
   [ "$CUR" = "__LOCK_FAIL__" ] && return 2
-  local NEW; NEW=$(printf '%s\n' "$CUR" | tr '|' '\n' | grep -vxF "$TOKEN" | sed '/^$/d' | sort -u | paste -sd'|')
+  local NEW
+  case "$TOKEN" in
+    ROOF|RALPH) NEW=$(printf '%s\n' "$CUR" | tr '|' '\n' | grep -vxE '(ROOF|RALPH)' | sed '/^$/d' | sort -u | paste -sd'|') ;;  # ROOF-COMPAT(deprecation window 1주기 — 구 RALPH/oralph_active 인식 제거 예정)
+    *) NEW=$(printf '%s\n' "$CUR" | tr '|' '\n' | grep -vxF "$TOKEN" | sed '/^$/d' | sort -u | paste -sd'|') ;;
+  esac
   status_write "$F" "$NEW"
 }
 status_clear() {
@@ -278,5 +318,16 @@ status_has() {
   local CUR; CUR=$(status_read "$F" 2>/dev/null)
   [ "$CUR" = "__LOCK_FAIL__" ] && return 2
   if [ "$TOKEN" = "NONE" ]; then [ -z "$CUR" ] && return 0 || return 1; fi
+  case "$TOKEN" in
+    ROOF|RALPH) printf '%s' "$CUR" | tr '|' '\n' | grep -qxE '(ROOF|RALPH)'; return $? ;;  # ROOF-COMPAT(deprecation window 1주기 — 구 RALPH/oralph_active 인식 제거 예정)
+  esac
   printf '%s' "$CUR" | tr '|' '\n' | grep -qxF "$TOKEN"
+}
+# 반복 루프 플래그 파일 경로 — 존재하는 첫 파일을 출력, 없으면 rc=1
+roof_flag_path() {
+  local D="$1"; local N
+  for N in oroof_active oroof_active.json oralph_active oralph_active.json; do  # ROOF-COMPAT(deprecation window 1주기 — 구 RALPH/oralph_active 인식 제거 예정)
+    if [ -f "${D}/${N}" ]; then printf '%s\n' "${D}/${N}"; return 0; fi
+  done
+  return 1
 }

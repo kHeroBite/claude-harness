@@ -178,7 +178,7 @@ public partial class 새폼명 : MDI공통
 
     public 새폼명()
     {
-        base.ID = "NNNN";  // Menu 테이블의 ID와 동일 (프로젝트별 DB는 oinfra_{project} 참조)
+        base.ID = "NNNN";  // Menu 테이블의 ID와 동일 (프로젝트별 DB는 INFRA.md 참조)
         this.DoubleBuffered = true;
         Ov윈도우Init();
     }

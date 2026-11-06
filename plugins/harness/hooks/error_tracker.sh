@@ -1,8 +1,4 @@
 #!/bin/bash
-# >>> harness preamble
-_HP="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)}"
-[ -f "$_HP/hooks/harness_preamble.sh" ] && . "$_HP/hooks/harness_preamble.sh" 2>/dev/null || { [ -f "$_HP/harness_preamble.sh" ] && . "$_HP/harness_preamble.sh" 2>/dev/null; } || true
-# <<< harness preamble
 # error_tracker.sh — 작업 중 오류 자동 감지 & 기록 + 해결 자동 추적
 # PostToolUse(Bash|Edit|Write) — 오류 패턴 감지 시 ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/session-env/${UUID}/logs/errors.md에 기록
 # odone_review에서 이 파일을 참조하여 교훈 분석 수행
@@ -31,7 +27,7 @@ if [ -z "$SESSION_ID" ] || [ "$SESSION_ID" = "null" ]; then
   SESSION_ID="${CLAUDE_SESSION_ID:-$$}"
 fi
 # UUID 결정 — 세션별 상태 파일 경로
-source "${HARNESS_HOOK_DIR}/lib/session_id.sh"
+source "${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/session_id.sh"
 resolve_uuid "$INPUT" || { UUID="nosid"; }
 [[ -z "$UUID" ]] && exit 0
 SID="$UUID"

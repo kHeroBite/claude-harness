@@ -1,14 +1,10 @@
 #!/bin/bash
-# >>> harness preamble
-_HP="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)}"
-[ -f "$_HP/hooks/harness_preamble.sh" ] && . "$_HP/hooks/harness_preamble.sh" 2>/dev/null || { [ -f "$_HP/harness_preamble.sh" ] && . "$_HP/harness_preamble.sh" 2>/dev/null; } || true
-# <<< harness preamble
 # hook_lint.sh — PreToolUse hook의 log_hook_error 누락 검증 (L-074 강제화)
 # 사용법: bash hook_lint.sh [파일 또는 디렉토리]
-# 인자 없으면 ~/.claude/hooks/ 전체 검사
+# 인자 없으면 ${HARNESS_HOME:-$HOME/.harness}/current/hooks/ 전체 검사
 # exit 0 = 통과, exit 1 = 위반 발견
 
-HOOKS_DIR="${1:-$HOME/.claude/hooks}"
+HOOKS_DIR="${1:-${HARNESS_HOME:-$HOME/.harness}/current/hooks}"
 VIOLATIONS=0
 CHECKED=0
 

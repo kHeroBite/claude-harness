@@ -1,22 +1,22 @@
-import sys, re, json, os, subprocess, glob
+import sys, re, json, os, subprocess, glob, argparse
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _oi_paths import resolve_project_file, default_output, project_root
+from _oi_lessons import parse_lessons
+from _oi_refs import collect_referenced_lessons
 
-output_path = sys.argv[1] if len(sys.argv) > 1 else "$HOME/.claude/session-env/oinsights_lessons_cleanup.json"
+parser = argparse.ArgumentParser()
+parser.add_argument('output', nargs='?', default=None, help='출력 JSON 경로')
+parser.add_argument('--output', dest='output_flag', default=None)
+parser.add_argument('--lessons', default=None)
+parser.add_argument('--claude-md', dest='claude_md', default=None)
+args, _ = parser.parse_known_args()
 
-# 프로젝트 루트 — 배포자 고유 경로를 하드코딩하지 않는다.
-# CLAUDE_PROJECT_DIR 이 있으면 그것을, 없으면 현재 작업 디렉토리를 쓴다.
-_PROJECT_DIR = os.path.abspath(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
-# 형제 프로젝트 탐색용 상위 디렉토리. HARNESS_PROJECT_BASE 로 재정의 가능.
-_PROJECT_BASE = os.environ.get("HARNESS_PROJECT_BASE") or os.path.dirname(_PROJECT_DIR)
+output_path = default_output("oinsights_lessons_cleanup.json", args.output_flag or args.output)
 
-# LESSONS.md 경로 감지 — 현재 프로젝트 우선, 없으면 형제 프로젝트에서 찾는다.
-lessons_path = None
-_own = os.path.join(_PROJECT_DIR, "LESSONS.md")
-if os.path.isfile(_own):
-    lessons_path = _own
-else:
-    for candidate in sorted(glob.glob(os.path.join(_PROJECT_BASE, "*", "LESSONS.md"))):
-        lessons_path = candidate
-        break
+# LESSONS.md 경로 감지
+lessons_path, lessons_source = resolve_project_file("LESSONS.md", args.lessons)
+if not lessons_path or not os.path.isfile(lessons_path):
+    lessons_path = None
 if not lessons_path:
     print("⚠️ LESSONS.md 미발견")
     exit(0)
@@ -24,11 +24,11 @@ if not lessons_path:
 with open(lessons_path, encoding="utf-8") as f:
     content = f.read()
 
-# 교훈 항목 파싱 (### L-NNN: 제목 패턴)
-lesson_pattern = r"### (L-\d+): (.+?) \((\d{4}-\d{2}-\d{2})\)(.*?)(?=### L-|\Z)"
+# 교훈 항목 파싱 (공용 파서 — 모든 레벨/구분자/대괄호 헤더 지원)
+sections, diag = parse_lessons(content)
 lessons = []
-for m in re.finditer(lesson_pattern, content, re.DOTALL):
-    lid, title, date, body = m.group(1), m.group(2), m.group(3), m.group(4)
+for sec in sections:
+    lid, title, date, body = sec["id"], sec["title"], sec["date"], sec["body"]
     # 핵심 키워드 추출
     keywords = set(re.findall(r"[a-zA-Z_]{4,}", body.lower()))
     keywords.update(re.findall(r"[가-힣]{2,}", body))
@@ -39,39 +39,23 @@ for m in re.finditer(lesson_pattern, content, re.DOTALL):
     if cat_m:
         category = cat_m.group(1).strip()
     lessons.append({
-        "id": lid, "title": title, "date": date,
+        "id": lid, "title": title, "date": date, "line": sec["start_line"],
         "severity": severity, "category": category,
         "keywords": list(keywords)[:20],
         "body_preview": body.strip()[:200]
     })
 
 # 스킬/hooks/CLAUDE.md에서 L-번호 참조 검색
-skill_dir = os.path.join(_PROJECT_DIR, ".claude", "skills") + os.sep
-hook_dirs = [os.path.join(_PROJECT_DIR, ".claude", "hooks") + os.sep, os.path.expanduser("~/.claude/hooks/")]
-claude_md_candidates = sorted(glob.glob(os.path.join(_PROJECT_BASE, "*", "CLAUDE.md")))
-_own_md = os.path.join(_PROJECT_DIR, "CLAUDE.md")
-if os.path.isfile(_own_md) and _own_md not in claude_md_candidates:
-    claude_md_candidates.append(_own_md)
+proj_dir = project_root(lessons_path)
+claude_md_path, claude_md_source = resolve_project_file("CLAUDE.md", args.claude_md)
+if claude_md_source == "fallback":
+    claude_md_candidates = sorted(glob.glob("/mnt/c/DATA/Project/*/CLAUDE.md"))
+elif claude_md_path:
+    claude_md_candidates = [claude_md_path]
+else:
+    claude_md_candidates = []
 
-referenced_lessons = set()
-for search_dir in [skill_dir] + hook_dirs + claude_md_candidates:
-    if os.path.isfile(search_dir):
-        with open(search_dir, encoding="utf-8", errors="ignore") as f:
-            txt = f.read()
-        for lid in re.findall(r"L-\d+", txt):
-            referenced_lessons.add(lid)
-    elif os.path.isdir(search_dir):
-        for root, dirs, files in os.walk(search_dir):
-            for fname in files:
-                if fname.endswith((".md", ".sh", ".json")):
-                    fpath = os.path.join(root, fname)
-                    try:
-                        with open(fpath, encoding="utf-8", errors="ignore") as f:
-                            txt = f.read()
-                        for lid in re.findall(r"L-\d+", txt):
-                            referenced_lessons.add(lid)
-                    except:
-                        pass
+referenced_lessons = collect_referenced_lessons(proj_dir, claude_md_candidates)
 
 # 분류
 applied = []      # 적용 완료
@@ -101,7 +85,15 @@ result = {
     "applied": [{"id": l["id"], "title": l["title"]} for l in applied],
     "unapplied_important": [{"id": l["id"], "title": l["title"], "severity": l["severity"]} for l in unapplied],
     "similar_groups": similar_groups,
-    "lessons_path": lessons_path
+    "lessons_path": lessons_path,
+    "lessons_source": lessons_source,
+    "claude_md_path": claude_md_path,
+    "claude_md_source": claude_md_source,
+    "header_count": diag["header_count"],
+    "parsed_count": diag["parsed_count"],
+    "unique_ids": diag["unique_ids"],
+    "duplicate_ids": diag["duplicate_ids"],
+    "unparsed_headers": diag["unparsed_headers"]
 }
 
 with open(output_path, "w") as out:

@@ -1,8 +1,4 @@
 #!/bin/bash
-# >>> harness preamble
-_HP="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)}"
-[ -f "$_HP/hooks/harness_preamble.sh" ] && . "$_HP/hooks/harness_preamble.sh" 2>/dev/null || { [ -f "$_HP/harness_preamble.sh" ] && . "$_HP/harness_preamble.sh" 2>/dev/null; } || true
-# <<< harness preamble
 # checkpoint_verify.sh — 파이프라인 단계 전환 시 팀에이전트/pane 건강 검증
 # 사용법: checkpoint_verify.sh <팀명> <예상멤버수> <현재단계명> [UUID]
 # 출력: PASS/FAIL + 상세 (고아 pane 수, 누락 멤버 등)
@@ -10,7 +6,7 @@ _HP="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null
 
 # M-01: 에러 핸들링 강화
 set -euo pipefail
-source "${HARNESS_HOOK_DIR}/lib/session_id.sh" 2>/dev/null || true
+source "${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/session_id.sh" 2>/dev/null || true
 trap 'echo "❌ checkpoint_verify 내부 에러 (line $LINENO)"; exit 1' ERR
 
 TEAM_NAME="${1:?팀명 필수}"

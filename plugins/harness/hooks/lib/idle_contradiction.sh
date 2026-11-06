@@ -1,8 +1,4 @@
 #!/bin/bash
-# >>> harness preamble
-_HP="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)}"
-[ -f "$_HP/hooks/harness_preamble.sh" ] && . "$_HP/hooks/harness_preamble.sh" 2>/dev/null || { [ -f "$_HP/harness_preamble.sh" ] && . "$_HP/harness_preamble.sh" 2>/dev/null; } || true
-# <<< harness preamble
 # state=IDLE 인데 파이프라인이 실제로 살아있는 "모순 상태"를 감지하는 공용 라이브러리 (사이클123-E13)
 #
 # 배경 (실사고 — 2026-09-13):
@@ -34,10 +30,12 @@ _HP="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null
 _ic_live_agent_count() {
   local _uuid="$1"
   [[ -n "$_uuid" ]] || { echo 0; return; }
-  ps -eo pid=,args= 2>/dev/null | awk \
-    -v u="--parent-session-id ${_uuid}" \
+  # ★열 폭 무관★ ps -eww — COLUMNS=80(tmux 상속)이면 args 가 80열로 잘려 UUID 토큰이 끊기고
+  # 살아 있는 팀원을 0으로 센다(2026-10-10 실측). UUID 뒤에 공백/끝을 요구해 접두 오매칭도 막는다.
+  ps -eww -o pid=,args= 2>/dev/null | awk \
+    -v u="--parent-session-id ${_uuid} " \
     -v self="$$" -v pp="$PPID" '
-      index($0, u) > 0 && index($0, "--agent-name ") > 0 {
+      index($0 " ", u) > 0 && index($0, "--agent-name ") > 0 {
         pid = $1
         if (pid == self || pid == pp) next   # 검사 프로세스 자신/부모 제외
         if ($0 !~ /versions\//) next          # claude 실행 바이너리 경로가 없으면 에이전트가 아니다
@@ -66,14 +64,16 @@ _ic_detect() {
 
   # 여기부터는 모순 확정. 사용자에게 보여줄 부가 증거를 모은다(판정에는 영향 없음).
   local _ev=""
-  if [[ -f "${_dir}/oralph_active" ]]; then
-    _ev="${_ev}oralph_active "
+  # ROOF-COMPAT(deprecation window 1주기 — 구 RALPH/oralph_active 인식 제거 예정)
+  if [[ -f "${_dir}/oroof_active" ]] || [[ -f "${_dir}/oralph_active" ]]; then
+    _ev="${_ev}oroof_active "
   fi
   if [[ -f "${_dir}/goal.json" ]] && grep -q '"locked"[[:space:]]*:[[:space:]]*true' "${_dir}/goal.json" 2>/dev/null; then
     _ev="${_ev}goal.json(locked) "
   fi
-  if [[ -f "${_dir}/status" ]] && grep -q 'RALPH' "${_dir}/status" 2>/dev/null; then
-    _ev="${_ev}status=RALPH "
+  # ROOF-COMPAT(deprecation window 1주기 — 구 RALPH/oralph_active 인식 제거 예정)
+  if [[ -f "${_dir}/status" ]] && grep -qE '(ROOF|RALPH)' "${_dir}/status" 2>/dev/null; then
+    _ev="${_ev}status=ROOF "
   fi
   _IC_REASON="${_ev% }"
   return 0

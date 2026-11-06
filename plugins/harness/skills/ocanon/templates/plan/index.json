@@ -1,0 +1,29 @@
+{
+  "schema": "plan-index/1",
+  "project": "{{PROJECT}}",
+  "updated": "{{DATE}}",
+  "profile": "product",
+  "active_docs": ["requirements_raw", "requirements", "pending", "decisions", "todo"],
+  "principles": [
+    "작업 전 index.json 과 관련 문서를 읽는다",
+    "결정은 ADR 과 index.json, 변경은 해당 문서, 수치는 _build 재생성",
+    "plan 과 다른 결정이면 plan 을 먼저 고친다",
+    "문서 300줄 상한, 넘으면 부록으로 분리",
+    "추정·미검증 표기, 외부 정보 출처 URL, 자격증명·서버값 금지(INFRA.md 참조로만)"
+  ],
+  "requirements": [],
+  "decisions": [],
+  "documents": {
+    "requirements_raw": "00_요구사항/01_사용자요구사항_원문.md",
+    "requirements": "00_요구사항/02_요구사항정의서.md",
+    "decisions": ["90_결정관리/02_결정기록_ADR.md"],
+    "pending": "90_결정관리/01_결정대기_질문목록.md",
+    "open_questions": "90_결정관리/01_결정대기_질문목록.md",
+    "todo": "90_결정관리/03_향후과제_TODO.md"
+  },
+  "assets": {
+    "test_root": "test",
+    "tools_root": null
+  },
+  "archived": []
+}

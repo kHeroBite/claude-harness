@@ -162,14 +162,21 @@ def _self_verify_write(path: str, expected_content: str, encoding_used: str) -> 
             expected_bytes = expected_content.encode(encoding_used or "utf-8")
             expected_size = len(expected_bytes)
 
-            if actual_size != expected_size:
+            # BOM 보정: expected_content는 BOM 미포함 문자열이므로, 디스크에 BOM이
+            # 있으면 그만큼 제외하고 비교한다 (179번 lstrip(BOM)과 동일 철학).
+            with open(path, "rb") as _f:
+                _head3 = _f.read(3)
+            bom_len = 3 if _head3 == b"\xef\xbb\xbf" else 0
+            actual_size_for_compare = actual_size - bom_len
+
+            if actual_size_for_compare != expected_size:
                 if attempt < max_retries - 1:
                     time.sleep(retry_interval)
                     continue
                 return {
                     "success": False,
                     "error": "WRITE_VERIFY_MISMATCH",
-                    "message": f"크기 불일치: 기대 {expected_size}B ≠ 실제 {actual_size}B",
+                    "message": f"크기 불일치: 기대 {expected_size}B ≠ 실제 {actual_size_for_compare}B (BOM {bom_len}B 제외, 디스크 전체 {actual_size}B)",
                     "path": path,
                 }
 
@@ -884,6 +891,57 @@ def file_copy(source: str, destination: str, overwrite: bool = False) -> dict:
         return _fs_error(source, e)
 
 
+def _copy2_atomic_replace(source: str, destination: str) -> None:
+    """shutil.copy2 와 같은 결과를 내되, 기존 파일 덮어쓰기는 원자 교체로 한다 (사이클167 C18 재발방지).
+
+    배경: shutil.copy2 는 대상 inode 를 0바이트로 자른 뒤 다시 쓴다(open 'wb').
+      bash 는 스크립트를 실행하면서 파일을 조금씩 읽으므로, 실행 중인 hook 을 덮어쓰면
+      잘린/섞인 바이트를 읽어 판정이 조용히 빠진다(odev-i1 재현: 51회 중 21회 통과).
+    조치: 대상이 이미 있는 일반 파일이면 같은 디렉토리 임시파일에 copy2(내용+copystat)
+      → os.replace 로 이름을 교체한다. 실행 중인 프로세스는 옛 inode 를 끝까지 읽는다.
+
+    기존 의미 보존 (교체 전 shutil.copy2 실측 동작):
+      - 대상이 심볼릭링크 → 링크는 그대로 두고 링크가 가리키는 실파일을 교체한다.
+      - 끊어진 링크 / 대상 부재 / 대상이 디렉토리 → 기존 shutil.copy2 그대로.
+      - source 와 대상이 같은 파일 → 기존처럼 shutil.SameFileError.
+    한계: 대상의 하드링크 공유는 끊어진다(새 inode). 대상 소유자는 교체 프로세스 기준이 된다.
+    """
+    import tempfile as _tempfile
+    import time
+
+    real_dest = os.path.realpath(destination) if os.path.islink(destination) else destination
+    if not os.path.isfile(real_dest):
+        # 대상 부재·끊어진 링크·디렉토리 → 기존 동작 무변경
+        shutil.copy2(source, destination)
+        return
+    if os.path.samefile(source, real_dest):
+        raise shutil.SameFileError(f"{source!r} and {destination!r} are the same file")
+
+    dest_dir = os.path.dirname(os.path.abspath(real_dest))
+    fd, tmp_path = _tempfile.mkstemp(
+        prefix="." + os.path.basename(real_dest) + ".oio_copy_", suffix=".tmp", dir=dest_dir
+    )
+    os.close(fd)
+    try:
+        shutil.copy2(source, tmp_path)  # 내용 + 권한·mtime(copystat)
+        # NTFS 간헐 PermissionError(AV 간섭 등) 재시도 — ntfs_handler 원자 쓰기 P1-4 와 같은 지연열
+        _delays = [0.05, 0.1, 0.3, 0.5, 1.0]
+        for _attempt, _delay in enumerate(_delays):
+            try:
+                os.replace(tmp_path, real_dest)
+                break
+            except PermissionError:
+                if _attempt == len(_delays) - 1:
+                    raise
+                time.sleep(_delay)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
 def _file_copy_impl(source: str, destination: str, overwrite: bool) -> dict:
     if not os.path.exists(source):
         return {
@@ -917,7 +975,12 @@ def _file_copy_impl(source: str, destination: str, overwrite: bool) -> dict:
 
         try:
             _heartbeat_during_lock(source)
-            shutil.copy2(source, destination)
+            _copy2_atomic_replace(source, destination)
+            # 모드 보존 방어 — copy2/폴백 경로와 무관하게 대상 모드를 원본에 맞춘다
+            try:
+                shutil.copymode(source, destination)
+            except OSError:
+                pass
             bytes_copied = os.path.getsize(destination)
             return {
                 "success": True,

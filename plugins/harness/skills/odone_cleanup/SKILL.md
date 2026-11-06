@@ -14,7 +14,7 @@ invocation:
 ### 1. 디버그 코드 변환
 
 ```yaml
-절차: oinfra_{project} 프로젝트스킬의 디버그 변환 규칙 참조
+절차: INFRA.md 의 디버그 변환 규칙 참조
 예시: Debug → Debug2, Trace 비활성화 등 (프로젝트마다 다름)
 ```
 
@@ -30,7 +30,7 @@ invocation:
 ### 3. 로그 파일 삭제
 
 ```yaml
-경로: oinfra_{project} 프로젝트스킬의 로그 경로 참조
+경로: INFRA.md 의 로그 경로 참조
 ```
 
 ### 4. TODO 파일 삭제
@@ -42,7 +42,7 @@ invocation:
 ### 5. 프로그램 종료 및 재실행
 
 ```yaml
-절차: oinfra_{project} 프로젝트스킬의 실행/종료 명령 참조
+절차: INFRA.md 의 실행/종료 명령 참조
 ```
 
 ### 6. 의도 Lock 해제 (cleanup 마지막 동작 — 필수)
@@ -71,7 +71,7 @@ invocation:
 
 ```yaml
 odone_cleanup 담당:
-  - 프로젝트 내 에러 추적/디버그 로그 파일 삭제 (work/ 디렉토리 등)
+  - 프로젝트 작업트리 안의 에러 추적/디버그 로그 파일 삭제 (세션 work/ 는 ofinish Step 4 가 승격 뒤 정리하므로 건드리지 않는다)
   - 임시 작업 파일 정리
 
 세션 디렉토리 정리는 ofinish에서 수행 (M-12 책임 분리):
@@ -88,7 +88,7 @@ odone_cleanup 담당 (odone 단계):
   - 디버그 코드 변환 (Console.WriteLine → Logger 등)
   - 테스트용 임시 코드 제거
   - odev_lock 해제
-  - 임시 파일 정리 (work/ 디렉토리 내 작업 파일)
+  - 프로젝트 작업트리 안의 임시 파일만 정리 (세션 work/ 는 ofinish Step 4 가 승격 뒤 정리하므로 건드리지 않는다)
 
 ofinish 담당 (ofinish 단계):
   - 팀에이전트 pane 물리적 정리 (shutdown → kill → TeamDelete)

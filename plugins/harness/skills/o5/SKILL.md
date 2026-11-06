@@ -36,10 +36,10 @@ o5_분류_조건: # (→ ok/SKILL.md 수정_작업_분류 섹션 참조 — 단�
     oplan_consult: 1500줄+ 이지만 알고리즘/기술 선택 중심인 경우 (이종AI 협업이 토론보다 효과적)
   - odev: 최대 에이전트, odev_impact(필수)
   - otest: Phase 0~4 전체 + UI 필수
-    역라우팅: 예상-실제 비교 → 불일치 시 odev/oplan 복귀 (≤10회)
+    역라우팅: 예상-실제 비교 → 불일치 시 odev/oplan 복귀 (≤20회)
   - odone Full Path + Gate:
     review → trans → hooks → skills → cleanup → docs → git
-    + 사용자 최종 승인 게이트 (Gate 판정)
+    + 자동 Gate 판정 (deferred 항목은 최종 보고 보류 목록 — 사람 승인 없음)
 
 동적_승격:
   - o5는 최상위 — 추가 승격 없음

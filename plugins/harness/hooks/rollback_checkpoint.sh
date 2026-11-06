@@ -1,8 +1,4 @@
 #!/bin/bash
-# >>> harness preamble
-_HP="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)}"
-[ -f "$_HP/hooks/harness_preamble.sh" ] && . "$_HP/hooks/harness_preamble.sh" 2>/dev/null || { [ -f "$_HP/harness_preamble.sh" ] && . "$_HP/harness_preamble.sh" 2>/dev/null; } || true
-# <<< harness preamble
 # rollback_checkpoint.sh — odev 진입 시 git checkpoint 자동 생성
 # PreToolUse(Skill) — odev/odev_* 스킬 감지
 
@@ -21,7 +17,7 @@ case "$SKILL" in
 esac
 
 # 세션 격리 UUID 결정
-source "${HARNESS_HOOK_DIR}/lib/session_id.sh"
+source "${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/session_id.sh"
 resolve_uuid "$INPUT" 2>/dev/null || UUID="${CLAUDE_SESSION_ID}"
 [[ -z "$UUID" ]] && exit 0
 
@@ -34,8 +30,8 @@ cd "$PROJECT_DIR" 2>/dev/null || exit 0
 mkdir -p "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/session-env/${UUID}"
 git rev-parse HEAD > "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/session-env/${UUID}/rollback_hash" 2>/dev/null || exit 0
 # 사이클46 축① — 반대편 base 에도 미러 (읽는 쪽이 다른 base 를 볼 수 있다)
-source "${HARNESS_HOOK_DIR}/lib/session_mirror.sh" 2>/dev/null
-type _mirror_file >/dev/null 2>&1 && _mirror_file "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/session-env/${UUID}/rollback_hash"
+source "${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/session_mirror.sh" 2>/dev/null
+declare -F _mirror_file >/dev/null 2>&1 && _mirror_file "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/session-env/${UUID}/rollback_hash"
 
 # 태그 생성
 TAG_NAME="odev-checkpoint-$(date +%Y%m%d-%H%M%S)"

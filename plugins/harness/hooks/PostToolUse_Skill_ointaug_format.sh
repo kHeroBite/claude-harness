@@ -1,8 +1,4 @@
 #!/bin/bash
-# >>> harness preamble
-_HP="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)}"
-[ -f "$_HP/hooks/harness_preamble.sh" ] && . "$_HP/hooks/harness_preamble.sh" 2>/dev/null || { [ -f "$_HP/harness_preamble.sh" ] && . "$_HP/harness_preamble.sh" 2>/dev/null; } || true
-# <<< harness preamble
 # PostToolUse_Skill_ointaug_format.sh — PostToolUse:Skill hook
 # 목적: ointaug 실행 직후 "확장 질의 4항목" 형식 준수를 강제 (F-INTAUG-2)
 #
@@ -35,18 +31,47 @@ _HP="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null
 trap 'exit 0' ERR
 INPUT=$(timeout 5 cat 2>/dev/null) || INPUT=""
 SKILL_NAME=$(echo "$INPUT" | jq -r '(.tool_input.skill // .tool_input.skill_name // empty)' 2>/dev/null)
-[[ "$SKILL_NAME" == "ointaug" ]] || exit 0
+# ★[2026-10-10 사이클174 F-INTAUG-3] oi 도 받는다 — 아래 호출 증표 기록 때문이다★
+case "$SKILL_NAME" in
+  ointaug|oi) ;;
+  *) exit 0 ;;
+esac
 
-source "${HARNESS_HOOK_DIR}/lib/session_id.sh" 2>/dev/null || exit 0
-resolve_uuid "$INPUT" || exit 0
+# ★[2026-10-11] 조용한 실패 금지 — 증표를 못 쓰면 F-INTAUG-3 가 "호출 안 함" 으로 오차단한다. 실패 사유를 stderr 로 남긴다★
+if ! source "${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/session_id.sh" 2>/dev/null; then
+  echo "⚠️ [F-INTAUG-3] ${SKILL_NAME} 호출 증표 기록 실패 — lib/session_id.sh 로드 실패. 다음 도구가 F-INTAUG-3 로 막히면 이 실패가 원인이다." >&2
+  exit 0
+fi
+if ! resolve_uuid "$INPUT"; then
+  echo "⚠️ [F-INTAUG-3] ${SKILL_NAME} 호출 증표 기록 실패 — hook 입력에서 session_id 를 얻지 못했다." >&2
+  exit 0
+fi
 [[ -z "$UUID" ]] && exit 0
 
 # 팀/서브에이전트 스킵 — ointaug 는 메인 전용이다
 if [[ -n "${PIPELINE_UUID:-}" && "${PIPELINE_UUID:-}" != "$MY_UUID" ]] || [[ "$MY_UUID" != "$UUID" ]]; then
   exit 0
 fi
+[[ -n "$(printf '%s' "$INPUT" | jq -r '.agent_id // empty' 2>/dev/null)" ]] && exit 0
 
 SESSION_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/session-env/${UUID}"
+
+# ★[2026-10-10 사이클174 F-INTAUG-3] Skill 실제 호출 증표 기록★
+#   실사고: 메인이 Skill('ointaug') 없이 session_state 로 ointaug_done 만 직접 써서 게이트를 통과했다(13건 중 9건).
+#   마커가 메인이 쓰는 파일이라 "마커 있음" 이 "Skill 호출함" 의 증거가 아니었다.
+#   조치: 증표는 이 hook(PostToolUse:Skill — 메인 도구 호출 경로 밖)만 쓴다. 메인의 증표 쓰기·삭제는
+#   PreToolUse_ointaug_turn_gate.sh 가 막는다. 판정은 F-INTAUG-1(게이트)·F-INTAUG-3(턴 게이트)·oi_route_guard 가 mtime 으로 한다.
+#   state 파일이 있는 메인 세션에만 쓴다(서브에이전트 UUID 에 파일을 만들지 않는다).
+if [[ -f "${SESSION_DIR}/state" ]]; then
+  _TUID=$(printf '%s' "$INPUT" | jq -r '.tool_use_id // empty' 2>/dev/null)
+  if ! printf '%s %s %s\n' "$(date +%s)" "$(od -An -N8 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')" "${_TUID}" \
+    > "${SESSION_DIR}/${SKILL_NAME}_invoked" 2>/dev/null; then
+    # 메인 세션에서 증표 쓰기 실패 — rc=2 로 stderr 를 메인 컨텍스트에 싣는다(PostToolUse 는 이미 실행된 도구를 되돌리지 않는다)
+    echo "⚠️ [F-INTAUG-3] ${SKILL_NAME} 호출 증표 쓰기 실패 — ${SESSION_DIR}/${SKILL_NAME}_invoked. 다음 도구가 F-INTAUG-3 로 막히면 이 실패가 원인이다(디스크·권한 확인)." >&2
+    exit 2
+  fi
+fi
+[[ "$SKILL_NAME" == "ointaug" ]] || exit 0
 MARK1="${SESSION_DIR}/ointaug_done"
 MARK2="$HOME/.claude/session-env/${UUID}/ointaug_done"
 

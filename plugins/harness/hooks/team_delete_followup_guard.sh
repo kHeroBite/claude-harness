@@ -1,8 +1,4 @@
 #!/bin/bash
-# >>> harness preamble
-_HP="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)}"
-[ -f "$_HP/hooks/harness_preamble.sh" ] && . "$_HP/hooks/harness_preamble.sh" 2>/dev/null || { [ -f "$_HP/harness_preamble.sh" ] && . "$_HP/harness_preamble.sh" 2>/dev/null; } || true
-# <<< harness preamble
 # TeamDelete 후 잔존 정리 + 재시도 카운터 hook
 
 # PostToolUse:TeamDelete 매처 — TeamDelete 도구 호출 직후 발동
@@ -15,7 +11,7 @@ INPUT=$(timeout 5 cat 2>/dev/null || echo "")
 [[ -z "$INPUT" ]] && exit 0
 
 # --- UUID 결정 ---
-source "${HARNESS_HOOK_DIR}/lib/session_id.sh" 2>/dev/null || true
+source "${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/session_id.sh" 2>/dev/null || true
 resolve_uuid "$INPUT" 2>/dev/null || true
 [[ -z "${UUID:-}" ]] && exit 0
 

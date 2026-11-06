@@ -1,8 +1,4 @@
 #!/bin/bash
-# >>> harness preamble
-_HP="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)}"
-[ -f "$_HP/hooks/harness_preamble.sh" ] && . "$_HP/hooks/harness_preamble.sh" 2>/dev/null || { [ -f "$_HP/harness_preamble.sh" ] && . "$_HP/harness_preamble.sh" 2>/dev/null; } || true
-# <<< harness preamble
 # [훅] PreToolUse — 폼 파일에 인라인 SQL 작성 차단
 # 적용 대상: Edit|Write|mcp__serena__replace_symbol_body|insert_after_symbol|insert_before_symbol
 # 허용 경로: */Queries/, ~/work/*/Queries/, ~/work/*Queries*.cs
@@ -97,7 +93,7 @@ fi
 #   상태에서 신설 — 사문 enum(MenuOp.Update/Insert) 제거는 이번 사이클 범위 밖으로 보류).
 # ─────────────────────────────────────────────────────────────────────────
 if [[ "$IS_QUERIES_FILE" -eq 1 ]]; then
-  OWNER_TSV="${HARNESS_HOOK_DIR}/data/sql_column_owner.tsv"
+  OWNER_TSV="${HARNESS_HOME:-$HOME/.harness}/current/hooks/data/sql_column_owner.tsv"
   if [[ -f "$OWNER_TSV" ]]; then
     # UPDATE <테이블> SET <열목록> 패턴을 대소문자 무시로 전부 추출
     UPPER_FOR_OWN=$(echo "$CONTENT" | tr '[:lower:]' '[:upper:]')
@@ -134,7 +130,7 @@ EOF_COLS
         done <<< "$ALL_OWNERS_FOR_TABLE"
         OWNER_COUNT=$(echo "$OWNERS_HIT" | grep -oP '\|[^|]+\|' | sort -u | wc -l)
         if [[ "$OWNER_COUNT" -ge 2 ]]; then
-          source ${HARNESS_HOOK_DIR}/lib/write_error.sh
+          source ${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/write_error.sh
           log_hook_error "HOOK_BLOCK_SQL_OWN" "$TOOL_NAME" "테이블($OWN_TABLE) UPDATE 가 복수 소유자 전용열을 동시 SET" "$SESSION_ID"
           echo "{\"decision\":\"block\",\"reason\":\"🚨 [F-SQL-OWN-1] 테이블 ${OWN_TABLE} 의 UPDATE 가 소유자가 다른 열을 동시에 SET 합니다(대장: ${OWNERS_HIT}). 각 화면은 자신이 소유한 열만 SET 하는 전용 쿼리로 분리하세요(예: UpdateNoAi/UpdateAiOnly). 정당한 이유가 있으면 -- @sql-owner-exempt: 사유 주석을 그 줄에 추가하세요.\"}" | tee /dev/stderr
           exit 2
@@ -168,7 +164,7 @@ if [[ "$HAS_SQL" -eq 1 ]]; then
   # DashboardQueries.XXX, MemberQueries.XXX 등의 참조는 SQL이 아닌 코드
   # 실제 SQL 문자열은 따옴표 안에 있음 → @" 또는 $@" 또는 $" 또는 " 로 시작
   if echo "$CONTENT" | grep -qP '(@"|(\$@"|(\$")|"))\s*(SELECT|INSERT|UPDATE|DELETE)'; then
-    source ${HARNESS_HOOK_DIR}/lib/write_error.sh
+    source ${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/write_error.sh
     log_hook_error "HOOK_BLOCK_INLINE_SQL" "$TOOL_NAME" "폼 파일($BASENAME)에 인라인 SQL 작성 시도" "$SESSION_ID"
     echo "{\"decision\":\"block\",\"reason\":\"🚨 인라인 SQL 차단! 폼 파일($BASENAME)에 SQL 문자열 직접 작성 금지. 공유 라이브러리 Queries/ 에 const/빌더로 정의 후 참조하세요. 규칙: orules_{project} 'SQL 위치 규칙' 참조.\"}" | tee /dev/stderr
     exit 2

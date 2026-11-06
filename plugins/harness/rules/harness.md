@@ -144,10 +144,10 @@
 
 ```bash
 # ❌ 조용히 죽는다 — rc=127, status 파일은 빈 채로 남는다
-source "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/lib/state_machine.sh"; status_add "$SF" RALPH
+source "${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/state_machine.sh"; status_add "$SF" RALPH
 
 # ✅ 정상 — rc=0, status=[RALPH]
-bash -c 'source "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/lib/state_machine.sh"; status_add "'"$SF"'" RALPH'
+bash -c 'source "${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/state_machine.sh"; status_add "'"$SF"'" RALPH'
 ```
 
 **왜 이 규칙이 있는가 (실사고)**

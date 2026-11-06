@@ -1,8 +1,4 @@
 #!/bin/bash
-# >>> harness preamble
-_HP="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)}"
-[ -f "$_HP/hooks/harness_preamble.sh" ] && . "$_HP/hooks/harness_preamble.sh" 2>/dev/null || { [ -f "$_HP/harness_preamble.sh" ] && . "$_HP/harness_preamble.sh" 2>/dev/null; } || true
-# <<< harness preamble
 # write_error.sh — UUID 기반 공통 에러 기록 라이브러리
 # PreToolUse hook 등에서 source하여 사용
 # 함수: init_error_md / write_error / write_user_request
@@ -86,6 +82,7 @@ write_error() {
 
   # HOOK_BLOCK 카테고리는 "정상 차단(방어 성공)"이므로 즉시 해결 처리
   local status="**미해결**"
+  # L-329: HOOK_BLOCK* 카테고리는 정상차단으로 즉시 해결 처리(fix_hook_block_errors 와 짝)
   if [[ "$category" == HOOK_BLOCK* ]]; then
     status="**해결됨(정상차단)**"
   fi

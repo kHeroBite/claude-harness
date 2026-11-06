@@ -32,26 +32,20 @@ Read {프로젝트_루트}/CLAUDE.md  # 프로젝트_루트 = git rev-parse --sh
 ```bash
 # PROJECT.md가 있으면 읽기
 Read {프로젝트_루트}/PROJECT.md
+# 문서 지도가 있으면 다시 읽기 (md 목록·역할·읽을 시점)
+Read {프로젝트_루트}/.claude/rules/docs-map.md
 ```
 
-### Step 2.5: 현재 프로젝트에 맞는 oinfra 스킬 로딩
+### Step 2.5: INFRA.md 헤더·목차 재확인 (존재 시)
 
-현재 작업 디렉터리(cwd) 또는 git 루트를 기준으로 아래 매핑에서 해당 oinfra 스킬을 찾아 로딩한다.
-
-| 경로 패턴 | 스킬 |
-|-----------|------|
-| `/mnt/c/work/{프로젝트}` 포함 | `Skill('oinfra_{프로젝트}')` |
-
-`{프로젝트}` 는 cwd 의 basename 을 소문자로 변환한 값이다.
-해당 `oinfra_{프로젝트}` 스킬이 없으면 인프라 로딩을 건너뛴다.
+{git 루트}/INFRA.md 가 있으면 헤더(INFRA-FIELDS)와 목차만 읽는다. 없으면 생략한다.
 
 ```bash
-# cwd 확인
-pwd  # 또는 mcp__oio__get_cwd
+# git 루트 확인
+git rev-parse --show-toplevel  # 또는 mcp__oio__get_cwd
 ```
 
-- 매핑 일치 시: 해당 `Skill('oinfra_*')` 즉시 호출
-- 일치하는 경로 없음(AI 프로젝트 등): oinfra 로딩 생략
+- 본문 전체는 읽지 않는다. 필요한 절은 작업 시점에 목차를 Grep 한 뒤 그 절만 읽는다.
 
 ### Step 3: 최근 변경 스킬 감지
 ```bash

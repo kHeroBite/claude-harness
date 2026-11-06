@@ -101,7 +101,7 @@ Fail_Fast_순서:
 ```yaml
 에이전트_수_정책:
   단일_출처: Skill('oplan_parallel') — 에이전트 수 공식/파일 할당/Load Balancing의 유일 출처
-  공식_요약: 파일 1~4개=1:1, 파일 5개+=max(4,ceil(파일수/3))
+  공식_요약: 파일 1~4개=1:1, 파일 5개+=max(4,ceil(파일수/3)), 세션 동시 생존 팀원 ≤9(메인 포함 10)
   상세: oplan_parallel SKILL.md 참조
 ```
 

@@ -1,0 +1,122 @@
+{
+  "_comment": "승격 경로 등록부 — lib/guard_promote.sh 만 갱신한다. sha 는 init(최초 1회)·promote 가 기록한다.",
+  "targets": {
+    "pdg_core": {
+      "live": "lib/prod_deploy_guard.py",
+      "test": "tests/test_pdg_readonly.sh",
+      "test_sha256": "a1bed950e69765f9e666153950d3fde5c86f0659be4002f5ee712580e0d73672",
+      "core_sha256": "6a2612bcd443711e35329d7f1f0e0a925566677e76220edba204ef4349e5bbd1",
+      "min_pass": 1425,
+      "max_skip": 0,
+      "lang": "python"
+    },
+    "pdg_hook": {
+      "live": "PreToolUse_prod_deploy_guard.sh",
+      "test": "tests/test_pdg_hook.sh",
+      "test_sha256": "e6bd8af1e2574aa949449e147d9c3a581eec765fd1cb40e8dc65714962525409",
+      "core_sha256": "c2f8062c0a5fd6516b06a5c735d19146d01e895d243bb9419b2e86e0b9ae6372",
+      "min_pass": 11,
+      "max_skip": 0,
+      "lang": "bash"
+    },
+    "gp_self": {
+      "live": "lib/guard_promote.sh",
+      "test": "tests/test_gp_self.sh",
+      "test_sha256": "82104e2c8c195a992075962fc026b2abfb78995e44c997ef4fdb32016ed5f60f",
+      "core_sha256": "83c4232d8a201dc17115864b33c7ba0dad72e8753c5687cb6b443c54a66f52d3",
+      "min_pass": 65,
+      "max_skip": 0,
+      "lang": "promoter"
+    },
+    "gp_gate": {
+      "live": "lib/gp_gate.sh",
+      "test": "tests/test_gp_gate.sh",
+      "test_sha256": "e8a5671a2a198392cb3c161d5c99fd27ebf8387f70aa1fa64fb4d714b350129b",
+      "core_sha256": "4dd2223c230a8cf3b7a994a83b4d92962c078704d2f4acec888d55a5cf636fe6",
+      "min_pass": 777,
+      "max_skip": 0,
+      "lang": "gp_gate"
+    },
+    "tb_core": {
+      "live": "lib/time_budget.sh",
+      "test": "tests/test_tb_lkg.sh",
+      "test_sha256": "d473f4e3e632d8a50bc8f79d9d2246c6883e3a020754b99c33d3c6cc7618ba46",
+      "core_sha256": "02658e50d0c6a5e05f0a0a12467273ccb24c99f3c56dbdf55b76af2e8f2ff12f",
+      "min_pass": 126,
+      "max_skip": 0,
+      "lang": "bash"
+    },
+    "errgate_ofinish": {
+      "live": "errgate/PreToolUse_Skill_ofinish_errgate.sh",
+      "test": "tests/test_errgate_ofinish.sh",
+      "test_sha256": "cea9e31622107af288b78ec19658ebeceef4a783093867ac71b0364f7882d71d",
+      "core_sha256": "c1a9c30095e9d617c04c48816d7a1afb12953afa89342b5ef34ff15354eacf00",
+      "min_pass": 12,
+      "max_skip": 0,
+      "lang": "bash"
+    },
+    "team_deadlock": {
+      "live": "deadlock/Stop_team_deadlock_guard.sh",
+      "test": "tests/test_team_deadlock_guard.sh",
+      "test_sha256": "33b5a98772ca0dd80b45a53758053f08ee8b4761aeaae68007e796f195ea30cf",
+      "core_sha256": "5242f5699a90b43f759ce2d42e1c58f747749733498b382236355718f684a35e",
+      "min_pass": 31,
+      "max_skip": 0,
+      "lang": "bash"
+    },
+    "turn_report": {
+      "live": "lib/teammate_turn_report.py",
+      "test": "tests/test_turn_report_da.sh",
+      "test_sha256": "c2ddf26e5d0f1758bd328cf63719e36338bf2e3995feb9af4db7586cb3405bef",
+      "core_sha256": "354e97c218ea37f422c87b49ba5d925b08a4363f30be85e4e9b22ecaeac08068",
+      "min_pass": 20,
+      "max_skip": 0,
+      "lang": "python"
+    },
+    "bg_job": {
+      "live": "lib/bg_job_guard.py",
+      "test": "tests/test_bg_job_da.sh",
+      "test_sha256": "582525f11e973f30b671c5e6ee4d82ca77673f7f54399ad3452610b2f5fe452f",
+      "core_sha256": "2f5df7c16b182b8e7618f85a867ec7b12e9a982616de2eed4551c55115eeecbe",
+      "min_pass": 12,
+      "max_skip": 0,
+      "lang": "python"
+    },
+    "autoloop": {
+      "live": "autoloop_bypass_guard.sh",
+      "test": "tests/test_autoloop_bypass.sh",
+      "test_sha256": "edf68089b6a88db5558237630427f7a57dc56a478079ab7d98c1ed2c4ae53090",
+      "core_sha256": "6c1c6c5f7ad67a2dfcdd8a4e8651ab99494302f8b8de82dc88570abece3f1ef4",
+      "min_pass": 22,
+      "max_skip": 0,
+      "lang": "bash"
+    },
+    "phase_batches": {
+      "live": "phase_batches_immutable_guard.sh",
+      "test": "tests/test_phase_batches_guard.sh",
+      "test_sha256": "838690830fa879fb039220031b3df730236e0af1e919c178f18c665d9601fcc6",
+      "core_sha256": "70e67d909be54dc4334f169b8db71c6531747cb3a30df3268548c5ef6059e009",
+      "min_pass": 32,
+      "max_skip": 0,
+      "lang": "bash"
+    },
+    "orphan_scan": {
+      "live": "lib/orphan_scan.sh",
+      "test": "tests/test_orphan_scan_da.sh",
+      "test_sha256": "810f89fc75852a407a138ed7335fa0c4d607d307d84a377b6dddd014f63f5c0b",
+      "core_sha256": "e33942f8b2a32b8c55b7fb4445b1df5d2329218a5d2e4a5aa723f34dddfcff1e",
+      "min_pass": 25,
+      "max_skip": 0,
+      "lang": "bash"
+    },
+    "gp_pyclass": {
+      "live": "lib/gp_pyclass.py",
+      "test": "tests/test_pyclass_fixed.sh",
+      "test_sha256": "3949014c5b5794e1f1b07cadb953b093ce66efd7715be7af062abf3d273a0154",
+      "core_sha256": "83de501a2ccee56133f9ff45c4a8c953bc1dc5cf4b51d79fa1f7e72c45ba67d8",
+      "min_pass": 82,
+      "max_skip": 0,
+      "lang": "python"
+    }
+  }
+}

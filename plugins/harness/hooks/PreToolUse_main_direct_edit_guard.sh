@@ -1,8 +1,4 @@
 #!/usr/bin/env bash
-# >>> harness preamble
-_HP="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)}"
-[ -f "$_HP/hooks/harness_preamble.sh" ] && . "$_HP/hooks/harness_preamble.sh" 2>/dev/null || { [ -f "$_HP/harness_preamble.sh" ] && . "$_HP/harness_preamble.sh" 2>/dev/null; } || true
-# <<< harness preamble
 # 메인 에이전트가 DEV/TEST/DONE 상태에서 프로젝트 소스를 직접 수정하는 것을 물리 차단한다.
 #
 # ★왜 만들었나 (2026-09-06 실사고)★
@@ -19,7 +15,7 @@ INPUT="$(cat 2>/dev/null || true)"
 [ -z "$INPUT" ] && exit 0
 
 # 비상 스위치
-[ -f "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/DISABLE_MAIN_EDIT_GUARD" ] && exit 0
+[ -f "${HARNESS_HOME:-$HOME/.harness}/current/hooks/DISABLE_MAIN_EDIT_GUARD" ] && exit 0
 
 # 팀에이전트는 통과 (그들이 수정하는 것이 정상 경로다)
 [ -n "${PIPELINE_UUID:-}" ] && exit 0

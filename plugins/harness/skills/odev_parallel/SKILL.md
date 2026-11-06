@@ -76,6 +76,41 @@ invocation:
 
 > **상세**: [references/PARALLEL_TIERS.md](references/PARALLEL_TIERS.md) — 레이어별 자동 로딩 문서 매핑 (impl-*/data-*/be-*/fe-*)
 
+## 병렬 판정 체크리스트 (자동 병렬이 기본 — 단일 출처)
+
+> 사용자 지시(2026-10-10): "병렬이 가능한 작업들을 팀에이전트를 여러개 spawn해서 진행하라. 다음부터는 자동으로 병렬진행하도록."
+> ok_pipeline(2단계 Wave·4.5단계 Auto-Loop)·oplan_parallel 은 이 체크리스트를 참조한다.
+> 물리 강제: `hooks/PreToolUse_Agent_parallel_spawn_guard.sh` (S1 같은 그룹 직렬 spawn 경고/차단, B1 독립 batch 동시 진행 권고).
+
+```yaml
+기본값 (묻지 않고 적용):
+  A. 같은 그룹(batch·wave·phase) 안의 file_assignment 에이전트는 한 응답에서 Agent() 를 여러 개 동시에 발행한다.
+     - 한 메시지 최대 4개(L-137). 5개+ 는 다음 응답에서 즉시 이어서 발행한다 — 앞 에이전트 완료를 기다리지 않는다.
+  B. phase_batches 에서 선행(depends_on_batch + extra_depends_on)이 모두 완료됐거나 없는 batch 들은,
+     서로 파일 집합이 겹치지 않으면 동시에 진행한다(ok_pipeline 4.5단계 "독립 batch 병렬").
+  C. 판정 근거가 부족하면 병렬 쪽으로 기운다 — 직렬로 돌리려면 아래 직렬 사유 중 하나를 1줄로 기록한다.
+
+직렬_사유 (하나라도 해당하면 그 쌍만 직렬 — 나머지는 병렬 유지):
+  1. 파일 소유 충돌: 두 에이전트(또는 batch)의 수정 파일 집합 교집합 ≠ ∅ (대소문자·경로 정규화 후 비교)
+  2. 선행 산출물 의존: B 가 A 의 결과(인터페이스 시그니처·DDL·생성 파일)를 읽어야 착수 가능 — depends_on 으로 명시돼 있어야 한다
+  3. otest 자원 축: 자원 축당 otest 1개(데스크톱 1 + 모바일 1 은 병렬 허용 — ok_pipeline "otest 자원 축 병렬")
+  4. 빌드 산출물 경합: 같은 프로젝트(같은 bin/obj)를 동시에 빌드하는 작업 — 빌드는 빌드 축마다 obuild 1개에 위임하고 odev 는 코드 수정만 병렬로
+     (빌드 축이 다른 산출물(예: 데스크톱/모바일)은 축별 obuild 를 따로 두고 병렬. 공유 라이브러리는 한쪽이 먼저 빌드를 끝낸 뒤 다른 축 시작 — obuild "6_축별_분리")
+  5. 같은 DB 객체 스키마 변경(같은 테이블 DDL)·같은 외부 자원(같은 기기·같은 포트) 점유
+  6. 사용자가 순서를 명시한 경우
+
+절차 (spawn 직전 30초 점검):
+  - [ ] 이번 그룹의 미spawn 에이전트 목록을 뽑았다
+  - [ ] 직렬 사유 1~6 에 걸리지 않는 에이전트는 전부 이번 응답에 넣었다
+  - [ ] (batch 모드) 선행 완료·파일 비중첩 batch 가 더 있는지 확인했다 → 있으면 active_phase_batches.json 에 함께 올렸다
+  - [ ] 직렬로 남긴 쌍이 있으면 사유 번호를 진행 보고에 1줄 남겼다
+
+가드_스위치 (오탐 시 업무가 멈추지 않도록):
+  세션: session-env/${UUID}/parallel_spawn_guard_mode = off | warn | block (부재 시 warn)
+  전역 OFF: touch ${HARNESS_HOME:-$HOME/.harness}/current/hooks/.parallel_spawn_guard_off
+  block 은 그룹당 첫 위반 1회만 보류하고 재시도는 통과한다. 로그: session-env/${UUID}/logs/parallel_spawn_guard.log
+```
+
 ## 실행 절차
 
 ### 1. 독립 도메인 식별
@@ -114,6 +149,7 @@ spawn_배치_순차화 (config.json 쓰기 경합 방지 — L-137):
   규칙:
     - 배치 내 에이전트는 반드시 1개 메시지에 다중 Agent() 호출로 동시 spawn (필수 — 순차 개별 호출 금지, 이는 병렬화 원칙 위반)
     - 동시 spawn 최대 4개 (한 메시지의 Task 호출 수)
+    - 세션 동시 생존 팀원 ≤9(메인 포함 10)(oplan·otest 등 전 팀원 합산) — 초과 시 hook 차단(F-AGENT-CAP), 대기열 처리
     - 5개+ 에이전트 필요 시 배치 분할:
       배치1: Task #1~#4 (run_in_background=true, 동시)
       배치2: Task #5~#8 (배치1 spawn 확인 후)

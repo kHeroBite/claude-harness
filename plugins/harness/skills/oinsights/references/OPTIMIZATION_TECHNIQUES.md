@@ -14,14 +14,14 @@
 
 ```bash
 TS=$(date +%Y%m%d_%H%M%S)
-BACKUP_DIR=~/.claude/backups
+BACKUP_DIR=${CLAUDE_CONFIG_DIR:-$HOME/.claude}/backups
 mkdir -p "$BACKUP_DIR"
 
 # CLAUDE.md (NTFS → ext4 백업)
 cp "$(git rev-parse --show-toplevel)/CLAUDE.md" "$BACKUP_DIR/CLAUDE.md.${TS}"
 
 # MEMORY 디렉토리 전체
-MEMORY_DIR=$(find ~/.claude/projects/ -maxdepth 2 -name "MEMORY.md" -exec dirname {} \; | head -1)
+MEMORY_DIR=$(find ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/ -maxdepth 2 -name "MEMORY.md" -exec dirname {} \; | head -1)
 for f in "$MEMORY_DIR"/*.md; do
   NAME=$(basename "$f")
   cp "$f" "$BACKUP_DIR/${NAME}.${TS}"
@@ -55,7 +55,7 @@ ls -lh "$BACKUP_DIR/"*".${TS}" 2>/dev/null
 wc -w "$(git rev-parse --show-toplevel)/CLAUDE.md"
 
 # MEMORY
-MEMORY_DIR=$(find ~/.claude/projects/ -maxdepth 2 -name "MEMORY.md" -exec dirname {} \; | head -1)
+MEMORY_DIR=$(find ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/ -maxdepth 2 -name "MEMORY.md" -exec dirname {} \; | head -1)
 wc -w "$MEMORY_DIR"/*.md
 
 # SKILL.md 전체

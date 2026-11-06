@@ -1,8 +1,4 @@
 #!/bin/bash
-# >>> harness preamble
-_HP="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)}"
-[ -f "$_HP/hooks/harness_preamble.sh" ] && . "$_HP/hooks/harness_preamble.sh" 2>/dev/null || { [ -f "$_HP/harness_preamble.sh" ] && . "$_HP/harness_preamble.sh" 2>/dev/null; } || true
-# <<< harness preamble
 # otest_user_evidence_guard.sh — 사용자 GUI evidence 강제화 (PreToolUse:Agent)
 #
 # 트리거: odone 팀에이전트 spawn 시
@@ -32,7 +28,7 @@ AGENT_NAME=$(echo "$INPUT" | jq -r '.tool_input.name // ""' 2>/dev/null || echo 
 echo "$AGENT_NAME" | grep -qE "^odone" || exit 0
 
 # UUID 결정 (otest_done_guard.sh와 동일 패턴)
-source "${HARNESS_HOOK_DIR}/lib/session_id.sh"
+source "${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/session_id.sh"
 resolve_uuid "$INPUT" 2>/dev/null || UUID="${CLAUDE_SESSION_ID}"
 if [[ -z "$UUID" ]]; then
   # UUID 해석 실패 → 차단 불가 (otest_done_guard.sh 동일 정책)
@@ -46,8 +42,8 @@ fi
 SESSION_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/session-env/${UUID}"
 HOME_SESSION_DIR="$HOME/.claude/session-env/${UUID}"
 # 사이클46 축① — 반대편 base 미러
-source "${HARNESS_HOOK_DIR}/lib/session_mirror.sh" 2>/dev/null
-type _mirror_file >/dev/null 2>&1 || _mirror_file() { :; }
+source "${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/session_mirror.sh" 2>/dev/null
+declare -F _mirror_file >/dev/null 2>&1 || _mirror_file() { :; }
 
 # O1/O2는 acceptance_criteria.json 자체가 없을 가능성 — skip
 CLASSIFICATION=$(cat "${SESSION_DIR}/classification" 2>/dev/null || echo "")

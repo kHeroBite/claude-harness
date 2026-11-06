@@ -5,7 +5,7 @@
 hooks/write_guard.sh 의 H-1 가드는 Claude Code 도구 호출 경로만 검사한다.
 oio MCP 를 직접 호출하는 경로는 hook 을 우회하므로 agents/ 가 삭제될 수 있었다.
 본 모듈이 그 마지막 우회로를 막는다.
-증적: .claude/evidence/agent_orphan_cleanup_20260817.md
+증적: /mnt/c/DATA/Project/Mars/.claude/evidence/agent_orphan_cleanup_20260817.md
 
 설계 원칙 (H-1 과 동일)
 ----------------------
@@ -35,22 +35,11 @@ import subprocess
 # `check-path` 서브커맨드에 위임한다. 판정 로직은 그 파일 한 곳에만 존재하므로
 # 두 계층이 구조적으로 어긋날 수 없다.
 
-# 검사 스크립트 위치 — 홈 경로가 표준이므로 이를 우선 사용하고,
-# 플러그인 배포본에서는 플러그인 동봉 hooks 를 폴백으로 둔다.
-# CLAUDE_PLUGIN_ROOT 는 플러그인 실행 시에만 설정되므로 부재 시 후보에서 빠진다.
-# (부재해도 fail-open 설계상 통과되므로 동작에 영향이 없다.)
-_SCAN_CANDIDATES = tuple(
-    p for p in (
-        os.path.expanduser("~/.claude/hooks/lib/orphan_scan.sh"),
-        (
-            os.path.join(
-                os.environ["CLAUDE_PLUGIN_ROOT"], "hooks", "lib", "orphan_scan.sh"
-            )
-            if os.environ.get("CLAUDE_PLUGIN_ROOT")
-            else None
-        ),
-    )
-    if p
+# 검사 스크립트 위치 — hooks 실체 경로(ext4 정본)와 홈 경로는 동일 inode 이나,
+# 홈 경로가 표준이므로 이를 우선 사용하고 실패 시 정본 경로를 폴백으로 둔다.
+_SCAN_CANDIDATES = (
+    os.path.expanduser(((os.environ.get("HARNESS_HOME") or os.path.expanduser("~/.harness")) + "/current" + '/hooks/lib/orphan_scan.sh')),
+    ((os.environ.get("HARNESS_HOME") or os.path.expanduser("~/.harness")) + "/current" + '/hooks/lib/orphan_scan.sh'),
 )
 
 _TIMEOUT_SEC = 2.0
@@ -153,13 +142,7 @@ def check_orphan_block(path: str, command: str = ""):
         #   종전 suggestion 은 "/oinit" 뿐이라 이 경우 ★틀린 안내★ 를 줬다 —
         #   안내가 없는 것보다 나쁘다. 막힌 그 순간 읽는 유일한 텍스트이므로 여기에 둔다.
         _sug += (
-            "삭제 의도가 없었다면: 읽기 명령(ls/find/grep/cat)과 "
-            "삭제·이동 명령(rm/mv/-delete)을 ★같은 bash_exec 호출에 섞지 마세요★ — "
-            "한 호출은 통째로 판정되므로 읽기까지 차단됩니다. 읽기만 단독 호출하면 통과합니다. "
-            "원인 확정: bash <hooks/lib>/orphan_scan.sh check-path <경로> '<명령>' "
-            "(설치 환경의 hooks/lib 경로 — 표준: ~/.claude/hooks/lib, 플러그인: ${CLAUDE_PLUGIN_ROOT}/hooks/lib) "
-            "⇒ PASS / BLOCK / UNKNOWN. "
-            "긴급 시 hooks/lib/orphan_scan.sh 를 이동하면 본 가드가 무력화됩니다."
+            ('삭제 의도가 없었다면: 읽기 명령(ls/find/grep/cat)과 삭제·이동 명령(rm/mv/-delete)을 ★같은 bash_exec 호출에 섞지 마세요★ — 한 호출은 통째로 판정되므로 읽기까지 차단됩니다. 읽기만 단독 호출하면 통과합니다. 원인 확정: bash ' + (os.environ.get("HARNESS_HOME") or os.path.expanduser("~/.harness")) + "/current" + "/hooks/lib/orphan_scan.sh check-path <경로> '<명령>' ⇒ PASS / BLOCK / UNKNOWN. 긴급 시 hooks/lib/orphan_scan.sh 를 이동하면 본 가드가 무력화됩니다.")
         )
 
         return {

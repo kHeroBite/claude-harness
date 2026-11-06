@@ -29,7 +29,7 @@ UUID_결정:
   빌드_출력: $HOME/.claude/session-env/${UUID}/logs/build_output.log
   런타임_로그: $HOME/.claude/session-env/${UUID}/logs/runtime.log
   stderr: $HOME/.claude/session-env/${UUID}/logs/stderr.log
-  프로젝트_로그: oinfra_{project}에서 지정된 로그 경로 (있는 경우)
+  프로젝트_로그: INFRA.md 에서 지정된 로그 경로 (있는 경우)
 
 폴백:
   파일_없음: 해당 소스 스킵 (에러 아님)

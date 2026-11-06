@@ -1,8 +1,4 @@
 #!/bin/bash
-# >>> harness preamble
-_HP="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)}"
-[ -f "$_HP/hooks/harness_preamble.sh" ] && . "$_HP/hooks/harness_preamble.sh" 2>/dev/null || { [ -f "$_HP/harness_preamble.sh" ] && . "$_HP/harness_preamble.sh" 2>/dev/null; } || true
-# <<< harness preamble
 # 관찰 기록 알림을 받고도 observations.md를 갱신하지 않은 채 턴을 끝내려 할 때 통지하는 hook
 #
 # 배경 (OBS-3, 2026-08-24 실측):
@@ -45,6 +41,12 @@ set -uo pipefail
   OBS_FILE="${LOG_DIR}/observations.md"
   NOTIFIED_FILE="${SESSION_DIR}/observation_guard_notified"
 
+  # 사이클143 축② — 반대편 base 미러 (읽는 쪽이 다른 base 를 볼 수 있다)
+  # observation_guard_notified 가 한쪽에만 남으면 반대편 base 로 읽는 경로에서
+  # 회차 판정이 0 으로 리셋돼 같은 알림에 반복 통지한다.
+  source "${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/session_mirror.sh" 2>/dev/null
+  declare -F _mirror_file >/dev/null 2>&1 || _mirror_file() { :; }
+
   # 체크포인트 알림 이력이 없으면 판정 대상이 아니다
   [ -f "$CKPT_LOG" ] || exit 0
   ALERTS="$(grep -c '배수 도달' "$CKPT_LOG" 2>/dev/null || echo 0)"
@@ -67,6 +69,7 @@ set -uo pipefail
     if [ "$OBS_MTIME" -ge "$CKPT_MTIME" ]; then
       mkdir -p "$SESSION_DIR" 2>/dev/null || true
       echo "$ALERTS" > "$NOTIFIED_FILE" 2>/dev/null || true
+      _mirror_file "$NOTIFIED_FILE"
       exit 0
     fi
     STATE_MSG="observations.md가 마지막 알림 이후 갱신되지 않았습니다"
@@ -77,7 +80,9 @@ set -uo pipefail
   # 통지 (차단 아님) — 회차를 기록해 같은 알림에 반복 통지하지 않는다
   mkdir -p "$SESSION_DIR" 2>/dev/null || true
   echo "$ALERTS" > "$NOTIFIED_FILE" 2>/dev/null || true
+  _mirror_file "$NOTIFIED_FILE"
   echo "$(date '+%Y-%m-%d %H:%M:%S') NOTIFY alerts=${ALERTS} ${STATE_MSG}" >> "${LOG_DIR}/observation_guard.log" 2>/dev/null || true
+  _mirror_file "${LOG_DIR}/observation_guard.log"
 
   echo "📝 [관찰 미기록] 관찰 기록 시점 알림이 ${ALERTS}회 있었으나 ${STATE_MSG}. otask_observer 스킬로 이번 세션의 사용자 교정·발견을 기록하십시오. 기록할 만한 관찰이 없었다면 그대로 진행해도 됩니다."
 

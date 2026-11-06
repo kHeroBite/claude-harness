@@ -25,8 +25,7 @@ if _SERVER_DIR not in sys.path:
 
 # ═══════════════════════════════════════════════════════════
 # startup path 검증 — 대소문자/symlink 경유 실행 거부
-# 대소문자만 다른 중복 경로(대소문자 무시 파일시스템)나 symlink 경유 실행을 차단한다.
-# 같은 서버가 서로 다른 경로 표기로 두 벌 떠서 Lock 이 갈라지는 사고를 막는다.
+# 원인 1: /mnt/c/DATA/Project/ai/ (소문자) 등 비정규 경로 차단
 # ═══════════════════════════════════════════════════════════
 _abs_path = os.path.abspath(__file__)
 _real_path = os.path.realpath(__file__)
@@ -358,6 +357,28 @@ def find(
     return {"result": outcome["items"], "truncated": outcome["truncated"]}
 
 
+@mcp.tool()
+def search(
+    path: str,
+    pattern: str,
+    glob: str = "",
+    ignore_case: bool = False,
+    fixed_string: bool = False,
+    max_results: int = 200,
+    timeout_seconds: float = 30.0,
+    include_ignored: bool = False,
+) -> dict:
+    """파일 내용 검색(rg 우선, 없으면 파이썬 대체). .git/bin/obj/node_modules/__pycache__/.vs/dist 기본 제외.
+    결과 {matches:[{path,line,text}], engine, truncated}. 결과 수·시간 상한 초과 시 truncated=True.
+    NTFS 대량 검색은 /mnt/c 루트가 아닌 구체 하위 경로에서 시작할 것."""
+    import search_ops
+    return search_ops.content_search(
+        path=path, pattern=pattern, glob=glob, ignore_case=ignore_case,
+        fixed_string=fixed_string, max_results=max_results,
+        timeout_seconds=timeout_seconds, include_ignored=include_ignored,
+    )
+
+
 # ─── 디렉토리 도구 (5개) ──────────────────────────────────────────────────
 
 @mcp.tool()
@@ -424,6 +445,19 @@ def list_dir(
 
 # ─── 실행 도구 (1개) ──────────────────────────────────────────────────────
 
+def _resolve_timeout_ms(timeout, timeout_ms):
+    """timeout 별칭 환산(순수 함수). 600 이하는 초로 보고 ms 로 환산, 600 초과는 ms 그대로. 해석 불가면 timeout_ms."""
+    if timeout is None:
+        return timeout_ms
+    try:
+        v = int(timeout)
+    except (TypeError, ValueError):
+        return timeout_ms
+    if v <= 0:
+        return timeout_ms
+    return v * 1000 if v <= 600 else v
+
+
 @mcp.tool()
 def bash_exec(
     command: Optional[str] = None,
@@ -438,13 +472,14 @@ def bash_exec(
     environ: Optional[dict] = None,
     run_in_background: bool = False,
 ) -> dict:
-    """셸 명령 실행. 차단 목록 보안. 기본 타임아웃 120초, 최대 600초. run_in_background=true 시 백그라운드 실행.
-    허용 파라미터: command(필수, cmd도 허용), timeout_ms, working_dir(workdir/cwd도 허용), env, run_in_background.
+    """셸 명령 실행. 차단 목록 보안. 기본 타임아웃 120초(120000ms), 최대 600초. run_in_background=true 시 백그라운드 실행.
+    허용 파라미터: command(필수, cmd도 허용), timeout_ms(정본, 단위 ms), working_dir(workdir/cwd도 허용), env, run_in_background.
+    timeout 별칭: 600 이하 값은 초로 보고 ×1000, 600 초과는 ms 로 본다. 정본은 timeout_ms 이므로 timeout_ms 를 써라.
     ⚠ pattern/path/output_mode/-n 등 Grep 파라미터 혼용 금지 — bash_exec는 셸 명령만 실행."""
     effective_command = command if command is not None else cmd
     if effective_command is None:
         return {"success": False, "error": "MISSING_PARAM", "message": "command는 필수입니다 (cmd도 허용)"}
-    effective_timeout = timeout if timeout is not None else timeout_ms
+    effective_timeout = _resolve_timeout_ms(timeout, timeout_ms)
     effective_workdir = working_dir or workdir or cwd
     effective_env = env or environment or environ
     return bash_module.bash_exec(effective_command, effective_timeout, effective_workdir, effective_env, run_in_background)
@@ -691,8 +726,7 @@ def _startup_janitor():
     # 5. Orphan oio/fio 프로세스 정리 (원인 2 대응)
     #    - fio-mcp-server: 더 이상 사용하지 않음 → 무조건 SIGTERM
     #    - oio-mcp-server: ppid 조건 검사 (ppid=1 OR 사망 OR cmdline에 claude 없음)
-    #    비정규 경로(대소문자 불일치/symlink 경유) 실행은 기동 시점의 startup path 검증이
-    #    담당하므로 여기서 별도로 다루지 않는다.
+    #    - /mnt/c/DATA/Project/ai/ (소문자) 경로 실행 oio: 즉시 SIGKILL (원인 1)
     target_cmds = ("oio-mcp-server/server.py", "fio-mcp-server/server.py")
     my_pid = os.getpid()
     for cmdline_path in glob.glob("/proc/*/cmdline"):
@@ -705,6 +739,15 @@ def _startup_janitor():
         try:
             cmdline = open(cmdline_path, "rb").read().decode(errors="replace")
             if not any(tc in cmdline for tc in target_cmds):
+                continue
+
+            # 소문자 /mnt/c/DATA/Project/ai/ 경로 감지 → 즉시 SIGKILL (원인 1)
+            if "/Project/ai/" in cmdline:
+                try:
+                    os.kill(pid, _signal_mod.SIGKILL)
+                    cleaned["lowercase_ai"] = cleaned.get("lowercase_ai", 0) + 1
+                except (ProcessLookupError, PermissionError):
+                    pass
                 continue
 
             # fio는 더 이상 사용 안 함 → 무조건 SIGTERM

@@ -1,27 +1,29 @@
 ---
 name: oUpload
-description: 하네스 배포 repo를 안전하게 publish하는 배포자 전용 스킬. 자격증명 스캔 게이트 통과 → plugin.json + marketplace.json 2파일 동기 version 범프 → 커밋 → push 순서로 진행한다. 두 파일의 version이 일치해야 하며, 한쪽만 올리면 불일치가 남아 수신자 자동갱신이 깨진다. 사용자가 '/oUpload', '하네스 배포', '배포본 올려', '플러그인 배포' 요청 시 사용.
+description: 하네스 배포 repo(${HARNESS_HOME:-$HOME/.harness}/current/claude-harness)를 안전하게 publish하는 배포자 전용 스킬. 자격증명 스캔 게이트 통과 → plugin.json + marketplace.json 2파일 동기 version 범프 → 커밋 → push 순서로 진행한다. 두 파일의 version이 일치해야 하며, 한쪽만 올리면 불일치가 남아 수신자 자동갱신이 깨진다. 사용자가 '/oUpload', '하네스 배포', '배포본 올려', '플러그인 배포' 요청 시 사용.
 ---
 
 # oUpload — 하네스 배포 publish (배포자 전용)
 
-> **전제**: 배포자 환경에서만 실행한다. 수신자 환경(배포 repo 소유자가 아닌 환경)에서 호출되면 즉시 중단한다.
+> **전제**: 배포자 환경(AI 프로젝트)에서만 실행한다. 배포 repo 를 소유하지 않은 환경에서 호출되면 즉시 중단한다.
 > **목적**: 자격증명 유출 없이 배포 repo 를 publish 하고, 수신자 자동갱신을 확실히 트리거한다.
+> **기본 repo 경로**: `${HARNESS_HOME:-$HOME/.harness}/current/claude-harness` (배포자 환경 고정값). 다른 repo 를 배포해야 하면 사용자가 인자로 경로를 지정할 수 있다.
 
 ---
 
 ## 0. 실행 전 확인
 
-배포 repo 루트를 먼저 특정한다. 이후 모든 경로는 이 값을 기준으로 한다.
+배포 repo 루트를 확정한다. 인자로 다른 경로가 주어지지 않으면 기본값을 사용한다.
 
 ```bash
-bash -c 'cd "<배포 repo 경로>" && git rev-parse --show-toplevel'
+bash -c 'REPO="${1:-${HARNESS_HOME:-$HOME/.harness}/current/claude-harness}"; cd "$REPO" && git rev-parse --show-toplevel' -- "<인자 repo 경로, 없으면 생략>"
 ```
 
 다음 중 하나라도 해당하면 **즉시 중단하고 사용자에게 보고**한다.
 - git repo 가 아니다.
 - `scripts/credential_scan.sh` 가 없다 (게이트 부재 = fail-closed).
 - `plugins/harness/.claude-plugin/plugin.json` 이 없다.
+- `.claude-plugin/marketplace.json` 이 없다.
 - 현재 브랜치가 배포 브랜치가 아니다 (사용자 확인 필요).
 
 ---
@@ -29,7 +31,7 @@ bash -c 'cd "<배포 repo 경로>" && git rev-parse --show-toplevel'
 ## Step 1. 자격증명 스캔 게이트  ★차단 지점★
 
 ```bash
-bash -c 'bash "<REPO>/scripts/credential_scan.sh" "<REPO>"; echo "RC=$?"'
+bash -c 'bash "${HARNESS_HOME:-$HOME/.harness}/current/claude-harness/scripts/credential_scan.sh" "${HARNESS_HOME:-$HOME/.harness}/current/claude-harness"; echo "RC=$?"'
 ```
 
 | 결과 | 조치 |
@@ -47,14 +49,14 @@ bash -c 'bash "<REPO>/scripts/credential_scan.sh" "<REPO>"; echo "RC=$?"'
 `.git/hooks` 는 clone 으로 전파되지 않으므로 매 실행마다 확인한다.
 
 ```bash
-bash -c 'REPO="<REPO>"; GD="$(git -C "$REPO" rev-parse --git-dir)";
+bash -c 'REPO="${HARNESS_HOME:-$HOME/.harness}/current/claude-harness"; GD="$(git -C "$REPO" rev-parse --git-dir)";
   [ -e "$GD/hooks/pre-commit" ] && echo "WIRED" || echo "NOT_WIRED"'
 ```
 
 `NOT_WIRED` 이면 즉시 배선한 후 진행한다.
 
 ```bash
-bash -c 'REPO="<REPO>"; GD="$(git -C "$REPO" rev-parse --git-dir)";
+bash -c 'REPO="${HARNESS_HOME:-$HOME/.harness}/current/claude-harness"; GD="$(git -C "$REPO" rev-parse --git-dir)";
   ln -sfn "$REPO/scripts/pre-commit" "$GD/hooks/pre-commit";
   chmod +x "$REPO/scripts/pre-commit"; echo WIRED'
 ```
@@ -66,7 +68,7 @@ bash -c 'REPO="<REPO>"; GD="$(git -C "$REPO" rev-parse --git-dir)";
 배포 제외 대상이 repo 에 섞여 들어가지 않았는지 확인한다.
 
 ```bash
-bash -c 'REPO="<REPO>";
+bash -c 'REPO="${HARNESS_HOME:-$HOME/.harness}/current/claude-harness";
   find "$REPO" -maxdepth 6 \( -name ".venv" -o -name "__pycache__" -o -name "*.bak" -o -name "*.bak.*" \) \
        -not -path "*/.git/*" | head -20'
 ```
@@ -89,7 +91,7 @@ bash -c 'REPO="<REPO>";
 | 6 | `bin/` 3종 존재 | `ls bin/` |
 
 ```bash
-bash -c 'REPO="<REPO>";
+bash -c 'REPO="${HARNESS_HOME:-$HOME/.harness}/current/claude-harness";
   for f in "$REPO/plugins/harness/.claude-plugin/plugin.json" \
            "$REPO/.claude-plugin/marketplace.json" \
            "$REPO/plugins/harness/hooks/hooks.json"; do
@@ -98,7 +100,7 @@ bash -c 'REPO="<REPO>";
 ```
 
 ```bash
-bash -c 'REPO="<REPO>"; BAD=0;
+bash -c 'REPO="${HARNESS_HOME:-$HOME/.harness}/current/claude-harness"; BAD=0;
   for f in "$REPO"/plugins/harness/hooks/*.sh; do
     head -1 "$f" | grep -qE "^#!(/bin/bash|/usr/bin/env bash)" || { echo "SHEBANG_BAD $f"; BAD=1; }
   done; [ "$BAD" -eq 0 ] && echo SHEBANG_ALL_OK'
@@ -129,7 +131,7 @@ bash -c 'REPO="<REPO>"; BAD=0;
 1) 현재 두 버전을 확인하고 일치 여부를 먼저 검사한다.
 
 ```bash
-bash -c 'REPO="<REPO>";
+bash -c 'REPO="${HARNESS_HOME:-$HOME/.harness}/current/claude-harness";
   V1=$(python3 -c "import json;print(json.load(open(\"$REPO/plugins/harness/.claude-plugin/plugin.json\",encoding=\"utf-8\"))[\"version\"])");
   V2=$(python3 -c "import json;print(json.load(open(\"$REPO/.claude-plugin/marketplace.json\",encoding=\"utf-8\"))[\"plugins\"][0][\"version\"])");
   echo "plugin.json=$V1 marketplace.json=$V2";
@@ -153,7 +155,7 @@ new_string:  "version": "0.1.4",
 3) 치환 후 반드시 JSON 파싱을 재확인한다.
 
 ```bash
-bash -c 'REPO="<REPO>";
+bash -c 'REPO="${HARNESS_HOME:-$HOME/.harness}/current/claude-harness";
   python3 -m json.tool "$REPO/plugins/harness/.claude-plugin/plugin.json" >/dev/null && echo PLUGIN_JSON_OK;
   python3 -m json.tool "$REPO/.claude-plugin/marketplace.json" >/dev/null && echo MARKETPLACE_JSON_OK'
 ```
@@ -161,7 +163,7 @@ bash -c 'REPO="<REPO>";
 4) 두 값이 실제로 동일한 새 버전으로 일치하는지 최종 검증한다.
 
 ```bash
-bash -c 'REPO="<REPO>";
+bash -c 'REPO="${HARNESS_HOME:-$HOME/.harness}/current/claude-harness";
   V1=$(python3 -c "import json;print(json.load(open(\"$REPO/plugins/harness/.claude-plugin/plugin.json\",encoding=\"utf-8\"))[\"version\"])");
   V2=$(python3 -c "import json;print(json.load(open(\"$REPO/.claude-plugin/marketplace.json\",encoding=\"utf-8\"))[\"plugins\"][0][\"version\"])");
   [ "$V1" = "$V2" ] && echo "POST_BUMP_MATCH $V1" || echo "POST_BUMP_MISMATCH plugin=$V1 marketplace=$V2 — 중단 필요"'
@@ -176,21 +178,21 @@ bash -c 'REPO="<REPO>";
 
 ## Step 5. 커밋 & 푸시
 
-커밋 메시지는 한국어 + 이모지로 작성하고, 제목 마지막에 `by {모델버전}` 을 붙인다.
+커밋 메시지는 한국어 + 이모지로 작성하고, 제목 마지막에 `by {모델계열}` 을 붙인다.
 
 ```bash
-bash -c 'REPO="<REPO>"; cd "$REPO" && git add -A && git status --short | head -30'
+bash -c 'REPO="${HARNESS_HOME:-$HOME/.harness}/current/claude-harness"; cd "$REPO" && git add -A && git status --short | head -30'
 ```
 
 ```bash
-bash -c 'REPO="<REPO>"; cd "$REPO" && git commit -m "🚀 하네스 배포 v<새버전> — <변경 요약> by <모델버전>"'
+bash -c 'REPO="${HARNESS_HOME:-$HOME/.harness}/current/claude-harness"; cd "$REPO" && git commit -m "🚀 하네스 배포 v<새버전> — <변경 요약> by <모델계열>"'
 ```
 
 - pre-commit hook 이 다시 스캔을 돌린다. 여기서 차단되면 **강제 우회(`--no-verify`) 금지**다.
 - 커밋 성공 후 push 한다.
 
 ```bash
-bash -c 'REPO="<REPO>"; cd "$REPO" && git push'
+bash -c 'REPO="${HARNESS_HOME:-$HOME/.harness}/current/claude-harness"; cd "$REPO" && git push'
 ```
 
 ---

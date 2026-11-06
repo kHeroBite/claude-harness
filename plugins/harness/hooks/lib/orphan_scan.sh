@@ -1,8 +1,4 @@
 #!/bin/bash
-# >>> harness preamble
-_HP="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)}"
-[ -f "$_HP/hooks/harness_preamble.sh" ] && . "$_HP/hooks/harness_preamble.sh" 2>/dev/null || { [ -f "$_HP/harness_preamble.sh" ] && . "$_HP/harness_preamble.sh" 2>/dev/null; } || true
-# <<< harness preamble
 # 세션 소속 고아 팀에이전트 프로세스를 탐지하는 공용 라이브러리 (agents/ 무의존)
 #
 # 배경: 2026-08-17 고아 팀에이전트 5개 사고.
@@ -10,7 +6,7 @@ _HP="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null
 #   - 결함 B: oinit/ofinish의 모든 탐지 경로가 agents/ 디렉토리 단일 의존
 #             → agents/ 소멸 시 "정리 대상 없음"으로 오판정
 #   - 결함 C: agents/ 삭제 전 "잔존 0건" 검증 게이트 부재
-#   증적: .claude/evidence/agent_orphan_cleanup_20260817.md
+#   증적: /mnt/c/DATA/Project/Mars/.claude/evidence/agent_orphan_cleanup_20260817.md
 #
 # 설계 원칙:
 #   1. agents/ 를 절대 참조하지 않는다 — ps 만으로 대상을 산출한다.
@@ -172,9 +168,20 @@ orphan_is_destructive_cmd() {
   #   cp /dev/null X 는 /dev/null 이 ★인자 위치★ 라 정규화 후에도 남아 그대로 잡힌다.
   #   ★못 잡는 것★: 변수 치환(`R=2>/dev/null`)·이스케이프·서브셸로 문자열을 감추면
   #   이 정규화도 우회된다. 본 함수는 ★문자열 판정★ 이며 그 한계는 종전과 동일하다.
-  _cmd_norm=$(echo "$cmd" | sed -E 's/[0-9]*>[[:space:]]*\/dev\/null//g')
+  #   c183 B8: 입력 리다이렉트(< /dev/null · 0</dev/null — setsid nohup … < /dev/null & 꼴)도 읽기라 같이 지운다(오탐 실측).
+  _cmd_norm=$(echo "$cmd" | sed -E 's/[0-9]*[<>][[:space:]]*\/dev\/null//g')
   if echo "$_cmd_norm" | grep -qE '/dev/null[[:space:]]'; then return 0; fi
-  if echo "$cmd" | grep -qE '(^|[[:space:];&|(`])>[[:space:]]*[^[:space:]]*session-env'; then return 0; fi
+  #   c183 B8: 리다이렉트 덮어쓰기는 ★대상이 보호 경로(agents·panes·세션 dir 자체)일 때만★ 삭제성이다
+  #   (종전: session-env 아래 아무 곳 — evidence/*.json·로그 출력까지 차단하던 오탐 실측). 대상 추출이 안 되면 종전대로.
+  local _rt _rt_any=0
+  while IFS= read -r _rt; do
+    [[ -n "$_rt" ]] || continue
+    _rt_any=1
+    _rt="${_rt#*>}"; _rt="${_rt#"${_rt%%[![:space:]]*}"}"; _rt="${_rt//[\"\']/}"
+    [[ -z "$_rt" || "$_rt" == *'$'* || "$_rt" == *'*'* ]] && return 0
+    orphan_target_uuid "$_rt" >/dev/null 2>&1 && return 0
+  done < <(echo "$cmd" | grep -oE '(^|[[:space:];&|(`])>[[:space:]]*[^[:space:];&|]*session-env[^[:space:];&|]*')
+  if [[ $_rt_any -eq 0 ]] && echo "$cmd" | grep -qE '(^|[[:space:];&|(`])>[[:space:]]*[^[:space:]]*session-env'; then return 0; fi
   return 1
 }
 
@@ -191,7 +198,8 @@ orphan_scan_pids() {
   # ★ NUL 함정 회피 — /proc/{pid}/cmdline 는 인자 구분이 NUL 이라 "--parent-session-id <uuid>"
   #   같은 공백 포함 문자열이 grep 으로 절대 매칭되지 않는다(실측 확인: 5건 전부 skip).
   #   ps -eo args= 는 공백으로 구분해 출력하므로 이 문제가 없다. 반드시 ps 를 쓴다.
-  ps -eo pid=,args= 2>/dev/null | while read -r pid args; do
+  #   ★-ww 필수★ hook 환경 COLUMNS=80(tmux 상속) 이면 80열에서 잘려 --parent-session-id 가 사라진다.
+  ps -eww -o pid=,args= 2>/dev/null | while read -r pid args; do
     [[ -n "$pid" ]] || continue
     case "$args" in
       *claude*) ;;
@@ -203,8 +211,9 @@ orphan_scan_pids() {
       *) continue ;;
     esac
     # 세션 격리 — 자기 UUID 소속만.
-    case "$args" in
-      *"--parent-session-id $uuid"*) ;;
+    #   전체 토큰 일치 — 앞뒤 공백 경계까지 맞춰 접두 오매칭을 막는다.
+    case " $args " in
+      *" --parent-session-id $uuid "*) ;;
       *) continue ;;
     esac
     # 자기 자신/조상 제외
@@ -237,7 +246,7 @@ orphan_scan_detail() {
   _orphan_uuid_valid "$uuid" || return 1
   orphan_scan_pids "$uuid" 2>/dev/null | while read -r pid; do
     [[ -n "$pid" ]] || continue
-    args=$(ps -o args= -p "$pid" 2>/dev/null | head -c 160)
+    args=$(ps -ww -o args= -p "$pid" 2>/dev/null | head -c 160)
     printf '%s\t%s\n' "$pid" "$args"
   done
 }
@@ -293,6 +302,11 @@ if [[ "${1:-}" == "check-path" ]]; then
   if [[ -n "$_cp_cmd" ]] && ! orphan_is_destructive_cmd "$_cp_cmd"; then
     echo "PASS"; exit 0            # 보호 경로를 건드리지만 삭제성 명령이 아님
   fi
+  # c183 B8: 파일 도구(명령 없음)가 ★아직 없는★ 경로에 쓰는 것은 새로 만드는 것이라 추적 근거를 없애지 않는다
+  #   (agents/<새 이름> 기록 오탐 실측). 이미 있는 파일 덮어쓰기·삭제·이동은 종전대로 잔존 판정한다.
+  if [[ -z "$_cp_cmd" && "$_cp_uuid" != "__ALWAYS__" && "$_cp_path" == /* && ! -e "$_cp_path" && ! -L "$_cp_path" ]]; then
+    echo "PASS"; exit 0
+  fi
 
   # 4차 보강 — 최상위 경로는 고아 유무와 무관하게 무조건 차단.
   # 정상 삭제 경로가 존재하지 않음을 실측 확인했으므로 잔존수를 보지 않는다.
@@ -316,7 +330,7 @@ fi
 # 배경: 2026-08-17 verify-1 / diag-1 / odev-2 3건이 작업 완료 후 SendMessage 미호출로
 #       보고를 유실했다. 본인들은 "보고 완료"로 오인했고, 메인은 유휴 알림만 보고
 #       추측할 수밖에 없었다. shutdown_request 2회에도 응답이 없었다.
-#       증적: .claude/evidence/verify1_hang_diag_20260817.md
+#       증적: /mnt/c/DATA/Project/Mars/.claude/evidence/verify1_hang_diag_20260817.md
 #
 # 역할 분담:
 #   H-1 (SubagentStop_report_guard) = 발생 자체를 물리 차단한다.
@@ -378,9 +392,48 @@ shutdown_marker_clear() {
   local dir name
   dir=$(_shutdown_marker_dir "$uuid" 2>/dev/null) || return 0
   name=$(_shutdown_agent_sanitize "$agent" 2>/dev/null) || return 0
-  [[ -f "$dir/$name" ]] || return 0
   rm -f "$dir/$name" 2>/dev/null || true
+  # [c182 H-2] 반대편 base 미러 동시 해제 — CLAUDE_CONFIG_DIR 와 $HOME/.claude 가 갈리면
+  #   마커가 양쪽에 존재한다(실측). 같은 UUID·같은 이름만 지운다(세션 격리 §a 범위 불변).
+  local alt="$HOME/.claude/session-env/$uuid/evidence/shutdown_sent"
+  [[ "$alt" != "$dir" ]] && rm -f "$alt/$name" 2>/dev/null
   return 0
+}
+
+# [c-H2 2026-10-16] 팀원 종료 확인 — 종료 확정이면 rc 0, 생존 또는 불명이면 rc 1 (불명은 경고 유지).
+#   인자: <name> <team> <ps_ok 0|1> <ps 인자 목록> <config 루트>
+_shutdown_agent_ended() {
+  local name="${1:-}" team="${2:-}" ps_ok="${3:-0}" ps_out="${4:-}" root="${5:-}"
+  [[ -n "$name" && -n "$team" ]] || return 1
+  # (a) 프로세스 부재 — 같은 이름이 다른 팀에도 있어 "--agent-id <name>@<team>" 정확 일치로만 본다.
+  if [[ "$ps_ok" == "1" ]]; then
+    if ! printf '%s\n' "$ps_out" | grep -v "grep " | grep -qE -- "--agent-id ${name}@${team}( |$)"; then
+      return 0
+    fi
+  fi
+  # (b) 팀 config members[].isActive=false  (c) team-lead inbox 의 shutdown_approved/teammate_terminated
+  local cfg="$root/teams/$team/config.json" inbox="$root/teams/$team/inboxes/team-lead.json"
+  if [[ -f "$cfg" || -f "$inbox" ]]; then
+    timeout 1 python3 -c '
+import json, sys
+name, cfg, inbox = sys.argv[1:4]
+try:
+    for m in json.load(open(cfg)).get("members", []):
+        if m.get("name") == name and m.get("isActive") is False:
+            sys.exit(0)
+except Exception:
+    pass
+try:
+    for m in json.load(open(inbox)):
+        t = json.dumps(m, ensure_ascii=False)
+        if m.get("from") == name and ("shutdown_approved" in t or "teammate_terminated" in t):
+            sys.exit(0)
+except Exception:
+    pass
+sys.exit(1)
+' "$name" "$cfg" "$inbox" 2>/dev/null && return 0
+  fi
+  return 1
 }
 
 # 임계초(기본 90초)를 초과해 미응답인 에이전트를 "<agent> <경과초>" 형태로 출력.
@@ -398,6 +451,25 @@ shutdown_stale_list() {
   case "$now" in
     ''|*[!0-9]*) return 0 ;;   # 시각 취득 실패 → 판정 포기(fail-open)
   esac
+  # [c182 H-2 오탐] 종료 완료 팀원 제외 — 응답 측 마커 해제(sendmessage_shutdown_sweep)는
+  #   팀원 프로세스의 hook 에서 돌아 .session_id 가 팀원 자신의 UUID 다. 리드 UUID 하위 마커에
+  #   닿지 못해 정상 종료(shutdown_approved·pane 소멸)한 팀원도 영구히 "미응답"으로 남았다(실측).
+  #   그래서 판정 시점에 agents/<name> 의 pane_id 가 tmux 에 더는 없으면 종료로 보고 건너뛴다.
+  #   tmux 조회 실패·pane_id 미상은 생존 불명 → 기존대로 경고(진짜 미응답 은폐 금지).
+  #   마커는 지우지 않는다 — post_agent_shutdown_enforce 가 "발송 증거"로 쓴다. 읽기 전용 판정.
+  local live_panes="" tmux_ok=0 af pane spawned
+  if live_panes=$(timeout 1 tmux list-panes -a -F '#{pane_id}' 2>/dev/null); then
+    tmux_ok=1
+  fi
+  # 종료 판정용 공통 입력 — 루프 밖에서 1회만 조회한다(ps 1회·팀명 1회).
+  local sdir team ps_out ps_ok=0 cfgroot alt_dir
+  sdir="$(dirname "$(dirname "$dir")")"
+  team=$(cat "$sdir/team_name" 2>/dev/null | tr -cd 'A-Za-z0-9_.-')
+  cfgroot="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+  alt_dir="$HOME/.claude/session-env/$uuid/evidence/shutdown_sent"
+  if ps_out=$(timeout 1 ps -eo args 2>/dev/null) && [[ -n "$ps_out" ]]; then
+    ps_ok=1
+  fi
   for f in "$dir"/*; do
     [[ -f "$f" ]] || continue
     name=$(basename "$f" 2>/dev/null)
@@ -410,6 +482,27 @@ shutdown_stale_list() {
     [[ "$age" -lt 0 ]] && continue          # 시계 역행 방어
     [[ "$age" -gt 86400 ]] && continue      # 1일 초과분은 잔재로 보고 무시
     if [[ "$age" -ge "$threshold" ]]; then
+      af="$(dirname "$(dirname "$dir")")/agents/$name"
+      # 같은 이름 재spawn: 마커가 현 인스턴스 spawn 이전이면 앞 인스턴스의 잔재다(실측 odev-6).
+      spawned=$(grep '^spawned_at=' "$af" 2>/dev/null | tail -1 | cut -d= -f2 | tr -cd '0-9')
+      if [[ -n "$spawned" && "$spawned" -gt "$ts" ]]; then
+        continue
+      fi
+      if [[ "$tmux_ok" -eq 1 ]]; then
+        pane=$(grep '^pane_id=' "$af" 2>/dev/null | tail -1 | cut -d= -f2 | tr -d '\r\n ')
+        if [[ "$pane" == %[0-9]* ]] && ! printf '%s\n' "$live_panes" | grep -qxF "$pane"; then
+          continue   # pane 소멸 = 종료 완료 → 미응답 아님
+        fi
+      fi
+      # [c-H2 2026-10-16 오탐] pane_id 를 못 찾는 경우(agents/<name> 부재·pane_id 없음)에도 종료 여부를 판정한다.
+      #   (a) 프로세스 부재  (b) 팀 config members[].isActive=false  (c) inbox 의 shutdown_approved/teammate_terminated
+      #   하나라도 맞으면 종료 확인 → 경고 제외 + 마커 정리(자기 세션 경로만, 세션 격리 §a).
+      #   프로세스 목록 조회 실패·팀명 미상은 생존 불명 → 기존대로 경고(살아 있는 무응답 팀원 은폐 금지).
+      if _shutdown_agent_ended "$name" "$team" "$ps_ok" "$ps_out" "$cfgroot"; then
+        rm -f "$f" 2>/dev/null
+        [[ "$alt_dir" != "$dir" ]] && rm -f "$alt_dir/$name" 2>/dev/null
+        continue
+      fi
       printf '%s %s\n' "$name" "$age"
     fi
   done

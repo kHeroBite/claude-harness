@@ -1,7 +1,7 @@
 <!-- 하네스 배포 패키지 설치·사용 안내 및 보안 고지 문서 -->
 # Claude Code 하네스 배포 패키지
 
-WSL2 전용 Claude Code 오케스트레이션 하네스입니다.
+WSL2 와 일반 Linux(사용자 공간 설치, sudo 불필요)에서 쓰는 Claude Code 오케스트레이션 하네스입니다.
 o시리즈 파이프라인(oplan → odev → otest → odone → ofinish), 물리 차단 hook 묶음,
 파일 I/O 전담 `oio` MCP 서버를 하나의 플러그인으로 묶어 배포합니다.
 
@@ -53,8 +53,8 @@ cas <프로파일명>
 `bin/cc` 에서 `cas` 를 호출하는 마지막 줄의 `--dangerously-skip-permissions` 토큰을 지우세요.
 
 ```diff
-- cas "$SELECTED" $CONTINUE_FLAG --dangerously-skip-permissions --remote-control 2> >(...)
-+ cas "$SELECTED" $CONTINUE_FLAG --remote-control 2> >(...)
+- cas "$SELECTED" "${SESSION_ARGS[@]}" --model "$_MODEL_ARG" --dangerously-skip-permissions 2> >(...)
++ cas "$SELECTED" "${SESSION_ARGS[@]}" --model "$_MODEL_ARG" 2> >(...)
 ```
 
 `ccc` 는 `cc` 를 그대로 호출하므로 위 한 곳만 고치면 함께 해제됩니다.
@@ -70,11 +70,13 @@ claude
 
 ### 그 밖의 고지
 
-- **WSL2 전용**입니다. macOS / 네이티브 Linux 는 지원하지 않습니다.
-- `settings.json` 에 `skipDangerousModePermissionPrompt: true` 가 포함됩니다.
-- 설치 시 `~/.bashrc`, `~/.local/bin`, `~/.claude-profiles`, `~/.harness`, `~/.claude/rules`
-  를 생성·수정합니다.
-- `tmux` 를 `apt` 로 설치합니다 (**sudo 필요**).
+- **WSL2 + 일반 Linux** 를 지원합니다. macOS 는 지원하지 않습니다.
+  일반 Linux 에서는 WSL 전용 기능(`oss` 스크린샷, Windows 알림, `clip.exe` 클립보드)이 비활성입니다.
+- `settings.json` 에 `skipDangerousModePermissionPrompt: true` 가 없으면 추가됩니다(기존 키는 덮어쓰지 않고 원본은 `settings.json.bak.<시각>` 으로 백업).
+- 설치 시 `~/.bashrc`·로그인 셸 파일(`~/.bash_profile` 또는 `~/.profile`)·`~/.tmux.conf` 의 표식 블록,
+  `~/.local/bin`, `$HARNESS_HOME`(기본 `~/.harness`), `$HARNESS_PROFILES_ROOT`(기본 `~/.claude-profiles`),
+  `~/.claude/rules` 를 생성·수정합니다.
+- `install.sh` 는 **sudo·apt 를 쓰지 않습니다.** tmux·python3 가 없으면 안내만 하고 설치는 하지 않습니다.
 
 ---
 
@@ -82,9 +84,9 @@ claude
 
 | 항목 | 요구사항 | 비고 |
 |---|---|---|
-| OS | **WSL2 전용** | `/mnt/c`, `.exe` 호출, NTFS 전제 코드가 다수 포함됨 |
-| tmux | **필수** | 팀에이전트가 tmux pane 에 spawn 됨. `install.sh` 가 자동 설치 |
-| python3 + venv | 필수 | `oio` MCP 서버 구동용 |
+| OS | **WSL2 또는 일반 Linux** | 일반 Linux 에서는 Windows 연동 기능만 비활성 |
+| tmux | **필수** | 팀에이전트가 tmux pane 에 spawn 됨. 미리 설치되어 있어야 함(`install.sh` 는 설치하지 않음) |
+| python3 + venv | 필수 | `oio` MCP 서버 구동용. `python3-venv` 가 없으면 사용자 공간 `virtualenv` 로 대체 시도 |
 | git | 필수 | 배포본 clone / 갱신 |
 | Claude Code | 최신 버전 권장 | 플러그인·팀에이전트 기능 사용 |
 
@@ -115,6 +117,70 @@ Claude Code 안에서 실행합니다.
 > 방법 2 만으로는 `bin` 3종(`cc`/`ccc`/`cas`)과 `oio` venv 가 설치되지 않습니다.
 > **두 방법을 모두 수행하는 것이 정식 설치입니다.**
 
+### install.sh 옵션과 환경변수
+
+| 이름 | 기본값 | 용도 |
+|---|---|---|
+| `HARNESS_HOME` | `~/.harness` | 하네스 설치 루트(`bin`·`venv`·`current` 링크) |
+| `HARNESS_PROFILES_ROOT` | `~/.claude-profiles` | `cc`/`cas` 프로필 루트. 셸에는 `CLAUDE_PROFILES_ROOT` 로 기록됨 |
+| `HARNESS_PROJECT_ROOTS` | (자동 판별) | `oio` 허용 프로젝트 루트(아래 "프로젝트 경로 설정") |
+| `--non-interactive` | — | 질문 없이 진행(표준입력이 터미널이 아니어도 자동 적용) |
+| `--link-skills` | — | 플러그인 스킬을 `~/.claude/skills/<이름>` 으로 링크해 `/ok` 처럼 접두어 없이 호출(기존 실제 디렉터리는 건드리지 않음) |
+
+`install.sh` 가 하는 일은 다음과 같습니다(모두 멱등).
+
+- `$HARNESS_HOME/current` → 설치된 플러그인 루트 링크(이후 갱신은 SessionStart hook 이 맡음)
+- `cc`/`ccc`/`claude-as`/`cas` 를 `$HARNESS_HOME/bin` 과 `~/.local/bin` 에 링크
+- `~/.bashrc` 와 로그인 셸 파일에 `# >>> harness PATH` 표식 블록 기록:
+  `export HARNESS_HOME=…`, `export CLAUDE_PROFILES_ROOT=…`, PATH 추가(재실행 시 블록을 교체)
+- `~/.tmux.conf` 에 `# >>> harness tmux` 표식 블록으로 `source-file "$HARNESS_HOME/current/tmux/tmux.conf"` 1줄 연결(기존 내용 보존)
+- `oio` venv 를 `$HARNESS_HOME/venv/oio` 에 생성. `HARNESS_HOME` 이 기본값이 아니면 플러그인 `.mcp.json` 이 가리키는
+  `~/.harness/venv` → `$HARNESS_HOME/venv` 호환 링크를 만듦
+- `${CLAUDE_CONFIG_DIR:-~/.claude}/settings.json` 과 각 프로필의 `settings.json` 에 `statusLine`·`skipDangerousModePermissionPrompt`·
+  `enabledPlugins` 의 harness 항목을 **없을 때만** 추가
+
+### 일반 Linux 서버 설치 (사용자 공간, sudo 없음)
+
+공용 서버처럼 root 권한이 없는 계정에서도 설치할 수 있습니다. tmux·python3·git 은 미리 있어야 합니다.
+
+```bash
+# 1) Claude Code 설치 (공식 설치 스크립트 — 사용자 홈에 설치됨)
+curl -fsSL https://claude.ai/install.sh | bash
+
+# 2) 하네스 받기 + 설치 (경로는 예시 — 원하는 위치로 바꾸세요)
+git clone <배포 repo URL> /data/me/claude/harness/src
+HARNESS_HOME=/data/me/claude/harness \
+HARNESS_PROFILES_ROOT=/data/me/claude/profiles \
+  bash /data/me/claude/harness/src/install.sh --non-interactive
+
+# 3) 플러그인 등록 (비대화 CLI)
+claude plugin marketplace add /data/me/claude/harness/src
+claude plugin install harness@harness-marketplace
+
+# 4) 새 로그인 셸에서 프로필 생성 — 로그인(브라우저 OAuth)은 사용자가 직접 진행
+cas create default
+```
+
+- 홈 디렉터리 용량이 작으면 `~/.local/share/claude`·`~/.claude` 를 큰 디스크로 심볼릭링크한 뒤 1) 을 실행하세요.
+- 로그인 셸(`bash -l`)과 대화형 셸 모두에서 `HARNESS_HOME`·`CLAUDE_PROFILES_ROOT` 가 잡히도록 두 파일에 같은 블록을 씁니다.
+- WSL 전용 기능(`oss`, Windows 알림, `clip.exe` 클립보드)은 일반 Linux 에서 동작하지 않습니다(tmux 복사는 버퍼에만 남음).
+
+### 다른 머신의 세션과 협업 (ssh + git)
+
+- 코드는 **git** 으로 동기화합니다. 양쪽 모두 같은 원격에 push/pull 하고, 작업 전에 fetch/rebase 합니다.
+- `ListAgents`/`SendMessage` 세션 간 통지는 **같은 머신 안 세션끼리만** 닿습니다. 하네스의 `cc`/`ccc` 는 Remote Control 을 켜지 않습니다.
+- 다른 머신 세션에는 ssh 통지 스크립트로 작업 시작·종료를 알립니다. 본문은 표준입력으로만 넘기며, 받은 쪽은 수신함 파일에 데이터로만 기록합니다.
+
+```bash
+# 보내기 (ssh 별칭은 ~/.ssh/config 의 Host 이름)
+echo "api 모듈 수정 시작" | bash "$HARNESS_HOME/current/scripts/peer_ssh_notify.sh" send my-server MyProject 작업시작
+# 내 수신함 읽기
+bash "$HARNESS_HOME/current/scripts/peer_ssh_notify.sh" read MyProject
+```
+
+- 상대 머신으로 ssh 가 안 되는 방향(예: 서버 → WSL)은 `send --outbox` 로 자기 outbox 에 적고, 반대편이 `pull` 로 가져옵니다.
+- 실시간 대화형 왕복이 꼭 필요하면 세션 안에서 `/remote-control` 로 수동으로 켤 수 있습니다(https://code.claude.com/docs/en/remote-control).
+
 ### 설치 후 필수 1단계 — 규칙 문서 연결
 
 프로젝트 `CLAUDE.md` 에 아래 **한 줄**을 추가하세요.
@@ -135,8 +201,8 @@ Claude Code 안에서 실행합니다.
 cc
 ```
 
-프로파일이 하나도 없으면 `cc` 가 종료되므로, `install.sh` 가 `default` 프로파일을 자동 생성합니다.
-직접 만들려면 `cas create <이름>` 을 사용하세요.
+프로파일이 하나도 없으면 `cc` 가 종료됩니다. `install.sh` 는 프로파일을 만들지 않고 안내만 하므로,
+먼저 `cas create default` 로 만들고 1회 로그인하세요.
 
 > **tmux 안에서 실행하는 것을 권장합니다.** 팀에이전트는 tmux pane 에 spawn 되며,
 > tmux 세션 밖에서는 pane 생성이 실패할 수 있습니다.

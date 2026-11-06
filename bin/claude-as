@@ -25,6 +25,13 @@
 #   S4 (chmod 600 미강제) → umask 077 + 명시 chmod
 #   L7 (flock 제거) → 다중 세션 동시 접근 허용, mtime 비교로 sync_back 경합 방어
 #
+# 세션 레지스트리 공유 해제: CAS_SHARED_SESSIONS_DIR=off (또는 0/none/빈값) 로 실행하면 세션별 독립 sessions/ 를 쓴다.
+#
+# 계정 전파 설계: 세션의 프로필은 시작 프로필 하나이고 이메일은 세션의 현재 계정이다.
+#   세션에서 /login 하면 현재 계정과 시작 프로필(자격증명·oauthAccount·이메일/사용량 캐시)이 함께 갱신된다.
+#   .cas_start_uuid(시작 계정 uuid)로 same|login|stale|empty 를 판정하고, 다른 세션이 프로필을 바꾼 stale 세션은
+#   프로필을 되덮어쓰지 않는다. 감시 루프는 자격증명과 .claude.json 을 함께 본다. 상세는 _cas_acct_state/_cas_acct_push 주석.
+#
 # G5 (credentials atomic 모델 INCONCLUSIVE) 양쪽 케이스 방어:
 #   (a) 종료 시 sync_back: cp -p 사용 — symlink면 따라가서 단일원본 갱신,
 #       regular file이면 새로 복사. 어느 atomic 모델이든 안전.
@@ -40,6 +47,10 @@ umask 077    # S4: 자식 파일 0600/0700 기본 보장
 # =============================================================================
 readonly PROFILES_ROOT="${CLAUDE_PROFILES_ROOT:-$HOME/.claude-profiles}"
 readonly ORIGIN_HOME_CLAUDE="$HOME/.claude"
+# tmux 바깥 창 제목 형식 — 메인 pane 작업 중(@tab_color=on, WT 탭 빨강과 같은 판정)일 때만 맨 앞에 스피너(◜◝◞◟)+공백, 이어서 window 이름(프로젝트명 …).
+# 답변 대기(메인 pane @main_ask)면 스피너 없이 window 이름 전체와 '?' 한 글자를 1초마다 번갈아 낸다(.claude/hooks/lib/main_ask_fmt.sh 의 MAIN_TITLE_FMT 가 단일 출처).
+# ~/.tmux.conf(.wsl-home/tmux.conf) 의 set-titles-string 과 같은 값이어야 한다(test_main_ask_state.sh -k sync 가 강제).
+readonly _CAS_TITLE_FMT='#{?#{P:#{?#{&&:#{@main_ask},#{!:#{pane_dead}}},1,}},#{?#{e|==:#{e|%%:%s,2},0},#{window_name},?},#{P:#{?#{&&:#{!:#{pane_dead}},#{||:#{==:#{@tab_color},on},#{&&:#{@main_border_ver},#{==:#{@agent_state},run}}}},#{?#{e|==:#{e|%%:#{e|-:%s,#{@spin_t0}},4},0},◜,#{?#{e|==:#{e|%%:#{e|-:%s,#{@spin_t0}},4},1},◝,#{?#{e|==:#{e|%%:#{e|-:%s,#{@spin_t0}},4},2},◞,◟}}} ,}}#{window_name}}'
 
 # claude binary 자동 감지 — plan_3 메모-6 하드코딩 결함 보강
 # 우선순위: 환경변수 > command -v > 표준 fallback
@@ -63,7 +74,7 @@ detect_claude_bin() {
 }
 
 # 코드 자산 (read-only symlink) — skills는 분기 처리하므로 여기서 제외
-readonly SHARED_LINKS=(hooks lib config scripts plugins keybindings.json projects)
+readonly SHARED_LINKS=(hooks lib config scripts plugins keybindings.json projects agents)
 
 # 분리 대상 — 단일원본 → tmp 복사 + trap 동기화 (계획서 §4.1)
 readonly SYNC_FILES=(
@@ -85,8 +96,11 @@ readonly SYNC_FILES_OPTIONAL=(
     stats-cache.json
     task_start_time.txt
 )
+# sessions 는 SYNC_DIRS 에서 제외 — 실행 중 세션 레지스트리(<pid>.json, 소켓 경로)라
+# 세션마다 복사하면 서로 안 보여 ListAgents 에 옆 세션이 0개로 나온다. 아래 공유 디렉토리로 link.
+# 미설정이면 기본 공유 경로, 명시 off/0/none/빈값이면 공유 해제 (`-` 로 빈값과 미설정을 구분한다).
+readonly SHARED_SESSIONS_DIR="${CAS_SHARED_SESSIONS_DIR-$HOME/.cache/claude-shared-sessions}"
 readonly SYNC_DIRS=(
-    sessions
     plans
     backups
     downloads
@@ -217,7 +231,7 @@ ensure_link() {
 
     # 일반 디렉토리: C1 빈 dir 검증
     if [[ -d "${src}" ]]; then
-        # 빈 dir 감지 (~/.claude/skills 케이스 — critic-B L2)
+        # 빈 dir 감지 (${CLAUDE_CONFIG_DIR:-$HOME/.claude}/skills 케이스 — critic-B L2)
         if [[ -z "$(ls -A "${src}" 2>/dev/null)" ]]; then
             err "정보: '${src}'는 빈 일반 디렉토리 — link 스킵 (C1 분기)"
             return 0
@@ -243,13 +257,41 @@ ensure_link() {
 sync_back() {
     local tmp_dir="$1"
     local profile_dir="$2"
-    local f d
+    local f d account_switched=0
     # DEBUG-MARKER M3 — Phase D 완료 후 제거
     _cas_log M3 "sync_back 진입 tmp_dir=${tmp_dir} profile_dir=${profile_dir}"
+
+    # 계정 상태를 복사 전에 한 번만 판정한다 (.claude.json 을 복사하면 판정 기준이 바뀐다).
+    #   same  : 기존 동기화 그대로 (자격증명은 _cas_acct_push 가 전파).
+    #   login : 세션이 스스로 /login 한 것 — 계정 묶음 4파일을 _cas_acct_push 로 프로필에 저장한다.
+    #   stale·empty : 다른 세션이 프로필 계정을 바꿨거나 로그아웃·판독 불가 — 계정에 묶인 4파일은 프로필에 쓰지 않는다.
+    local acct_state
+    acct_state="$(_cas_acct_state "${tmp_dir}" "${profile_dir}")"
+    [[ "${acct_state}" == "same" ]] || account_switched=1
+    case "${acct_state}" in
+        login) _cas_acct_push "${tmp_dir}" "${profile_dir}" final || true ;;
+        stale) _cas_warn "안내: 이 세션은 프로필 '${profile_dir##*/}' 과 다른 계정으로 끝났습니다. 프로필 계정은 그대로 두었습니다." ;;
+        empty_profile) _cas_warn "프로필 .claude.json 을 읽지 못해 계정 전파를 중단했습니다 (프로필 계정 파일 불변)" ;;
+    esac
 
     # SYNC_FILES (필수)
     for f in "${SYNC_FILES[@]}"; do
         if [[ -f "${tmp_dir}/${f}" ]]; then
+            if [[ "${account_switched}" -eq 1 ]]; then
+                case "${f}" in
+                    .credentials.json|.claude.json|.account_email_cache|.usage_cache.json)
+                        _cas_log M4_skip "다른 계정 세션 — 전파 생략 file=${f}"
+                        continue ;;
+                esac
+            fi
+            # .credentials.json 은 mtime 대신 해시+유효성 게이트로 판정한다.
+            # 워밍업이 프로필을 먼저 갱신해 mtime 이 더 새로워져도, 세션이 실제로 새 자격증명을
+            # 얻었으면 반영해야 한다. 세션이 바꾸지 않았으면(해시 동일) 덮어쓰지 않는다.
+            if [[ "${f}" == ".credentials.json" ]]; then
+                _cas_acct_push "${tmp_dir}" "${profile_dir}" final && \
+                    _cas_log M4_cred "자격증명 전파(해시 판정) size=$(stat -c '%s' "${profile_dir}/${f}" 2>/dev/null)" || true
+                continue
+            fi
             # mtime 비교 — PROFILE_DIR 파일이 TMP_CFG보다 최신이면 skip (다른 세션이 더 최근에 갱신)
             if [[ -f "${profile_dir}/${f}" && "${profile_dir}/${f}" -nt "${tmp_dir}/${f}" ]]; then
                 continue
@@ -297,6 +339,489 @@ sync_back() {
 # ── R12: .credentials.json flock 전역 변수
 CRED_FLOCK_HELD=0
 INOTIFY_PID=""
+# 마지막으로 프로필과 맞춘 tmp .credentials.json 해시 (메모리 전용 — 출력·로그 금지)
+CRED_SYNC_HASH=""
+
+# 자격증명 파일 해시 — 값은 변수 비교에만 쓴다 (출력·로그 금지)
+_cred_hash() {
+    sha256sum "$1" 2>/dev/null | cut -d' ' -f1
+} || true
+
+# 종료 시점(sync_back final) 경고 — 세션이 끝난 뒤라 PTY 영향이 없으므로 항상 stderr 1줄 + _cas_log (값 미포함).
+#   err() 는 CLAUDE_AS_VERBOSE=1 일 때만 출력해 종료 안내가 무음이 되므로 쓰지 않는다.
+_cas_warn() {
+    echo "[claude-as] $*" >&2
+    _cas_log WARN "$*" || true
+} || true
+
+# 경로별 알림 — 첫 인자가 비어 있지 않으면 종료 시점(final)이라 _cas_warn, 비면 세션 진행 중(감시 루프)이라 _cas_log 만 (stderr 금지)
+_cas_note() {
+    local f="$1"
+    shift
+    if [[ -n "${f}" ]]; then
+        _cas_warn "$@"
+    else
+        _cas_log WARN "$*" || true
+    fi
+} || true
+
+# 세션의 현재 계정 uuid(.claude.json oauthAccount.accountUuid)를 한 줄로 낸다 — 파일 없음·손상·계정 없음이면 빈 값
+#   값은 감시 루프의 "계정이 바뀌었는가" 비교용이다. 자격증명이 아니다.
+_cas_sess_uuid() {
+    python3 - "$1/.claude.json" 2>/dev/null <<'PYEOF_SESSU' || true
+import json, sys
+try:
+    with open(sys.argv[1], encoding="utf-8") as f:
+        d = json.load(f)
+    a = d.get("oauthAccount") if isinstance(d, dict) else None
+    u = a.get("accountUuid") if isinstance(a, dict) else ""
+    print(u if isinstance(u, str) else "")
+except Exception:
+    print("")
+PYEOF_SESSU
+} || true
+
+# 세션 시작 시 프로필의 계정 uuid 를 ${tmp_dir}/.cas_start_uuid 에 기록한다 (표시에는 쓰지 않고 전파 판정 T 로만 쓴다)
+_cas_write_start_uuid() {
+    printf '%s\n' "$(_cas_sess_uuid "$1")" > "$1/.cas_start_uuid" 2>/dev/null || true
+} || true
+
+# 계정 전파 상태 판정 — same|login|stale|empty 한 단어를 낸다 (세션 uuid=S, 시작 uuid=T, 프로필 uuid=P)
+#   위에서 아래로 처음 맞는 행: empty(S 없음·이메일 없음·세션 또는 프로필 .claude.json 손상) → same(S==P, T 가 다르면 T:=S)
+#   → login(P 없음) → stale(T 없음) → stale(S==T) → login(S≠T).
+#   stale 은 다른 세션이 프로필 계정을 바꾼 뒤의 옛 세션이라 push·pull 모두 하지 않는다. 값은 출력하지 않는다.
+_cas_acct_state() {
+    python3 - "$1" "$2" <<'PYEOF_ACCTSTATE' || echo empty
+import json, os, sys
+
+def acct(p, missing_ok):
+    # (uuid, email) 반환, 파싱 불가는 None (파일 없음은 missing_ok 일 때만 빈 값)
+    try:
+        with open(p, encoding="utf-8") as f:
+            d = json.load(f)
+    except FileNotFoundError:
+        return ("", "") if missing_ok else None
+    except Exception:
+        return None
+    if not isinstance(d, dict):
+        return None
+    a = d.get("oauthAccount")
+    if not isinstance(a, dict):
+        return ("", "")
+    u, e = a.get("accountUuid"), a.get("emailAddress")
+    return (u if isinstance(u, str) else "", e if isinstance(e, str) else "")
+
+tmp, prof = sys.argv[1], sys.argv[2]
+s = acct(os.path.join(tmp, ".claude.json"), False)
+p = acct(os.path.join(prof, ".claude.json"), True)
+if p is None:
+    # 프로필 .claude.json 이 있는데 읽지 못함(파일 없음은 빈 값이라 여기 오지 않는다) — 호출부가 안내 1줄을 낸다
+    print("empty_profile")
+    sys.exit(0)
+if s is None or not s[0] or not s[1]:
+    print("empty")
+    sys.exit(0)
+tf = os.path.join(tmp, ".cas_start_uuid")
+try:
+    with open(tf, encoding="utf-8") as f:
+        t = f.read().strip()
+except Exception:
+    t = ""
+if s[0] == p[0]:
+    if t != s[0]:
+        try:
+            part = "%s.%d" % (tf, os.getpid())
+            with open(part, "w", encoding="utf-8") as f:
+                f.write(s[0] + "\n")
+            os.replace(part, tf)
+        except Exception:
+            sys.stderr.write("시작 계정 기록(.cas_start_uuid) 갱신 실패 — 다음 판정은 안전한 쪽으로 처리\n")
+    print("same")
+elif not p[0]:
+    print("login")
+elif not t or s[0] == t:
+    print("stale")
+else:
+    print("login")
+PYEOF_ACCTSTATE
+} || true
+
+# 자격증명 유효성 게이트 — rc=0 일 때만 프로필로 전파 (값은 출력하지 않고 불리언만 반환)
+#   ① tmp 가 JSON 으로 파싱된다 ② claudeAiOauth.accessToken 이 비어 있지 않다
+#   ③ tmp 만료시각 ≥ 프로필 만료시각 (프로필 부재·파싱 불가·만료시각 없음이면 ③ 생략)
+#   3번째 인자가 login 이면 ③ 대신 "만료시각이 현재보다 미래" 를 요구한다 (다른 계정 비교는 의미 없음).
+# 이유: 워밍업이 refresh 를 먼저 소비해 세션 쪽 갱신이 실패하면 tmp 가 무효로 바뀔 수 있다.
+_cred_valid_for_sync() {
+    python3 - "$1" "$2" "${3:-}" >/dev/null 2>&1 <<'PYEOF_CREDGATE'
+import json, sys, time
+
+def load(p):
+    with open(p, encoding="utf-8") as f:
+        return json.load(f)
+
+def oauth(d):
+    o = d.get("claudeAiOauth") if isinstance(d, dict) else None
+    return o if isinstance(o, dict) else None
+
+def expires(d):
+    o = oauth(d)
+    if o is None:
+        return None
+    v = o.get("expiresAt")
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    return v
+
+try:
+    t = load(sys.argv[1])
+except Exception:
+    sys.exit(1)
+o = oauth(t)
+if o is None:
+    sys.exit(1)
+tok = o.get("accessToken")
+if not isinstance(tok, str) or not tok.strip():
+    sys.exit(1)
+if sys.argv[3] == "login":
+    te = expires(t)
+    if te is None:
+        sys.exit(1)
+    sys.exit(0 if (te / 1000.0 if te > 1e11 else te) > time.time() else 1)
+try:
+    p = load(sys.argv[2])
+except Exception:
+    sys.exit(0)
+pe = expires(p)
+if pe is not None:
+    te = expires(t)
+    if te is None or te < pe:
+        sys.exit(1)
+sys.exit(0)
+PYEOF_CREDGATE
+} || true
+
+# 계정 전파 (자격증명 + 계정 정보 묶음) — 세션 /login 결과를 시작 프로필에 저장한다
+#   상태 판정(_cas_acct_state) → 게이트 → 프로필 .credentials.json.lock flock(-w 10, 워밍업과 같은 잠금) 안에서 원자 교체.
+#   전역 CRED_SYNC_HASH 를 갱신한다 (백그라운드 루프에서는 그 subshell 안에서만 유효).
+#
+# 계정 묶음 전파 (_cas_acct_push) — 자격증명을 프로필에 쓸 때는 항상 세션 oauthAccount 와 묶는다.
+#   인자: <tmp_dir> <profile_dir> [final]  (final 이면 종료 안전망 — 보류·stale 사유를 err 로 1줄 남긴다)
+#   same 은 ② oauthAccount 병합 + ③ 자격증명, login 은 ②③ + ④ 이메일 캐시 + ⑤ 프로필 사용량 캐시 삭제까지 한다.
+#   게이트 G1(uuid·이메일 둘 다 있음 = _cas_acct_state 의 empty) G2(해시·uuid 를 잠금 안에서 다시 읽어 같을 때만)
+#   G3(login 만: 세션 자격증명 mtime 이 CAS_LOGIN_PAIR_SEC(기본 30초) 이상 오래되면 계정 정보만 먼저 바뀐 것으로 보고 보류).
+#   rc: 0=전파함, 1=변화 없음·보류·중단, 2=자격증명 무효로 거부. 값(토큰·이메일·uuid)은 어디에도 출력하지 않는다.
+_cas_acct_push() {
+    local tmp_dir="$1"
+    local prof_dir="$2"
+    local final="${3:-}"
+    local tmp_f="${tmp_dir}/.credentials.json"
+    local prof_f="${prof_dir}/.credentials.json"
+    local state h ph rc out line mt now su
+    [[ -f "${tmp_f}" ]] || return 1
+    state="$(_cas_acct_state "${tmp_dir}" "${prof_dir}")"
+    case "${state}" in
+        same|login) ;;
+        stale)
+            [[ -n "${final}" ]] && _cas_warn "안내: 이 세션은 프로필 '${prof_dir##*/}' 과 다른 계정으로 끝났습니다. 프로필 계정은 그대로 두었습니다."
+            return 1 ;;
+        empty_profile)
+            _cas_note "${final}" "프로필 .claude.json 을 읽지 못해 계정 전파를 중단했습니다 (프로필 파일 불변)"
+            return 1 ;;
+        *) return 1 ;;
+    esac
+    h="$(_cred_hash "${tmp_f}")"
+    [[ -n "${h}" ]] || return 1
+    if [[ "${state}" == "same" ]]; then
+        [[ "${h}" == "${CRED_SYNC_HASH:-}" ]] && return 1
+        if [[ -f "${prof_f}" ]]; then
+            ph="$(_cred_hash "${prof_f}")"
+            if [[ "${h}" == "${ph}" ]]; then
+                CRED_SYNC_HASH="${h}"
+                return 1
+            fi
+        fi
+    else
+        mt="$(stat -c '%Y' "${tmp_f}" 2>/dev/null || echo 0)"
+        now="$(date +%s)"
+        if (( now - mt > ${CAS_LOGIN_PAIR_SEC:-30} )); then
+            [[ -n "${final}" ]] && _cas_warn "로그인이 끝나지 않아(자격증명 미갱신) 프로필에 저장하지 않았습니다"
+            return 1
+        fi
+    fi
+    su="$(_cas_sess_uuid "${tmp_dir}")"
+    out="$(
+        (
+            flock -w 10 8 || exit 1
+            _cred_valid_for_sync "${tmp_f}" "${prof_f}" "${state}" || exit 2
+            CAS_G2_HASH="${h}" CAS_G2_UUID="${su}" python3 - "${state}" "${tmp_dir}" "${prof_dir}" 2>/dev/null <<'PYEOF_ACCTPUSH'
+import hashlib, json, os, sys
+
+mode, tmp, prof = sys.argv[1], sys.argv[2], sys.argv[3]
+exp_hash = os.environ.get("CAS_G2_HASH", "")
+exp_uuid = os.environ.get("CAS_G2_UUID", "")
+MISSING = object()
+
+def atomic_write(path, data):
+    # 같은 폴더 임시파일 → chmod 600 → os.replace (대상이 symlink 면 실제 파일을 교체)
+    target = os.path.realpath(path)
+    part = os.path.join(os.path.dirname(target), ".%s.cas.%d" % (os.path.basename(target), os.getpid()))
+    fd = os.open(part, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(part, 0o600)
+        os.replace(part, target)
+    except BaseException:
+        try:
+            os.unlink(part)
+        except OSError:
+            pass
+        raise
+
+def dump(obj):
+    return (json.dumps(obj, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+
+# G2: 잠금 안에서 다시 읽어 판정 시점과 같을 때만 진행한다
+try:
+    with open(os.path.join(tmp, ".credentials.json"), "rb") as f:
+        cred = f.read()
+    with open(os.path.join(tmp, ".claude.json"), encoding="utf-8") as f:
+        sd = json.load(f)
+    oa = sd["oauthAccount"]
+    s_uuid, s_mail = oa["accountUuid"], oa["emailAddress"]
+    if not (isinstance(s_uuid, str) and s_uuid and isinstance(s_mail, str) and s_mail):
+        sys.exit(3)
+except Exception:
+    sys.exit(3)
+if hashlib.sha256(cred).hexdigest() != exp_hash or s_uuid != exp_uuid:
+    sys.exit(3)
+
+pj = os.path.join(prof, ".claude.json")
+try:
+    with open(pj, encoding="utf-8") as f:
+        pd = json.load(f)
+    existed = True
+except FileNotFoundError:
+    pd, existed = {}, False
+except Exception:
+    sys.exit(4)
+if not isinstance(pd, dict):
+    sys.exit(4)
+old = pd.get("oauthAccount", MISSING)
+p_uuid = old.get("accountUuid") if isinstance(old, dict) else ""
+if (mode == "same") != (s_uuid == p_uuid):
+    sys.exit(3)
+
+# ② 프로필 .claude.json 에는 oauthAccount 키만 병합한다 (다른 세션이 쓴 데이터는 건드리지 않는다)
+wrote2 = False
+if old != oa:
+    pd["oauthAccount"] = oa
+    try:
+        atomic_write(pj, dump(pd))
+    except Exception:
+        sys.exit(5)
+    wrote2 = True
+
+# ③ 자격증명 원자 교체 — 실패하면 ② 를 되돌린다
+try:
+    atomic_write(os.path.join(prof, ".credentials.json"), cred)
+except Exception:
+    if wrote2:
+        try:
+            if old is MISSING:
+                pd.pop("oauthAccount", None)
+            else:
+                pd["oauthAccount"] = old
+            atomic_write(pj, dump(pd))
+        except Exception:
+            sys.exit(6)
+    sys.exit(5)
+
+# T := S (이 세션이 프로필과 마지막으로 일치한 계정)
+try:
+    tf = os.path.join(tmp, ".cas_start_uuid")
+    part = "%s.%d" % (tf, os.getpid())
+    with open(part, "w", encoding="utf-8") as f:
+        f.write(s_uuid + "\n")
+    os.replace(part, tf)
+except Exception:
+    print("WARN:시작 계정 기록 갱신 실패")
+
+if mode == "login":
+    # ④ 이메일 캐시는 세션 값이 S 의 이메일일 때만 복사, 아니면 삭제
+    pc = os.path.join(prof, ".account_email_cache")
+    try:
+        with open(os.path.join(tmp, ".account_email_cache"), "rb") as f:
+            raw = f.read()
+        if json.loads(raw.decode("utf-8")).get("email") == s_mail:
+            atomic_write(pc, raw)
+        else:
+            os.unlink(pc)
+    except FileNotFoundError:
+        pass
+    except Exception:
+        try:
+            os.unlink(pc)
+        except OSError:
+            print("WARN:이메일 캐시 갱신 실패")
+    # ⑤ 이전 계정 사용량이 새 계정 아래 보이지 않게 프로필 사용량 캐시를 지운다
+    try:
+        os.unlink(os.path.join(prof, ".usage_cache.json"))
+    except FileNotFoundError:
+        pass
+    except OSError:
+        print("WARN:사용량 캐시 삭제 실패")
+    # 같은 계정을 가진 다른 프로필 안내 (차단하지 않는다)
+    root = os.path.dirname(os.path.realpath(prof))
+    me = os.path.basename(os.path.realpath(prof))
+    try:
+        names = sorted(os.listdir(root))
+    except OSError:
+        names = []
+    for n in names:
+        if n == me:
+            continue
+        try:
+            with open(os.path.join(root, n, ".claude.json"), encoding="utf-8") as f:
+                a = json.load(f).get("oauthAccount")
+            if isinstance(a, dict) and a.get("accountUuid") == s_uuid:
+                print("DUP:" + n)
+        except Exception:
+            pass
+sys.exit(0)
+PYEOF_ACCTPUSH
+        ) 8>"${prof_dir}/.credentials.json.lock" 2>/dev/null
+    )" && rc=0 || rc=$?
+    case "${rc}" in
+        0)
+            CRED_SYNC_HASH="${h}"
+            while IFS= read -r line; do
+                case "${line}" in
+                    DUP:*) _cas_note "${final}" "이 계정은 '${line#DUP:}' 에도 저장되어 있습니다 (바꾸려면 해당 프로필로 들어가 /login)" ;;
+                    WARN:*) _cas_note "${final}" "${line#WARN:}" ;;
+                esac
+            done <<<"${out}"
+            return 0 ;;
+        2)
+            # 무효로 거부한 내용은 다시 보지 않는다 (같은 내용 반복 판정 방지)
+            CRED_SYNC_HASH="${h}"
+            return 2 ;;
+        4) _cas_note "${final}" "프로필 .claude.json 을 읽지 못해 계정 전파를 중단했습니다 (프로필 파일 불변)"; return 1 ;;
+        5) _cas_note "${final}" "프로필 쓰기에 실패해 계정 전파를 중단했습니다"; return 1 ;;
+        6) _cas_note "${final}" "프로필 계정 정보와 자격증명이 어긋났을 수 있음 — 프로필로 들어가 /login"; return 1 ;;
+        *) return 1 ;;
+    esac
+} || true
+
+# 자격증명 전파 — 기존 호출명 호환 래퍼 (판정·전파는 _cas_acct_push 가 한다)
+_cred_push() {
+    _cas_acct_push "$@"
+} || true
+
+# 자격증명 pull — 프로필이 tmp 보다 신선하거나 tmp 가 무효(비워짐)일 때 프로필 → tmp 로 원자 교체
+#   같은 계정 다른 세션이 갱신해 프로필에 push 한 새 자격증명을 이 세션이 받아 쓰게 한다.
+#   rc: 0=pull 함, 1=할 일 없음/조건 불충족, 2=이번 주기 못함(잠금 대기 실패·push 미처리) → 다음 주기 재시도
+#   프로필 공유 잠금(flock -s -w 2) → 같은 설정폴더 임시 파일 cp -p → chmod 600 → mv -f (새 inode)
+#   전역 CRED_SYNC_HASH 를 pull 한 내용의 해시로 갱신한다 (push 가 자기 pull 을 되밀지 않게).
+_cred_pull() {
+    local tmp_dir="$1"
+    local prof_dir="$2"
+    local tmp_f="${tmp_dir}/.credentials.json"
+    local prof_f="${prof_dir}/.credentials.json"
+    local th ph changed new_h rc
+    [[ -f "${tmp_f}" && -f "${prof_f}" ]] || return 1
+    # 계정이 같은(same) 세션만 pull 한다 — login·stale·empty 는 프로필로 당겨오지 않는다
+    [[ "$(_cas_acct_state "${tmp_dir}" "${prof_dir}")" == "same" ]] || return 1
+    th="$(_cred_hash "${tmp_f}")"
+    ph="$(_cred_hash "${prof_f}")"
+    [[ -n "${th}" && -n "${ph}" ]] || return 1
+    if [[ "${th}" == "${ph}" ]]; then
+        CRED_SYNC_HASH="${th}"
+        return 1
+    fi
+    # 정숙 대기 — 프로필 자격증명이 방금(CAS_PULL_QUIET_SEC, 기본 10초) 바뀌었으면 다른 세션의 /login 진행 중일 수 있어 다음 주기에 다시 본다
+    local pm now
+    pm="$(stat -c '%Y' "${prof_f}" 2>/dev/null || echo 0)"
+    now="$(date +%s)"
+    (( now - pm < ${CAS_PULL_QUIET_SEC:-10} )) && return 2
+    changed=0
+    [[ "${th}" != "${CRED_SYNC_HASH:-}" ]] && changed=1
+    new_h="$(
+        (
+            flock -s -w 2 8 || exit 2
+            python3 - "${tmp_f}" "${prof_f}" "${changed}" >/dev/null 2>&1 <<'PYEOF_CREDPULL'
+import json, sys
+
+def load(p):
+    with open(p, encoding="utf-8") as f:
+        return json.load(f)
+
+def oauth(d):
+    o = d.get("claudeAiOauth") if isinstance(d, dict) else None
+    return o if isinstance(o, dict) else None
+
+def tok_ok(d):
+    o = oauth(d)
+    if o is None:
+        return False
+    t = o.get("accessToken")
+    return isinstance(t, str) and bool(t.strip())
+
+def expires(d):
+    o = oauth(d)
+    if o is None:
+        return None
+    v = o.get("expiresAt")
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    return v
+
+# 프로필이 유효해야만 pull 한다
+try:
+    p = load(sys.argv[2])
+except Exception:
+    sys.exit(1)
+if not tok_ok(p):
+    sys.exit(1)
+try:
+    t = load(sys.argv[1])
+except Exception:
+    t = None
+if t is not None and tok_ok(t):
+    # tmp 유효: 세션 쪽 미전파 변경이 있으면 push 가 먼저, 아니면 프로필 만료가 더 늦을 때만
+    if sys.argv[3] == "1":
+        sys.exit(3)
+    pe = expires(p)
+    te = expires(t)
+    if pe is None:
+        sys.exit(1)
+    if te is None or pe > te:
+        sys.exit(0)
+    sys.exit(1)
+# tmp 무효(파싱 불가·accessToken 비어 있음): 치유
+sys.exit(0)
+PYEOF_CREDPULL
+            prc=$?
+            [[ "${prc}" -eq 3 ]] && exit 3
+            [[ "${prc}" -eq 0 ]] || exit 1
+            part="${tmp_f}.pull.${BASHPID}"
+            if cp -p "${prof_f}" "${part}" 2>/dev/null && chmod 600 "${part}" 2>/dev/null \
+               && mv -f "${part}" "${tmp_f}" 2>/dev/null; then
+                _cred_hash "${tmp_f}"
+                exit 0
+            fi
+            rm -f "${part}" 2>/dev/null
+            exit 1
+        ) 8>"${prof_dir}/.credentials.json.lock" 2>/dev/null
+    )" && rc=0 || rc=$?
+    case "${rc}" in
+        0) [[ -n "${new_h}" ]] && CRED_SYNC_HASH="${new_h}"; return 0 ;;
+        2|3) return 2 ;;
+        *) return 1 ;;
+    esac
+} || true
 
 # R12: .credentials.json flock 획득 (30s timeout, fail-soft)
 _r12_acquire_flock() {
@@ -375,23 +900,103 @@ _r7_spawn_daemon() {
     local pid_dir="${HOME}/.claude-as/inotify_pids"
     local pid_file="${pid_dir}/${uuid}.pid"
 
-    if ! command -v inotifywait >/dev/null 2>&1; then
-        echo "[cas] 정보: inotify-tools 미설치 — 즉시 동기화 daemon 비활성 (R12 flock으로 보완)" >&2
-        return 0
-    fi
+    local parent_pid=$$
 
     mkdir -p "${pid_dir}" 2>/dev/null || true
 
+    if ! command -v inotifywait >/dev/null 2>&1; then
+        # 폴백 감시 루프 — inotify-tools 미설치 환경 (2초 주기 stat → 변화 시 해시+유효성 판정 후 전파)
+        # 목적: 창 닫기·tmux kill·SIGKILL 처럼 종료 trap 이 못 도는 경우에도 로그인/토큰 갱신을
+        #       그 순간 프로필에 저장한다. cas(부모)가 죽으면 마지막 1회 확인 후 스스로 끝난다.
+        err "정보: inotify-tools 미설치 — 폴백 감시 루프(1초 주기)로 자격증명 즉시 동기화"
+        (
+            trap - EXIT INT TERM HUP
+            set +e
+            local tmp_f="${tmp_dir}/.credentials.json"
+            local prof_f="${profile_dir}/.credentials.json"
+            local sig last_sig pull_sig last_pull_sig cj_f cj_sig last_cj_sig cur_u last_u trig
+            cj_f="${tmp_dir}/.claude.json"
+            last_sig="$(stat -c '%y %s %i' "${tmp_f}" 2>/dev/null)"
+            last_cj_sig="$(stat -c '%y %s %i' "${cj_f}" 2>/dev/null)"
+            last_u="$(_cas_sess_uuid "${tmp_dir}")"
+            last_pull_sig=""
+            while :; do
+                sleep 1
+                [[ -d "${tmp_dir}" ]] || break
+                sig="$(stat -c '%y %s %i' "${tmp_f}" 2>/dev/null)"
+                trig=0
+                # 파일 일시 부재(원자 교체 순간)면 이번 주기는 건너뛴다
+                if [[ -n "${sig}" && "${sig}" != "${last_sig}" ]]; then
+                    last_sig="${sig}"
+                    trig=1
+                fi
+                # .claude.json 은 자주 다시 쓰이므로 stat 서명이 바뀌어도 세션 계정(uuid)이 바뀐 때만 판정한다
+                cj_sig="$(stat -c '%y %s %i' "${cj_f}" 2>/dev/null)"
+                if [[ -n "${cj_sig}" && "${cj_sig}" != "${last_cj_sig}" ]]; then
+                    last_cj_sig="${cj_sig}"
+                    cur_u="$(_cas_sess_uuid "${tmp_dir}")"
+                    if [[ "${cur_u}" != "${last_u}" ]]; then
+                        last_u="${cur_u}"
+                        trig=1
+                    fi
+                fi
+                if [[ "${trig}" -eq 1 ]]; then
+                    # /login 은 자격증명과 계정 정보(.claude.json)를 따로 쓴다 — 계정 비교 전에 잠시 기다린다
+                    sleep "${CAS_CRED_SETTLE_SEC:-2}"
+                    if _cas_acct_push "${tmp_dir}" "${profile_dir}"; then
+                        _cas_log R7P "폴백 감시: 계정 묶음 전파 size=$(stat -c '%s' "${profile_dir}/.credentials.json" 2>/dev/null)"
+                    fi
+                fi
+                # 프로필 → tmp pull: 프로필·tmp stat 서명이 지난 판정과 같으면 건너뛴다 (매 주기 python 기동 방지)
+                # rc=2(잠금 대기 실패·push 미처리)는 서명을 갱신하지 않아 다음 주기에 재시도한다
+                if [[ -n "${sig}" ]]; then
+                    pull_sig="$(stat -c '%y %s %i' "${prof_f}" 2>/dev/null)|${sig}"
+                    if [[ "${pull_sig}" != "${last_pull_sig}" ]]; then
+                        _cred_pull "${tmp_dir}" "${profile_dir}"
+                        case "$?" in
+                            0)
+                                _cas_log R7P "폴백 감시: 프로필→tmp 자격증명 pull size=$(stat -c '%s' "${tmp_f}" 2>/dev/null)"
+                                # 자기 pull 을 push 가 되밀지 않게 pull 후 tmp 서명을 기준으로 삼는다
+                                sig="$(stat -c '%y %s %i' "${tmp_f}" 2>/dev/null)"
+                                last_sig="${sig}"
+                                last_pull_sig="$(stat -c '%y %s %i' "${prof_f}" 2>/dev/null)|${sig}"
+                                ;;
+                            2) ;;
+                            *) last_pull_sig="${pull_sig}" ;;
+                        esac
+                    fi
+                fi
+                kill -0 "${parent_pid}" 2>/dev/null || break
+            done
+        ) </dev/null >/dev/null 2>&1 &
+        INOTIFY_PID=$!
+        echo "${INOTIFY_PID}" > "${pid_file}" 2>/dev/null || true
+        return 0
+    fi
+
     (
+        trap - EXIT INT TERM HUP
+        set +e
+        # 원자 교체(rename) 뒤에도 감시가 끊기지 않도록 파일이 아니라 폴더를 감시하고 파일명으로 거른다
+        local cur_u last_u
+        last_u="$(_cas_sess_uuid "${tmp_dir}")"
         inotifywait -m -e close_write,moved_to \
-            "${tmp_dir}/.credentials.json" 2>/dev/null |
+            "${tmp_dir}" 2>/dev/null |
         while read -r dir event file; do
-            if [[ -f "${profile_dir}/.credentials.json" ]] && \
-               [[ "${profile_dir}/.credentials.json" -nt "${tmp_dir}/.credentials.json" ]]; then
-                continue
-            fi
-            cp -p "${tmp_dir}/.credentials.json" \
-                  "${profile_dir}/.credentials.json" 2>/dev/null || true
+            kill -0 "${parent_pid}" 2>/dev/null || break
+            case "${file}" in
+                .credentials.json) ;;
+                .claude.json)
+                    # 세션 계정(uuid)이 바뀐 때만 판정한다
+                    cur_u="$(_cas_sess_uuid "${tmp_dir}")"
+                    [[ "${cur_u}" != "${last_u}" ]] || continue
+                    last_u="${cur_u}" ;;
+                *) continue ;;
+            esac
+            # 폴백 루프와 같은 판정(해시+유효성 게이트) — mtime 비교는 워밍업 경합에 진다
+            # /login 은 자격증명과 계정 정보(.claude.json)를 따로 쓴다 — 계정 비교 전에 잠시 기다린다
+            sleep "${CAS_CRED_SETTLE_SEC:-2}"
+            _cas_acct_push "${tmp_dir}" "${profile_dir}" || true
         done
     ) &
     INOTIFY_PID=$!
@@ -547,7 +1152,10 @@ _print_profile_usage() {
         cache="$batch_cache"
     fi
     local email=""
-    if [[ -f "${profile_dir}/.account_email_cache" ]]; then
+    # .claude.json(로그인 시 기록되는 정본) 우선, 없으면 .account_email_cache
+    email=$(python3 -c "import json,sys; print(((json.load(open(sys.argv[1])).get('oauthAccount') or {}).get('emailAddress')) or '')" \
+            "${profile_dir}/.claude.json" 2>/dev/null || true)
+    if [[ -z "${email}" && -f "${profile_dir}/.account_email_cache" ]]; then
         email=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(d.get('email',''))" \
                 "${profile_dir}/.account_email_cache" 2>/dev/null || true)
     fi
@@ -724,7 +1332,7 @@ _emit_batch_unit() {
     cat >"$CAS_BATCH_UNIT" <<'UNIT_EOF'
 [Unit]
 Description=CAS Batch — Claude 사용량 캐시 모음 (옵션3 자가캐시 monitor)
-Documentation=https://github.com/kHeroBite/claude-harness
+Documentation=file://${HARNESS_HOME:-$HOME/.harness}/current/docs/cas-batch-guide.md
 After=default.target
 
 [Service]
@@ -849,7 +1457,7 @@ cmd_batch_status() {
     echo "=== cas-batch 상태 ==="
     if command -v systemctl >/dev/null 2>&1 && systemctl --user is-active cas-batch.service >/dev/null 2>&1; then
         echo "systemd: active"
-        systemctl --user status cas-batch.service --no-pager | head -10
+        systemctl --user status cas-batch.service --no-pager | sed -n '1,10p'
     else
         echo "systemd: inactive"
         # bashrc fallback PID 확인
@@ -865,7 +1473,7 @@ cmd_batch_status() {
     echo "=== cas-warmup 상태 ==="
     if command -v systemctl >/dev/null 2>&1 && systemctl --user is-active cas-warmup.service >/dev/null 2>&1; then
         echo "systemd: active"
-        systemctl --user status cas-warmup.service --no-pager | head -10
+        systemctl --user status cas-warmup.service --no-pager | sed -n '1,10p'
     else
         echo "systemd: inactive"
         if [ -f "$CAS_BATCH_DIR/cas-warmup.pid" ]; then
@@ -968,8 +1576,9 @@ cmd_run() {
 
     # ── (a.0) tmux 자동 진입 — tmux 밖이면 새 tmux 세션을 spawn하여 그 안에서 재실행
     # 배경: cas는 원래 tmux 안에서만 실행되어야 함. tmux 밖 실행 시 외부 WT가 Claude Code의
-    # OSC 0("✳ Claude Code")을 직접 받아 잔존. tmux 안이면 statusline DCS passthrough로
-    # 1초마다 정상값 갱신 가능 (allow-passthrough on 필수).
+    # OSC 0("✳ Claude Code")을 직접 받아 잔존. 주의: statusline 이 내는 DCS passthrough 는
+    # Claude Code 2.1.318·2.1.316 에서 터미널에 도달하지 않음이 실측됐다(HISTORY.md 참조).
+    # 따라서 DCS 로 1초마다 갱신된다는 기대는 현재 성립하지 않는다(allow-passthrough 설정과 무관).
     # 가드: CAS_TMUX_SPAWNED=1 (자기 재호출 시 무한 루프 방지).
     if [[ -z "${TMUX:-}" ]] && [[ -z "${CAS_TMUX_SPAWNED:-}" ]] \
        && [[ -t 0 ]] && [[ -t 1 ]] && command -v tmux >/dev/null 2>&1; then
@@ -988,8 +1597,9 @@ cmd_run() {
         # 주의: 인자에 공백/특수문자 가능성 — printf %q로 quote
         local _cmd
         _cmd="$(printf '%q ' "$0" "${name}" "$@")"
+        # (계정 전파는 세션 /login 결과를 자동 동기화하므로 별도 허용 변수를 전달하지 않는다)
         exec tmux -L "${_cas_socket}" new-session -A -s "${_cas_session}" -n "${_cas_proj_name}" -c "${PWD}" \
-            "tmux -L '${_cas_socket}' set-option -g set-titles on 2>/dev/null; tmux -L '${_cas_socket}' set-option -g set-titles-string '#W' 2>/dev/null; ${_cmd}; tmux -L '${_cas_socket}' kill-session -t '${_cas_session}' 2>/dev/null"
+            "tmux -L '${_cas_socket}' set-option -g set-titles on 2>/dev/null; tmux -L '${_cas_socket}' set-option -g set-titles-string '${_CAS_TITLE_FMT}' 2>/dev/null; ${_cmd}; tmux -L '${_cas_socket}' kill-session -t '${_cas_session}' 2>/dev/null"
     fi
 
     # ── (a) 환경 위생 (S3)
@@ -1014,19 +1624,20 @@ cmd_run() {
        && command -v tmux >/dev/null 2>&1; then
         local _cas_init_title="$(basename "${PWD}")"
         tmux set-option -g set-titles on 2>/dev/null || true
-        tmux set-option -g set-titles-string '#W' 2>/dev/null || true
-        tmux rename-window "${_cas_init_title}" 2>/dev/null || true
+        tmux set-option -g set-titles-string "${_CAS_TITLE_FMT}" 2>/dev/null || true
+        # 대상 없는 rename-window 는 다른 세션 제목을 바꿀 수 있으므로 자기 pane 을 알 때만 쓴다
+        [[ -n "${TMUX_PANE:-}" ]] && tmux rename-window -t "$TMUX_PANE" "${_cas_init_title}" 2>/dev/null || true
         printf '\ePtmux;\e\e]2;%s\a\e\\' "${_cas_init_title}"
     fi
 
-    # ── (b.5) 일회성 마이그레이션: 계정별 projects → 공유 마스터 (~/.claude/projects)
+    # ── (b.5) 일회성 마이그레이션: 계정별 projects → 공유 마스터 (${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects)
     local marker="${PROFILE_DIR}/.migrated_v1"
     if [[ ! -f "${marker}" && -d "${PROFILE_DIR}/projects" ]]; then
         echo "[claude-as] projects 마이그레이션: ${PROFILE_DIR}/projects/ → ${ORIGIN_HOME_CLAUDE}/projects/ (cp -rn)" >&2
         mkdir -p "${ORIGIN_HOME_CLAUDE}/projects"
         cp -rn "${PROFILE_DIR}/projects/." "${ORIGIN_HOME_CLAUDE}/projects/" 2>/dev/null || true
         touch "${marker}"
-        echo "[claude-as] 마이그레이션 완료. 이후 모든 계정이 ~/.claude/projects를 공유합니다." >&2
+        echo "[claude-as] 마이그레이션 완료. 이후 모든 계정이 ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects를 공유합니다." >&2
     elif [[ -f "${marker}" && -d "${PROFILE_DIR}/projects" && ! -L "${PROFILE_DIR}/projects" ]]; then
         # 마이그레이션 완료됐으나 구 projects/ 디렉토리가 남아있는 경우 → 제거 (SHARED_LINKS가 symlink 생성)
         rm -rf "${PROFILE_DIR}/projects" 2>/dev/null || true
@@ -1077,6 +1688,9 @@ cmd_run() {
         [[ -f "${TMP_CFG}/${f}" ]] && chmod 600 "${TMP_CFG}/${f}"
     done
 
+    # ── (f.2) 시작 프로필의 계정 uuid 기록 — 표시에는 쓰지 않고 "이 세션이 스스로 /login 했는가" 판정(T)에만 쓴다
+    _cas_write_start_uuid "${TMP_CFG}" || true
+
     # ── (g) 휘발성 빈 디렉토리 (단일원본 동기화 안 함)
     for d in "${EPHEMERAL_DIRS[@]}"; do
         mkdir -p "${TMP_CFG}/${d}"
@@ -1090,6 +1704,21 @@ cmd_run() {
     done
     # skills 별도 분기 처리 (C1 — 빈 일반 dir 케이스)
     ensure_link "skills" "${TMP_CFG}"
+    # 실행 중 세션 레지스트리 공유 — 모든 cas 세션이 같은 sessions/ 를 봐야 서로 탐색된다
+    case "${SHARED_SESSIONS_DIR}" in
+        ""|off|OFF|0|none|NONE)
+            # 공유 해제 — 이전 동작(세션별 독립 sessions/, 복사 없이 빈 디렉토리)
+            if [[ ! -e "${TMP_CFG}/sessions" && ! -L "${TMP_CFG}/sessions" ]]; then
+                mkdir -p "${TMP_CFG}/sessions" && chmod 700 "${TMP_CFG}/sessions"
+            fi
+            ;;
+        *)
+            mkdir -p "${SHARED_SESSIONS_DIR}" && chmod 700 "${SHARED_SESSIONS_DIR}"
+            if [[ ! -e "${TMP_CFG}/sessions" && ! -L "${TMP_CFG}/sessions" ]]; then
+                ln -s "${SHARED_SESSIONS_DIR}" "${TMP_CFG}/sessions"
+            fi
+            ;;
+    esac
 
     # ── R8: .bak 즉시 생성 (flock 보유 중 — 단일원본 스냅샷)
     _r8_create_bak || true
@@ -1097,17 +1726,19 @@ cmd_run() {
     # ── R12: flock 해제 (claude 실행 전 — .bak 생성 완료 후)
     _r12_release_flock || true
 
-    # ── R7: inotifywait 백그라운드 daemon spawn
+    # ── 세션 시작 시점 자격증명 해시 기록 (sync_back·감시 루프의 "세션이 바꿨는가" 기준, 메모리 전용)
+    if [[ -f "${TMP_CFG}/.credentials.json" ]]; then
+        CRED_SYNC_HASH="$(_cred_hash "${TMP_CFG}/.credentials.json")"
+    fi
+
+    # ── R7: inotifywait 백그라운드 daemon spawn (미설치 시 폴백 감시 루프)
     _r7_spawn_daemon "${TMP_CFG}" "${PROFILE_DIR}" "${UUID}" || true
 
     # ── (h.5) 격리 settings.json에 statusLine 주입 — cwd 무관하게 항상 정상 statusline 보장
     # 이유: cas는 CLAUDE_CONFIG_DIR=/tmp/cc-${UUID}로 격리. Claude Code가 이 격리 settings.json을 우선 사용.
     # 프로파일 settings.json엔 {"theme":"dark"}만 있어 statusLine 정의 없음 → "✳ Claude Code" 폴백.
     # AI 프로젝트 statusline.py를 강제 주입하여 cwd가 어디든 statusline 정상 표시.
-    # statusline 스크립트 경로. 배포자 고유 경로를 하드코딩하지 않는다.
-    # HARNESS_STATUSLINE_PY 로 지정하며, 미지정 시 현재 프로젝트의 script/statusline.py 를 본다.
-    # 파일이 없으면 아래 -f 검사에서 조용히 건너뛴다 (statusline 없이도 정상 동작).
-    local _cas_statusline_py="${HARNESS_STATUSLINE_PY:-${CLAUDE_PROJECT_DIR:-$PWD}/script/statusline.py}"
+    local _cas_statusline_py="${HARNESS_HOME:-$HOME/.harness}/current/statusline.py"
     if [[ -f "${_cas_statusline_py}" ]]; then
         python3 - "${TMP_CFG}/settings.json" "${_cas_statusline_py}" <<'PYEOF_INJECT' 2>/dev/null || true
 import json, sys
@@ -1132,8 +1763,8 @@ PYEOF_INJECT
     #   cas는 CLAUDE_CONFIG_DIR=/tmp/cc-${UUID}로 격리하고, 그 settings.json은
     #   프로파일(~/.claude-profiles/<name>/settings.json)에서 복사해 온다.
     #   그런데 프로파일 3종(cs/dev/know) 모두 hooks가 ★0개★ 였다.
-    #   정본 hooks 는 정본 프로젝트의 .claude/settings.json 에 정상 등록돼 있으나
-    #   그 파일은 정본 프로젝트에서 실행할 때만 적용되므로, 다른 프로젝트 세션에서는
+    #   정본 hooks 59개는 ${HARNESS_HOME:-$HOME/.harness}/current/.claude/settings.json 에 정상 등록돼 있으나
+    #   그 파일은 ai 프로젝트에서 실행할 때만 적용되므로, Mars 등 다른 프로젝트 세션에서는
     #   ★hook이 하나도 물리지 않았다★.
     #   실제 피해: write_guard(메인 직접수정 차단) · oto_completion_guard(조기종료 차단) ·
     #   full_task_team_guard(팀에이전트 파라미터 검증)가 전부 무력화됐고,
@@ -1141,37 +1772,18 @@ PYEOF_INJECT
     #   작업하는 사고가 반복됐다. 규칙 문서는 멀쩡했고 hook 파일도 멀쩡했으나 배선이 끊겨 있었다.
     # 방침:
     #   (h.5) statusLine 주입과 동일한 패턴. 정본 settings.json의 hooks 를 격리 설정에 병합한다.
-    #   ★격리 설정에 이미 hooks 가 있으면 건드리지 않는다★ — 사용자가 세션별로 조정한 값을 존중.
-    # 정본 settings.json 경로. 배포자 고유 경로를 하드코딩하지 않는다.
-    # HARNESS_CANON_SETTINGS 로 지정하며, 미지정 시 현재 프로젝트의 .claude/settings.json 을 본다.
-    local _cas_hooks_src="${HARNESS_CANON_SETTINGS:-${CLAUDE_PROJECT_DIR:-$PWD}/.claude/settings.json}"
+    #   (정정됨·폐기) ★격리 설정에 이미 hooks 가 있으면 건드리지 않는다★ — 사용자가 세션별로 조정한 값을 존중.
+    #   [정정 2026-10-06] 위 "이미 hooks 가 있으면 건드리지 않는다(세션별 커스터마이즈 존중)" 방침 폐기.
+    #   프로파일 stale hooks 영구 고착(2026-10-06 실측) → 매 기동 정본 동기화.
+    #   세션별 hooks 커스터마이즈 존중 방침은 폐기됐다.
+    #   [정정 2026-10-27 사이클219] 원본을 사용자 설정(${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json)으로 바꿨다.
+    #   AI 프로젝트 settings.json 은 2026-10-25(273af59) hooks 키가 제거돼 원본으로 쓰면 아무것도 들어가지 않았고,
+    #   이후 hook 등록은 사용자 설정에만 이뤄졌다(gas_cache_guard 등 누락 실측).
+    #   격리 사본은 프로파일 복사본 + 정본 hooks 로만 만들므로 프로파일에만 남은 낡은 hook 은 --force 로 지운다
+    #   (2026-10-06 방침 — 매 기동 정본 동기화). 대상 전용 hook 보호(L-616)는 실행 중 사본 동기화(SessionStart)에서 유지한다.
+    local _cas_hooks_src="$HOME/.claude/settings.json"
     if [[ -f "${_cas_hooks_src}" ]]; then
-        python3 - "${TMP_CFG}/settings.json" "${_cas_hooks_src}" <<'PYEOF_HOOKS' 2>/dev/null || true
-import json, sys
-dst_path, src_path = sys.argv[1], sys.argv[2]
-try:
-    with open(dst_path) as f:
-        dst = json.load(f)
-except Exception:
-    dst = {}
-# 이미 hooks 가 있으면 손대지 않는다 (세션별 커스터마이즈 보호)
-if dst.get("hooks"):
-    sys.exit(0)
-try:
-    with open(src_path) as f:
-        src = json.load(f)
-except Exception:
-    sys.exit(0)
-hooks = src.get("hooks")
-if not hooks:
-    sys.exit(0)
-dst["hooks"] = hooks
-tmp = dst_path + ".tmp"
-with open(tmp, "w") as f:
-    json.dump(dst, f, indent=2, ensure_ascii=False)
-import os
-os.replace(tmp, dst_path)
-PYEOF_HOOKS
+        python3 "${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/settings_hooks_sync.py" "${_cas_hooks_src}" "${TMP_CFG}/settings.json" --force 2>/dev/null || true
     fi
 
     # ── (h.7) 격리 settings.json에 ★정본 스칼라 키★ 주입 — teammateMode/language 누락 방지
@@ -1187,7 +1799,8 @@ PYEOF_HOOKS
     #   ★격리 설정에 이미 값이 있으면 건드리지 않는다★ — 세션별 커스터마이즈 존중.
     #   ⚠️ teammateMode 는 "auto" 가 정본이다. "tmux" 명시는 실측상 pane 이 생성되지 않았고
     #      (2026-09-07 전 세션 상관관계 조사), "auto" 인 세션만 pane 을 정상 생성했다.
-    local _cas_scalar_src="${HARNESS_CANON_SETTINGS:-${CLAUDE_PROJECT_DIR:-$PWD}/.claude/settings.json}"
+    #   [정정 2026-10-27 사이클219] (h.6) 과 같은 원본(사용자 설정)을 쓴다 — 정본 단일화.
+    local _cas_scalar_src="$HOME/.claude/settings.json"
     if [[ -f "${_cas_scalar_src}" ]]; then
         python3 - "${TMP_CFG}/settings.json" "${_cas_scalar_src}" <<'PYEOF_SCALAR' 2>/dev/null || true
 import json, os, sys
@@ -1235,6 +1848,8 @@ PYEOF_SCALAR
     export CLAUDE_CONFIG_DIR="${TMP_CFG}"
     export CLAUDE_PROFILE_NAME="${name}"
     export CLAUDE_AS_UUID="${UUID}"
+    # 오토컴팩트 임계 70% — settings env 만으로는 반영되지 않는 버전 보고(#63186)가 있어 셸 export 로도 준다
+    export CLAUDE_AUTOCOMPACT_PCT_OVERRIDE="${CLAUDE_AUTOCOMPACT_PCT_OVERRIDE:-70}"
 
     err "profile=${name} uuid=${UUID} config_dir=${TMP_CFG}"
 
@@ -1243,17 +1858,6 @@ PYEOF_SCALAR
     # set -e 보호: claude exit code != 0 이어도 trap이 cleanup 실행해야 함.
     local claude_bin
     claude_bin="$(detect_claude_bin)"
-
-    # ── 하네스 배포본: --dangerously-skip-permissions 멱등 주입
-    # cc 는 이미 플래그를 붙여 호출하므로 중복 주입을 피한다.
-    # HARNESS_SAFE_MODE=1 이면 주입을 생략한다 (README 보안 고지 연동).
-    if [ -z "${HARNESS_SAFE_MODE:-}" ]; then
-        case " $* " in
-            *" --dangerously-skip-permissions "*) : ;;
-            *) set -- "$@" --dangerously-skip-permissions ;;
-        esac
-    fi
-
     # DEBUG-MARKER M0.5 — Phase D 완료 후 제거
     _cas_log M0.5 "claude_bin 실행 직전 claude_bin=${claude_bin} args=$*"
     set +e

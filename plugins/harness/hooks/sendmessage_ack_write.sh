@@ -1,8 +1,4 @@
 #!/bin/bash
-# >>> harness preamble
-_HP="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)}"
-[ -f "$_HP/hooks/harness_preamble.sh" ] && . "$_HP/hooks/harness_preamble.sh" 2>/dev/null || { [ -f "$_HP/harness_preamble.sh" ] && . "$_HP/harness_preamble.sh" 2>/dev/null; } || true
-# <<< harness preamble
 # sendmessage_ack_write.sh — F2 ACK 2단계 팀에이전트 측 hook
 # 이벤트: PostToolUse:SendMessage
 # 역할: shutdown_response 발신 감지 → ack/*.received + ack/*.done 동시 기록
@@ -52,7 +48,7 @@ if [ "$MSG_TYPE" != "shutdown_response" ]; then
 
   # 라이브러리 로드
   HOOK_DIR_EARLY="${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "$0")" 2>/dev/null && pwd)}"
-  SESSION_ID_LIB_EARLY="${HARNESS_HOOK_DIR}/lib/session_id.sh"
+  SESSION_ID_LIB_EARLY="${HOOK_DIR_EARLY}/.claude/hooks/lib/session_id.sh"
   if [ ! -f "$SESSION_ID_LIB_EARLY" ]; then
     SESSION_ID_LIB_EARLY="$(dirname "$0")/lib/session_id.sh"
   fi
@@ -90,13 +86,15 @@ fi
 # 2b. shutdown_response 타입 처리 (기존 로직 — 절대 변경 금지)
 
 REQUEST_ID=$(printf '%s' "$INPUT" | jq -r '.tool_input.message.request_id // empty' 2>/dev/null)
+# D-3: 승인 여부를 .done 에 남긴다. 불리언 true/false 와 문자열 "true"/"false" 만 인정하고 그 외는 빈 값(기록 안 함).
+APPROVE=$(printf '%s' "$INPUT" | jq -r '.tool_input.message.approve | if . == true or . == "true" then "true" elif . == false or . == "false" then "false" else empty end' 2>/dev/null) || APPROVE=""
 # E7: request_id 누락도 허용 (빈 문자열로 진행)
 
 # 3. 라이브러리 선행 로드 — session_id.sh (state_read) + ack_utils.sh
 # F6 규칙: state 파일 읽기는 반드시 state_read() 함수 경유 (raw awk 금지).
 HOOK_DIR="${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "$0")" 2>/dev/null && pwd)}"
-SESSION_ID_LIB="${HARNESS_HOOK_DIR}/lib/session_id.sh"
-ACK_LIB="${HARNESS_HOOK_DIR}/lib/ack_utils.sh"
+SESSION_ID_LIB="${HOOK_DIR}/.claude/hooks/lib/session_id.sh"
+ACK_LIB="${HOOK_DIR}/.claude/hooks/lib/ack_utils.sh"
 if [ ! -f "$SESSION_ID_LIB" ]; then
   SESSION_ID_LIB="$(dirname "$0")/lib/session_id.sh"
 fi
@@ -125,12 +123,28 @@ fi
 # shellcheck disable=SC1090
 . "$ACK_LIB" 2>/dev/null || exit 0
 
-# 6. 자기 pane_id → agent name 역검색 (E1/E3 fail-open)
-RESOLVED=$(resolve_sender_from_tmux "$UUID" 2>/dev/null) || exit 0
-[ -z "$RESOLVED" ] && exit 0
+# 6. 발신자 식별
+# [c182 ACK 근본 수정] 이 hook 은 ★응답한 팀원 프로세스★ 에서 돈다. PIPELINE_UUID env 는 hook 자식에
+#   전달되지 않아(sprint R1 실측) UUID 는 팀원 자신의 .session_id 가 되고, 리드 sweep 은 ★리드 UUID★/ack 를
+#   기다린다 → ACK 가 한 번도 도달하지 않았다(실측: 리드 로그 ACK_RECEIVED_RETRY 132건·ACK_RECEIVED 0건,
+#   ack/ 디렉토리는 어느 세션에도 없음 — 팀원 UUID 에 agents/ 가 없어 아래 역검색도 실패).
+#   1순위: chain_agent_resolve(조상 argv --agent-id NAME@TEAM + --parent-session-id LEAD, 리드 team_name==TEAM
+#          검증) 통과 시 ★리드 UUID 하위 자기 이름 ACK★ 만 기록한다. 그 외 타 세션은 건드리지 않는다(§a).
+#          본 프로세스에서 직접 호출 — $( )·timeout 으로 감싸면 조상 6단계 한도를 잃는다.
+#   2순위(증명 실패): 종전 경로(자기 UUID + pane 역검색) 그대로.
+MY_NAME=""
+CA_LIB="$(dirname "$ACK_LIB")/chain_agent.sh"
+if [ -r "$CA_LIB" ] && . "$CA_LIB" 2>/dev/null && chain_agent_resolve 2>/dev/null; then
+  UUID="$CA_LEAD"
+  MY_NAME="$CA_NAME"
+else
+  # 자기 pane_id → agent name 역검색 (E1/E3 fail-open)
+  RESOLVED=$(resolve_sender_from_tmux "$UUID" 2>/dev/null) || exit 0
+  [ -z "$RESOLVED" ] && exit 0
 
-MY_PANE="${RESOLVED%%|*}"
-MY_NAME="${RESOLVED##*|}"
+  MY_PANE="${RESOLVED%%|*}"
+  MY_NAME="${RESOLVED##*|}"
+fi
 [ -z "$MY_NAME" ] && exit 0
 
 # 7. ACK 2단계 동시 기록 (received + done)
@@ -138,6 +152,6 @@ MY_NAME="${RESOLVED##*|}"
 # - done    : "shutdown_response 발송 완료 확증"
 # 메인측 sweep은 .done을 최종 성공 신호로 사용
 ack_write_received "$UUID" "$MY_NAME" "$REQUEST_ID" 2>/dev/null || true
-ack_write_done     "$UUID" "$MY_NAME" "$REQUEST_ID" 2>/dev/null || true
+ack_write_done     "$UUID" "$MY_NAME" "$REQUEST_ID" "$APPROVE" 2>/dev/null || true
 
 exit 0

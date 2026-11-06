@@ -5,18 +5,31 @@ import subprocess, json, os, glob
 parser = argparse.ArgumentParser()
 parser.add_argument('output', nargs='?', default=None)
 parser.add_argument('--output', dest='output_flag', default=None)
-parser.add_argument('--project', default=None, help='프로젝트명 (미지정 시 cwd 의 basename)')
+parser.add_argument('--project', default=None, help='프로젝트명 (명시 시 /mnt/c/DATA/Project/<이름> 규칙 사용)')
 args, _ = parser.parse_known_args()
 
-output_path = args.output_flag or args.output or os.path.expanduser("~/.claude/session-env/oinsights_transcript_hits.json")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _oi_paths import default_output, project_root
+import re
 
-# 프로젝트 트랜스크립트 디렉토리 자동 감지
-project = args.project or os.path.basename(os.getcwd())
-transcript_dir = os.path.expanduser(f"~/.claude/projects/-mnt-c-DATA-Project-{project}/")
+output_path = default_output("oinsights_transcript_hits.json", args.output_flag or args.output)
+
+# 프로젝트 트랜스크립트 디렉토리 자동 감지 (프로젝트 루트 경로의 비영숫자를 - 로 치환한 이름)
+projects_base = os.path.expanduser("~/.claude/projects/")
+if args.project:
+    transcript_dir = os.path.join(projects_base, f"-mnt-c-DATA-Project-{args.project}") + "/"
+    project_source = "project_arg"
+else:
+    root = project_root()
+    transcript_dir = os.path.join(projects_base, re.sub(r"[^A-Za-z0-9]", "-", root)) + "/"
+    project_source = "project_root:" + root
 if not os.path.isdir(transcript_dir):
-    # fallback: cwd 절대경로를 Claude Code 트랜스크립트 디렉토리 규칙으로 변환
-    _slug = os.getcwd().replace("/", "-")
-    transcript_dir = os.path.expanduser(f"~/.claude/projects/{_slug}/")
+    # fallback: 기존 NTFS 프로젝트 디렉토리 중 첫 번째
+    cands = sorted(glob.glob(os.path.join(projects_base, "-mnt-c-DATA-Project-*/")))
+    if cands:
+        transcript_dir = cands[0]
+        project_source = "fallback"
+print(f"트랜스크립트 디렉토리: {transcript_dir} (출처: {project_source})")
 
 patterns = ["blocked", "DENY", "exit code 1", "실패", "위반", "retry.*fail", "hook.*error"]
 combined_pattern = "|".join(patterns)

@@ -74,6 +74,15 @@ Step_2_TODO_완료_확인:
   방법: 체크리스트 전 항목이 실제 구현에 반영되었는지 확인
   실패: 미완료 항목 발견 → FAIL
 
+Step_2_5_정본_대조 (plan/ 이 있는 프로젝트 한정 — ocanon 스킬):
+  적용: 프로젝트 루트에 plan/index.json 이 있을 때만. 없으면 스킵한다.
+  동작:
+    1. 계획서 `## 정본 참조` 절의 관련 문서 중 요구사항정의서(requirements)·기능요건(features)을 읽는다.
+    2. 이번 사이클이 다룬 REQ-ID·FN-ID 의 수용기준이 acceptance_criteria 항목과 실제 결과에 대응하는지 1:1 로 대조한다.
+    3. 정본과 다르게 구현됐는데 문서 갱신이 없으면 FAIL 로 판정하고 "문서 먼저 갱신"으로 역라우팅한다.
+    4. index.json 에 test_report 가 활성이면 시험결과서에 회차 요약(결과·남은 FAIL·증거 위치)만 반영한다. 원시 로그·스크린샷은 옮기지 않는다.
+  부재_시: 관련 REQ/FN 이 없으면 "정본 대조: 해당 없음(사유)" 1줄을 남긴다.
+
 Step_3_acceptance_criteria_대조:
   must: 전부 PASS 필수 (evidence/make_ok criteria_results 확인)
   should: 80%+ PASS
@@ -138,6 +147,9 @@ Step_4_evidence_무결성:
 
 Step_5_spot_check:
   방법: auto_script 랜덤 2개 재실행
+  실행: 직접 셸에 붙여 넣지 말고 공용 CLI 로 실행한다(dash/bash 차이·세션경로 오판 방지).
+    bash "${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/goal_autoscript_run.sh" --criteria <acceptance_criteria.json> --id <AC-ID>
+    (--criteria 는 odev-4 가 추가하는 옵션. 출력 행 ID<TAB>PASS|FAIL|UNDET, rc 0=PASS/1=FAIL/3=UNDET. UNDET 은 PASS 로 취급 금지)
   실패: evidence 결과와 일치하지 않으면 FAIL
 
 Step_6_raw_명령_출력_필수 (L-392 재발방지 — 절대 규칙):
@@ -229,6 +241,22 @@ Step_6_5_git_경로목록_quotepath_양방향_자기검증 (사이클128 재발�
       hook 은 경고만 하고, ★최종 판정 책임은 otest 다.★ 경고가 없었다는 사실은 무결의 근거가 아니다.
 ```
 
+### 마지막 단계: QA 단계 시험 증거 대조 (선언 프로젝트 한정)
+
+> 사용자 지시(2026-10-10): "앞으로도 qa서버까지는 테스트를 진행하도록 하라. 다만 운영db와 연계되어있으므로 조심하고 최소한의 테스트만 진행하고 테스트전으로 완벽하게 되돌릴수있는 테스트만 진행하여야한다."
+
+```yaml
+적용_조건: 프로젝트에 `.claude/qa_tier.json`(QA 단계 선언)이 있을 때만. 없으면 건너뛴다.
+대조:
+  - evidence/qa_test_done 마커 존재 및 첫 줄 상태(PASS|PARTIAL|SKIPPED) 확인
+  - 마커가 가리키는 before/after/compare 파일을 직접 읽어 전후 COUNT·행해시(+허용 표 AUTO_INCREMENT) 동일 확인
+  - 원복 판정표(제외·원복 불가 항목과 사유) 존재 확인 — 4요건(스냅샷·표식 행만·삭제 원복·전후 동일 실측)을 못 채운 항목이 시험에 들어갔다면 FAIL
+  - 최소화 원칙 위반(같은 경로 반복 시험, 쓰기 없이 가능한데 쓴 시험) 여부 확인
+판정:
+  - 마커 없음 또는 전후 불일치 PARTIAL → 통과 불가(odone 진입 불가). SKIPPED 면제는 사용자에게 묻지 않고 판단해 감사 기록을 남긴다(앱·서버 소스 변경 없음·QA 비해당일 때 reason= 근거, 사용자 지시 2026-10-27 15:53).
+  - 게이트 필수 키는 before·after(PASS/PARTIAL) 또는 reason= 10자 이상(SKIPPED)뿐이다. compare·excluded 는 선택이다.
+```
+
 ## 중단 신호 (Red Flags)
 
 아래 중 하나라도 해당 시 즉시 중단, 검수 미통과:
@@ -250,7 +278,18 @@ Step_6_5_git_경로목록_quotepath_양방향_자기검증 (사이클128 재발�
 ```yaml
 전부_PASS:
   선행: Step_3_5 CRUD 실행증거 게이트 exit 0 (미통과 시 otest_done 생성 금지)
+  ★UI 증거 마커 자체 점검 (L-P53 재발방지 — 2026-09-29)★:
+    배경: O4/O5 + UI 변경 작업에서 otest 담당자가 otest_done을 생성하기 전 ui_test_done/
+          winforms_test_done(또는 web_test_done) 마커 생성을 빠뜨린 사례가 있었다. odone spawn
+          시점의 hook(ui_test_done_guard.sh)이 결국 차단해 otest-2가 복구했지만, otest 스스로
+          otest_done을 생성하기 전에 먼저 자체 점검했다면 역라우팅 자체가 불필요했다.
+    규칙: classification이 O4/O5이고 ui_touched.json의 touched=true(또는 UI 파일 변경 존재)이면,
+          otest_done을 생성하기 전에 evidence/ui_test_done + 프로젝트 유형별 마커
+          (C# → winforms_test_done, 웹 → web_test_done)가 실제로 존재하는지 ls로 먼저 확인한다.
+          없으면 otest_done을 생성하지 말고 먼저 해당 UI 테스트(otest_winforms/otest_playwright 등)를
+          완료해 마커를 만든 뒤에 otest_done을 생성한다.
   동작: evidence/otest_done 생성 → "otest_evidence PASS" 반환
+        (모바일 축 otest(otest-m-N)는 evidence/otest_done_m 생성 — otest_done 생성 금지. otest SKILL.md "자원 축" 절)
 
 FAIL:
   동작: 실패 항목 목록 + 역라우팅 권고 반환 (otest_done 미생성)
@@ -408,7 +447,7 @@ acceptance_criteria.json의 must 항목은 기존 형식을 그대로 사용하�
     {
       "id": "AC-001",
       "criterion": "ogrill SKILL.md 220줄 이상",
-      "verify": "wc -l <프로젝트 루트>/.claude/skills/ogrill/SKILL.md | awk '{print $1}'",
+      "verify": "wc -l ${HARNESS_HOME:-$HOME/.harness}/current/skills/ogrill/SKILL.md | awk '{print $1}'",
       "expected": ">= 100",
       "red_first": true
     }

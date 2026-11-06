@@ -1,8 +1,4 @@
 #!/bin/bash
-# >>> harness preamble
-_HP="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)}"
-[ -f "$_HP/hooks/harness_preamble.sh" ] && . "$_HP/hooks/harness_preamble.sh" 2>/dev/null || { [ -f "$_HP/harness_preamble.sh" ] && . "$_HP/harness_preamble.sh" 2>/dev/null; } || true
-# <<< harness preamble
 # Notification(Stop) — compact 시작 전 체크포인트 저장 (Phase 2 — L-111/L-112)
 # 메인 에이전트와 팀에이전트 모두에서 실행됨
 
@@ -27,7 +23,7 @@ SESSION_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/session-env/${UUID}"
 
 # state_read/state_write 함수 로드 (flock 기반 원자적 읽기/쓰기)
 # shellcheck source=/dev/null
-source "${HARNESS_HOOK_DIR}/lib/session_id.sh" 2>/dev/null || true
+source "${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/session_id.sh" 2>/dev/null || true
 
 # ── 체크포인트 파일 경로 ──
 mkdir -p "${SESSION_DIR}/compact"

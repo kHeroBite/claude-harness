@@ -46,20 +46,20 @@ invocation:
 UUID는 hook 메시지(`💬 [oi] 활성(PLAN|DEV)`)에서 확인.
 `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/session-env/${UUID}/team_name` 파일로 팀명 확인. 없으면 PLAN 진행 중.
 
-## Step 0.5: oi_routed 마커 생성 (oi_route_guard 통과 허가 — 필수)
+## Step 0.5: 호출 증표는 hook 이 쓴다 — 마커를 직접 만들지 마라 (2026-10-10 사이클174 개정)
 
-oi 스킬이 실행되었음을 oi_route_guard.sh에 알리는 마커 파일을 **Step 0 직후, Step 1 이전에** 반드시 생성한다.
-oi_route_guard.sh는 이 마커의 타임스탬프(초)를 확인하여 10초 TTL 이내이면 oi가 이미 실행됐다고 판단하고 통과 허가한다.
+종전에는 메인이 `oi_routed` 파일을 직접 써서 oi_route_guard 를 통과시켰다. 그 결과 **Skill('oi') 를 호출하지 않고
+`oi_routed` 만 써서 SendMessage·Agent 로 바로 위임하는 우회**가 가능했다(사이클174 실측 — DEV 중 입력 9건 중 5건).
 
 ```yaml
-마커_생성:
-  mcp__oio__file_write(
-    path="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/session-env/${UUID}/oi_routed",
-    content="$(date +%s)",
-    overwrite=true
-  )
-생략_금지: oi_route_guard.sh 차단 방지를 위해 생략 불가
-TTL: 마커 생성 후 10초 이내에만 유효 (oi_route_guard.sh 기준)
+증표: session-env/${UUID}/oi_invoked
+쓰는_주체: PostToolUse_Skill_ointaug_format.sh — Skill('oi') 실행 직후 hook 이 직접 기록 (메인 쓰기 불가)
+판정:
+  - oi_route_guard.sh: oi_invoked mtime >= 이번 사용자 입력 기준점(last_prompt_epoch) 이면 스킬 통과
+  - PreToolUse_ointaug_turn_gate.sh(F-INTAUG-3): UserPromptSubmit 이 oi_required 를 남긴 입력에 대해
+    oi_invoked 가 그보다 새로워질 때까지 SendMessage·Agent·bash_exec·파일 쓰기 등 실행 도구를 차단
+메인이_할_일: Skill('oi') 를 실제로 호출하는 것뿐. oi_routed·oi_invoked 를 file_write/session_state/셸로 쓰거나 지우면 차단된다.
+순서: Skill('ointaug') → Skill('oi') → 분류대로 진행 (턴 진행 중 도착한 사용자 입력도 같다)
 ```
 
 ## Step 1: 입력 분류 및 처리
@@ -174,6 +174,7 @@ TTL: 마커 생성 후 10초 이내에만 유효 (oi_route_guard.sh 기준)
 
 ## 주의사항
 
+- 화면 요소를 지칭하는 입력(예: "우하단 에이전트명", "그 라벨 색")은 위임 전에 대상을 실측으로 확정한다(캡처 또는 해당 옵션·포맷 값 대조). 실측한 대상 이름을 위임 프롬프트에 명시한다. 추정만으로 위임하면 다른 요소를 고치는 사고가 난다(L-580, conv_179163042411 타이틀 배경 제거 → 원복).
 - oi는 **state를 변경하지 않는다**
 - oi는 ok를 호출하지 않음
 - IDLE 상태에서는 oi가 호출되지 않음

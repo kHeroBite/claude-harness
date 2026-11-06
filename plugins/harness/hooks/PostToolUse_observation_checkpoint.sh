@@ -1,8 +1,4 @@
 #!/bin/bash
-# >>> harness preamble
-_HP="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)}"
-[ -f "$_HP/hooks/harness_preamble.sh" ] && . "$_HP/hooks/harness_preamble.sh" 2>/dev/null || { [ -f "$_HP/harness_preamble.sh" ] && . "$_HP/harness_preamble.sh" 2>/dev/null; } || true
-# <<< harness preamble
 # Agent/SendMessage 10건마다 otask_observer 관찰 기록 시점을 알리는 hook (block 아님, notify 전용)
 # matcher 근거: 이 환경 54개 hook 중 TodoWrite를 쓰는 것은 이 hook뿐이고 해당 도구가
 # 세션에 제공되지 않아 발동이 0회였다. 실제 작업 단위 경계인 Agent/SendMessage로 교체했다 (2026-08-24 실측).
@@ -42,6 +38,12 @@ except Exception:
   LOG_DIR="${SESSION_DIR}/logs"
   mkdir -p "$LOG_DIR" 2>/dev/null || true
 
+  # 사이클143 축② — 반대편 base 미러 (읽는 쪽이 다른 base 를 볼 수 있다)
+  # Stop_observation_guard.sh 가 이 로그와 카운터를 읽어 판정하므로 base 가 갈리면
+  # 알림 이력이 없는 것으로 보여 통지가 영영 발동하지 않는다.
+  source "${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/session_mirror.sh" 2>/dev/null
+  declare -F _mirror_file >/dev/null 2>&1 || _mirror_file() { :; }
+
   LOG_FILE="${LOG_DIR}/observation_checkpoint.log"
   COUNTER_FILE="${SESSION_DIR}/observation_checkpoint_count"
 
@@ -55,6 +57,7 @@ except Exception:
   NOW="$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || true)"
   # 자기 로그 남기기 — hook 발동 여부를 사후 확인 가능하게
   echo "${NOW} PostToolUse 진입 (tool=${TOOL_NAME:-?})" >> "$LOG_FILE" 2>/dev/null || true
+  _mirror_file "$LOG_FILE"
 
   COUNT=0
   if [ -f "$COUNTER_FILE" ]; then
@@ -66,9 +69,11 @@ except Exception:
 
   COUNT=$((COUNT + 1))
   echo "$COUNT" > "$COUNTER_FILE" 2>/dev/null || true
+  _mirror_file "$COUNTER_FILE"
 
   if [ $((COUNT % INTERVAL)) -eq 0 ]; then
     echo "${NOW} ${INTERVAL}의 배수 도달(count=${COUNT}) — 안내 출력" >> "$LOG_FILE" 2>/dev/null || true
+    _mirror_file "$LOG_FILE"
     echo "📝 [관찰 기록 시점] 작업 ${COUNT}건 경과 — otask_observer 스킬로 지금까지의 관찰(사용자 교정/발견)을 기록할 시점입니다."
   fi
 

@@ -1,11 +1,7 @@
 #!/bin/bash
-# >>> harness preamble
-_HP="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)}"
-[ -f "$_HP/hooks/harness_preamble.sh" ] && . "$_HP/hooks/harness_preamble.sh" 2>/dev/null || { [ -f "$_HP/harness_preamble.sh" ] && . "$_HP/harness_preamble.sh" 2>/dev/null; } || true
-# <<< harness preamble
 # hook_test.sh — Hook Guard 최소 테스트 시나리오
 # 용도: write_guard.sh 분리 전 핵심 차단 경로 회귀 테스트
-# 실행: bash "${HARNESS_HOOK_DIR}/lib/hook_test.sh"
+# 실행: bash ${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/hook_test.sh
 #
 # 테스트 대상:
 #   TC-01: P0 — Edit 도구 차단
@@ -17,8 +13,8 @@ _HP="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null
 #   TC-07: oi_route_guard — PLAN 상태에서 oi 미경유 차단
 #   TC-08: ofinish_recurse_guard — FINISH 상태 ofinish 차단
 
-HOOK_DIR="${HARNESS_HOOK_DIR:-$HOME/.claude/hooks}"
-HOME_HOOKS="$HOME/.claude/hooks"
+HOOK_DIR="${HARNESS_HOME:-$HOME/.harness}/current/hooks"
+HOME_HOOKS="${HARNESS_HOME:-$HOME/.harness}/current/hooks"
 PASS=0
 FAIL=0
 SKIP=0
@@ -122,7 +118,7 @@ echo "PLAN $_TC09_UUID" > "$_TC09_DIR/state"
 
 _run_test "TC-09" "PLAN+메인+Grep NTFS 경로 차단 (Fix 1)" \
   "$HOME_HOOKS/write_guard.sh" \
-  "{\"tool_name\":\"Grep\",\"session_id\":\"${_TC09_UUID}\",\"tool_input\":{\"pattern\":\"test\",\"path\":\"${CLAUDE_PROJECT_DIR:-/tmp/testproj}/src\"}}" \
+  "{\"tool_name\":\"Grep\",\"session_id\":\"${_TC09_UUID}\",\"tool_input\":{\"pattern\":\"test\",\"path\":\"/mnt/c/DATA/Project/Mars/src\"}}" \
   true
 
 rm -rf "$_TC09_DIR" 2>/dev/null
@@ -136,7 +132,7 @@ echo "DEV $_TC10_UUID" > "$_TC10_DIR/state"
 
 _run_test "TC-10" "bash_exec .claude/+체인 명령 DEV 상태 차단 (Fix 2)" \
   "$HOME_HOOKS/write_guard.sh" \
-  "{\"tool_name\":\"mcp__oio__bash_exec\",\"session_id\":\"${_TC10_UUID}\",\"tool_input\":{\"command\":\"bash ~/.claude/scripts/team-report.sh && rm -rf /mnt/c/\"}}" \
+  "{\"tool_name\":\"mcp__oio__bash_exec\",\"session_id\":\"${_TC10_UUID}\",\"tool_input\":{\"command\":\"bash ${HARNESS_HOME:-$HOME/.harness}/current/scripts/team-report.sh && rm -rf /mnt/c/\"}}" \
   true
 
 rm -rf "$_TC10_DIR" 2>/dev/null
@@ -155,7 +151,7 @@ echo "PLAN $_TC12_UUID" > "$_TC12_DIR/state"
 
 PIPELINE_UUID="test-uuid-1234" _run_test "TC-12" "PLAN+팀에이전트(PIPELINE_UUID)+Grep NTFS 통과 (Fix 1 회귀)" \
   "$HOME_HOOKS/write_guard.sh" \
-  "{\"tool_name\":\"Grep\",\"session_id\":\"${_TC12_UUID}\",\"tool_input\":{\"pattern\":\"test\",\"path\":\"${CLAUDE_PROJECT_DIR:-/tmp/testproj}/src\"}}" \
+  "{\"tool_name\":\"Grep\",\"session_id\":\"${_TC12_UUID}\",\"tool_input\":{\"pattern\":\"test\",\"path\":\"/mnt/c/DATA/Project/Mars/src\"}}" \
   false
 
 rm -rf "$_TC12_DIR" 2>/dev/null

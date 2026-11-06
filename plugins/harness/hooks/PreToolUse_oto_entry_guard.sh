@@ -1,8 +1,4 @@
 #!/bin/bash
-# >>> harness preamble
-_HP="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)}"
-[ -f "$_HP/hooks/harness_preamble.sh" ] && . "$_HP/hooks/harness_preamble.sh" 2>/dev/null || { [ -f "$_HP/harness_preamble.sh" ] && . "$_HP/harness_preamble.sh" 2>/dev/null; } || true
-# <<< harness preamble
 # oto(auto=ON) 세션의 파이프라인 ★진입 시점★ 에 완주 전제조건을 검사하는 hook
 # PreToolUse:mcp__oio__session_state — key=state, value=PLAN|DEV 전이만 대상
 #
@@ -19,9 +15,9 @@ _HP="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null
 #   ⇒ 5시간 vs 30초. 이 대비가 본 hook 이 존재하는 이유 전부다.
 #
 # 검사 2종:
-#   F-OTO-0a  경로 단일화 — goal.json·oralph_active·status·auto 4파일이
+#   F-OTO-0a  경로 단일화 — goal.json·oroof_active(구 oralph_active)·status·auto 파일이
 #             두 base 에 갈려 있지 않은지 (oto/SKILL.md:66-73 문서 규칙의 ★물리화★)
-#   F-OTO-0b  RALPH 게이트 — status 에 RALPH 토큰 또는 oralph_active 파일 존재
+#   F-OTO-0b  ROOF 게이트 — status 에 ROOF(구 RALPH) 토큰 또는 oroof_active(구 oralph_active) 파일 존재
 #             (F-OTO-7b 가 종료 때 잡던 것을 진입 때 잡는다)
 #
 # ★oto/SKILL.md:66-73 은 왜 실행되지 않았는가★:
@@ -39,7 +35,7 @@ _HP="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null
 #   · ★어느 한쪽을 정본으로 고르지 않는다.★ 두 경로를 대등하게 나열해 비교만 한다.
 #   · auto 판정은 ★양쪽 OR★ — 한쪽에만 있어도 auto 세션으로 본다.
 #     (사고 시점의 실제 상태가 정확히 "한쪽에만 auto" 였다. AND 로 읽으면 놓친다.)
-#   · RALPH 판정도 ★양쪽 OR★ — 어느 쪽에서든 게이트가 살아 있으면 통과.
+#   · ROOF 판정도 ★양쪽 OR★ — 어느 쪽에서든 게이트가 살아 있으면 통과.
 #     (한쪽만 보면 미러 지연 중인 정상 세션을 오차단한다.)
 #   · 로그도 ★양쪽에★ 남긴다. 한쪽에만 남기면 이 hook 이 새 갈림의 원인이 된다.
 #
@@ -61,16 +57,16 @@ _HP="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null
 #  E. ★goal.json 의 내용 타당성★ — 보지 않는다. 존재·정합만 본다.
 #     acceptance 구조 검증은 F-OTO-3~8 의 담당이다(중복 구현하지 않는다).
 #
-# 비상 스위치: touch $HOME/.claude/hooks/DISABLE_OTO_GUARD   (F-OTO-* 와 공용)
+# 비상 스위치: touch ${HARNESS_HOME:-$HOME/.harness}/current/hooks/DISABLE_OTO_GUARD   (F-OTO-* 와 공용)
 # fail-open: 모든 예외 경로의 기본은 exit 0. 차단은 두 곳에서만 일어난다.
 
 set -u
 
-_HOOK_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd)" || _HOOK_DIR="$HOME/.claude/hooks"
-[ -r "${_HOOK_DIR}/lib/session_id.sh" ] || _HOOK_DIR="$HOME/.claude/hooks"
+_HOOK_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd)" || _HOOK_DIR="${HARNESS_HOME:-$HOME/.harness}/current/hooks"
+[ -r "${_HOOK_DIR}/lib/session_id.sh" ] || _HOOK_DIR="${HARNESS_HOME:-$HOME/.harness}/current/hooks"
 
 # ── 0. 비상 스위치 (양쪽 위치 검사 — 한쪽만 보면 스위치가 안 먹는다) ───────
-for _sw in "${_HOOK_DIR}/DISABLE_OTO_GUARD" "$HOME/.claude/hooks/DISABLE_OTO_GUARD"; do
+for _sw in "${_HOOK_DIR}/DISABLE_OTO_GUARD" "${HARNESS_HOME:-$HOME/.harness}/current/hooks/DISABLE_OTO_GUARD"; do
   [ -f "$_sw" ] && exit 0
 done
 
@@ -151,7 +147,7 @@ if [ "$_SAME_BASE" -eq 0 ]; then
     if [ -f "$1" ]; then md5sum "$1" 2>/dev/null | cut -d' ' -f1; else echo "__ABSENT__"; fi
   }
   _MIS=""
-  for _f in goal.json oralph_active status auto; do
+  for _f in goal.json oroof_active oralph_active status auto; do  # ROOF-COMPAT(deprecation window 1주기 — 구 RALPH/oralph_active 인식 제거 예정)
     _hc=$(_hash_of "${_CCD_DIR}/${_f}")
     _hh=$(_hash_of "${_HOME_DIR}/${_f}")
     [ "$_hc" != "$_hh" ] && _MIS="${_MIS}${_MIS:+ }${_f}"
@@ -166,7 +162,7 @@ if [ "$_SAME_BASE" -eq 0 ]; then
 
 왜 지금 막는가:
   이 상태로 진행하면 종료 시점에 F-OTO-7b 가 'auto 가 있는 쪽'을 정본으로 골라
-  검사하고, 그쪽에 goal.json/oralph_active 가 없으면 차단합니다.
+  검사하고, 그쪽에 goal.json/oroof_active 가 없으면 차단합니다.
   ★사이클40 이 정확히 그랬습니다 — 5시간 작업 후에야 완주 실패가 드러났고
     그 시점에 검증 루프는 한 번도 돌지 않은 상태였습니다.★
   지금은 작업 시작 전이므로 손실이 없습니다.
@@ -183,37 +179,37 @@ if [ "$_SAME_BASE" -eq 0 ]; then
   fi
 fi
 
-# ── 7. F-OTO-0b: RALPH 게이트 생존 (양쪽 OR) ──────────────────────────────
-_ralph_alive() {
+# ── 7. F-OTO-0b: ROOF 게이트 생존 (양쪽 OR) ──────────────────────────────
+_roof_alive() {
   for _d in "$_CCD_DIR" "$_HOME_DIR"; do
-    [ -f "${_d}/oralph_active" ] && return 0
-    if [ -f "${_d}/status" ] && grep -qE '(^|\|)RALPH(\||$)' "${_d}/status" 2>/dev/null; then
+    { [ -f "${_d}/oroof_active" ] || [ -f "${_d}/oralph_active" ]; } && return 0  # ROOF-COMPAT(deprecation window 1주기 — 구 RALPH/oralph_active 인식 제거 예정)
+    if [ -f "${_d}/status" ] && grep -qE '(^|\|)(ROOF|RALPH)(\||$)' "${_d}/status" 2>/dev/null; then  # ROOF-COMPAT(deprecation window 1주기 — 구 RALPH/oralph_active 인식 제거 예정)
       return 0
     fi
   done
   return 1
 }
 
-if ! _ralph_alive; then
-  _block "⛔ [F-OTO-0b] auto=ON 인데 RALPH 게이트가 아직 세팅되지 않았습니다 — 진입을 차단합니다.
+if ! _roof_alive; then
+  _block "⛔ [F-OTO-0b] auto=ON 인데 ROOF 게이트가 아직 세팅되지 않았습니다 — 진입을 차단합니다.
 
-status 에 RALPH 토큰이 없고, oralph_active 파일도 없습니다(양쪽 base 모두 확인).
-⇒ 이대로 진행하면 ofinish Step 8 이 RALPH_ACTIVE=false 로 판정해
+status 에 ROOF 토큰이 없고, oroof_active 파일도 없습니다(양쪽 base 모두 확인).
+⇒ 이대로 진행하면 ofinish Step 8 이 ROOF_ACTIVE=false 로 판정해
    ★검증 루프를 통째로 건너뜁니다.★
 ⇒ /oto 는 '검증 루프로 완주를 보장'하는 모드인데 그 루프가 아예 돌지 않습니다.
 ⇒ 종료 시점의 F-OTO-7b 가 같은 것을 잡지만, 그때는 작업이 다 끝난 뒤입니다
    (사이클40 — 5시간 손실). 지금 세팅하면 손실이 0입니다.
 
-원인: oto Phase 1_5 의 oralph_active 세팅 누락 (oto/SKILL.md 'oralph_active_세팅').
+원인: oto Phase 1_5 의 oroof_active 세팅 누락 (oto/SKILL.md 'oroof_active_세팅').
 해결: 두 가지를 모두 수행하십시오.
-  (1) mcp__oio__file_write(path=\"${_CCD_DIR}/oralph_active\",
+  (1) mcp__oio__file_write(path=\"${_CCD_DIR}/oroof_active\",
       content='{\"session_uuid\":\"${UUID}\",\"criteria\":\"...\",\"criteria_detail\":[...],
                 \"max_iterations\":5,\"current_iteration\":0}', overwrite=true)
-  (2) bash -c 'source \"\${CLAUDE_CONFIG_DIR:-\$HOME/.claude}/hooks/lib/state_machine.sh\"; status_add \"${_CCD_DIR}/status\" RALPH'
+  (2) bash -c 'source \"\${HARNESS_HOME:-\$HOME/.harness}/current/hooks/lib/state_machine.sh\"; status_add \"${_CCD_DIR}/status\" ROOF'
       ★bash -c 래핑 필수★ — bash_exec 셸은 dash 라 source 가 rc=127 로 죽습니다.
 
-비상 시: touch ${_HOOK_DIR}/DISABLE_OTO_GUARD" "F-OTO-0b RALPH 게이트 부재"
+비상 시: touch ${_HOOK_DIR}/DISABLE_OTO_GUARD" "F-OTO-0b ROOF 게이트 부재"
 fi
 
-_log "PASS uuid=${UUID} 경로정합+RALPH 생존"
+_log "PASS uuid=${UUID} 경로정합+ROOF 생존"
 exit 0

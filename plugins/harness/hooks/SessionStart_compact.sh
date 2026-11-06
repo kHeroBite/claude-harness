@@ -1,8 +1,4 @@
 #!/bin/bash
-# >>> harness preamble
-_HP="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)}"
-[ -f "$_HP/hooks/harness_preamble.sh" ] && . "$_HP/hooks/harness_preamble.sh" 2>/dev/null || { [ -f "$_HP/harness_preamble.sh" ] && . "$_HP/harness_preamble.sh" 2>/dev/null; } || true
-# <<< harness preamble
 # Notification(Start) — compact 완료 후 체크포인트 복원 (Phase 2 — L-111/L-112)
 # stdout이 system-reminder로 모델에게 전달됨
 
@@ -27,14 +23,14 @@ export SID UUID
 SESSION_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/session-env/${UUID}"
 
 # 사이클46 축① — 반대편 base 미러 (compact 복원분이 한쪽에만 남지 않도록)
-source "${HARNESS_HOOK_DIR}/lib/session_mirror.sh" 2>/dev/null
-type _mirror_file >/dev/null 2>&1 || _mirror_file() { :; }
+source "${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/session_mirror.sh" 2>/dev/null
+declare -F _mirror_file >/dev/null 2>&1 || _mirror_file() { :; }
 # 사이클46 삭제 미러 — 원본 삭제 시 반대편 잔존(S-1) 방지
-type _mirror_delete >/dev/null 2>&1 || _mirror_delete() { :; }
+declare -F _mirror_delete >/dev/null 2>&1 || _mirror_delete() { :; }
 
 # state_read/state_write 함수 로드 (flock 기반 원자적 읽기/쓰기)
 # shellcheck source=/dev/null
-source "${HARNESS_HOOK_DIR}/lib/session_id.sh" 2>/dev/null || true
+source "${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/session_id.sh" 2>/dev/null || true
 
 # ── 체크포인트 파일 결정 ──
 if [[ "$IS_TEAM" = "true" ]]; then

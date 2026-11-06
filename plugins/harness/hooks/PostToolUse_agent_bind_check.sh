@@ -1,8 +1,4 @@
 #!/bin/bash
-# >>> harness preamble
-_HP="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)}"
-[ -f "$_HP/hooks/harness_preamble.sh" ] && . "$_HP/hooks/harness_preamble.sh" 2>/dev/null || { [ -f "$_HP/harness_preamble.sh" ] && . "$_HP/harness_preamble.sh" 2>/dev/null; } || true
-# <<< harness preamble
 # Agent spawn ★성공★ 응답의 팀 바인딩이 자기 세션과 일치하는지 관측하는 hook
 # PostToolUse:Agent — ★차단하지 않는다. 기록·경고만 한다.★
 #
@@ -43,22 +39,22 @@ _HP="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null
 #     PostToolUse 응답 스키마는 버전 의존적이라 필드명이 바뀌면 관측이 끊긴다.
 #     ⇒ 그래서 "탐지 0건"을 "정상"의 근거로 쓰면 안 된다. 로그에 SCAN 라인을
 #       남겨 ★관측이 실제로 돌았는지★ 를 사후에 구분할 수 있게 했다.
-#       (도구 부재가 상태 이상으로 위장하는 것을 막는다 — oinfra_mars ss 부재 교훈)
+#       (도구 부재가 상태 이상으로 위장하는 것을 막는다 — Mars ss 부재 교훈)
 #  C. ★팀명이 없는 spawn★ — 대상 아님. 팀 없이 도는 서브에이전트는 무관하다.
 #  D. ★UUID 앞 8자 충돌★ — 서로 다른 UUID 의 앞 8자가 같으면 오탐을 놓친다.
 #     확률이 낮고, 팀명 규칙 자체가 앞 8자라 더 정밀하게 볼 근거가 없다.
 #  E. ★spawn 실패 케이스★ — 다루지 않는다. full_task_team_guard.sh 담당이며
 #     본 hook 은 그것이 놓친 ★성공 케이스★ 를 메운다(역할 분담).
 #
-# 비상 스위치: touch $HOME/.claude/hooks/DISABLE_BIND_CHECK
+# 비상 스위치: touch ${HARNESS_HOME:-$HOME/.harness}/current/hooks/DISABLE_BIND_CHECK
 # fail-open: 전 경로 exit 0. 이 hook 은 어떤 경우에도 작업을 막지 않는다.
 
 set -u
 
-_HOOK_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd)" || _HOOK_DIR="$HOME/.claude/hooks"
-[ -r "${_HOOK_DIR}/lib/session_id.sh" ] || _HOOK_DIR="$HOME/.claude/hooks"
+_HOOK_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd)" || _HOOK_DIR="${HARNESS_HOME:-$HOME/.harness}/current/hooks"
+[ -r "${_HOOK_DIR}/lib/session_id.sh" ] || _HOOK_DIR="${HARNESS_HOME:-$HOME/.harness}/current/hooks"
 
-for _sw in "${_HOOK_DIR}/DISABLE_BIND_CHECK" "$HOME/.claude/hooks/DISABLE_BIND_CHECK"; do
+for _sw in "${_HOOK_DIR}/DISABLE_BIND_CHECK" "${HARNESS_HOME:-$HOME/.harness}/current/hooks/DISABLE_BIND_CHECK"; do
   [ -f "$_sw" ] && exit 0
 done
 

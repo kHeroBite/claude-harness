@@ -35,14 +35,14 @@ tier별_팀에이전트_spawn_매트릭스:
     oplan_normal: 팀에이전트 1개
     odev: 팀에이전트 1~N개
     odev_review: 팀에이전트 1개
-    otest: 팀에이전트 1개
+    otest: 자원 축당 팀에이전트 1개 (데스크톱 otest-N 1개 + 모바일 otest-m-N 1개 + 웹 otest-w-N 1개 병렬 허용 — 3단계 "otest 자원 축 병렬")
     odone: 팀에이전트 1개 (항상 1개만)
   o4:
     oplan_deep: 팀에이전트 1개
     odev: 팀에이전트 1~N개
     odev_review: 팀에이전트 1개
     odev_simplify: 팀에이전트 1개
-    otest: 팀에이전트 1개
+    otest: 자원 축당 팀에이전트 1개 (데스크톱 otest-N 1개 + 모바일 otest-m-N 1개 + 웹 otest-w-N 1개 병렬 허용 — 3단계 "otest 자원 축 병렬")
     odone: 팀에이전트 1개 (항상 1개만)
   o5:
     oplan_debate: 팀에이전트 4개 (oplan-1 + oplan-2 + oplan-3 + oplan-final) — 기본
@@ -50,7 +50,7 @@ tier별_팀에이전트_spawn_매트릭스:
     odev: 팀에이전트 1~N개
     odev_review: 팀에이전트 1개
     odev_simplify: 팀에이전트 1개
-    otest: 팀에이전트 1개
+    otest: 자원 축당 팀에이전트 1개 (데스크톱 otest-N 1개 + 모바일 otest-m-N 1개 + 웹 otest-w-N 1개 병렬 허용 — 3단계 "otest 자원 축 병렬")
     odone: 팀에이전트 1개 (항상 1개만)
 
 서브에이전트_사용_위치: 팀에이전트 내부에서만 Agent tool로 생성
@@ -265,9 +265,12 @@ oplan_산출물_검증 (ok_pipeline 진입 직후):
      spawn: Agent(subagent_type="general-purpose", team_name="{팀명}", name="oplan_review-1", model="fable", mode="bypassPermissions", ...)
      PASS → odev 진입 | FAIL → ok에 보고
   4. 규모판정 기록: mcp__oio__session_state(uuid="${UUID}", key="classification", value="O{N}")
-  5. 체크포인트 검증: bash ~/.claude/hooks/checkpoint_verify.sh "{팀명}" 1 "PLAN완료→DEV진입" "${UUID}"
-  5.5. checkpoint_기록: mcp__oio__bash_exec(command='bash ${HARNESS_HOOK_DIR}/lib/checkpoint_write.sh "${UUID}" "PLAN_DONE" "PLAN" "" "" ""')
+  5. 체크포인트 검증: bash ${HARNESS_HOME:-$HOME/.harness}/current/hooks/checkpoint_verify.sh "{팀명}" 1 "PLAN완료→DEV진입" "${UUID}"
+  5.5. checkpoint_기록: mcp__oio__bash_exec(command='bash ${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/checkpoint_write.sh "${UUID}" "PLAN_DONE" "PLAN" "" "" ""')
   6. file_assignment 버전 관리 (역라우팅 대비)
+     - 역라우팅·oi 수정·사이클 연장마다 file_assignment.json 을 다시 쓴다(version +1). 기준은 git status 와 각 work/*_result.json 의 files_modified 다.
+     - 삭제·원복된 파일은 빼고, 새로 생긴 파일은 넣는다. 파일은 마지막 수정자 1명이 소유한다.
+     - 배정표를 갱신하지 않으면 F-CRUD-1 판정기가 FAIL 한다(L-581, conv_179163042411 역라우팅 #3).
   6.5. phase_batches 초기화 (Multi-Phase Auto-Loop 준비):
      6.5.0 tier 사전 체크:
        tier=$(cat $HOME/.claude/session-env/${UUID}/classification 2>/dev/null || echo "unknown")
@@ -318,8 +321,10 @@ oplan_산출물_검증 (ok_pipeline 진입 직후):
      phase_batches.json 존재 확인: mcp__oio__file_read(path="$HOME/.claude/session-env/${UUID}/plans/phase_batches.json")
      존재_시:
        - current_phase_batch=1 초기화: mcp__oio__file_write(path="$HOME/.claude/session-env/${UUID}/current_phase_batch", content="1", overwrite=true)
-       - phase_batches.json에서 batch 1의 file_assignment 로딩 → file_assignment.json 갱신
-       - 배너 출력: "🔄 Multi-Phase Batch 감지: {total_batches}개 batch, Batch 1부터 시작"
+       - 첫 진행 집합 = 4.5단계 "3.5 독립 batch 병렬 집합 계산"(DONE=∅ — 선행 없는 batch 들 중 파일 비중첩 집합)
+         집합 크기 1: 기존대로 batch 1 의 file_assignment 로딩 → file_assignment.json 갱신
+         집합 크기 ≥2: active_phase_batches.json 기록 + 집합 batch 들의 file_assignment 를 batches[] 형식으로 합쳐 file_assignment.json 갱신 → 7단계에서 집합 전체 odev 동시 spawn
+       - 배너 출력: "🔄 Multi-Phase Batch 감지: {total_batches}개 batch, 첫 진행 집합 {집합}"
      미존재_시: 단일 사이클 — 기존 동작 유지 (변경 없음)
   7. odev×N spawn (2단계 — DEV 상태 전파는 2단계 spawn_직전에서 수행)
 ```
@@ -411,10 +416,19 @@ o5_토론_절차:
 # [L-030] spawn_직전은 Agent 호출 직전 반드시 실행 (생략 시 STATE=PLAN → HOOK_BLOCK_PIPELINE_ORDER)
 spawn_직전 (진입 기반 — L-030 절대 생략 금지):
   1. 상태 전파: mcp__oio__session_state(uuid="${UUID}", key="state", value="DEV")
+  2. 작업 폴더 확보 (다중 세션 git 정책 — 메인, 첫 odev spawn 직전 1회):
+     - 대상 저장소가 정책 적용 대상(git 저장소 + 커밋 1개 이상 + 저장소 루트에 .claude/ + INFRA-FIELDS git_worktree 가 off 아님)이고 추적 파일을 고칠 작업이면, 메인이 공식 EnterWorktree(name=<세션명>) 를 호출한다. 세션명은 tmux 세션명에서 claude- 접두어를 뗀 값이며 없으면 6자 임의 값이다.
+     - 이미 worktree 안이면 재호출하지 않는다. 사이클마다 같은 worktree 를 재사용한다.
+     - 호출 뒤 odev 프롬프트에 "작업 폴더: <worktree 경로> — 저장소 파일은 이 폴더 기준 절대경로로 읽고 쓰며, bash_exec 는 working_dir 를 이 폴더로 한다" 를 포함한다(훅이 [WT_INJECT] 줄을 주입하면 그 값을 따른다).
+     - 커밋 0개 저장소 등 EnterWorktree 가 실패하면 정책 비적용으로 보고 기존 절차로 진행한다.
+     - 가드는 원본 폴더 쓰기에 경고만 붙이고 차단하지 않는다. 경고를 보면 이 절차로 돌아간다.
+     - push 는 wt_lib push 단일 경로로만 한다(odone_git·opush·ofinish 소관). 결과의 live_applied 가 false 면 원본은 옛 코드이므로 warnings 를 보고한다.
+     - isolation=worktree 팀원은 호출 결과가 알려 준 worktree 경로만 믿는다. 변경 없이 끝난 팀원의 worktree 는 자동 삭제되므로 후속 지시 전 `git worktree list` 로 실재를 확인한다. 없는 경로에 mkdir 하지 않는다(껍데기 폴더는 커밋되지 않는다). 후속 작업은 새 spawn 으로 한다.
+     - 착수 전 `python3 <hooks>/lib/wt_lib.py audit --repo <저장소>` 로 잔류 worktree 의 미커밋(tracked·untracked)·unique_commits·shells 를 확인한다. 값이 있으면 보고만 하고 지우지 않는다.
 
 실행: Agent(subagent_type="general-purpose", team_name="{팀명}", name="odev-{N}", model="sonnet", mode="bypassPermissions", prompt="...")
 # ⚠️ 필수: team_name= 파라미터 반드시 포함. 누락 시 hook 차단됨. 팀은 첫 Agent 호출 시 자동 생성되며 소멸하지 않으므로 별도 사전 생성 불필요.
-checkpoint_기록_DEV_START: mcp__oio__bash_exec(command='bash ${HARNESS_HOOK_DIR}/lib/checkpoint_write.sh "${UUID}" "DEV_START" "DEV" "" "odev-{N}" "spawn"')
+checkpoint_기록_DEV_START: mcp__oio__bash_exec(command='bash ${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/checkpoint_write.sh "${UUID}" "DEV_START" "DEV" "" "odev-{N}" "spawn"')
 
 spawn_후_검증 (방법1 — Agent 반환 직후 필수):
   목적: spawn 성공 반환이 실제 pane 생성을 보장하지 않음 — agents/ 파일 + bash 빠짐 여부까지 확인
@@ -480,7 +494,7 @@ sprint_contract (odev spawn 전 필수 — N1):
   2. 페르소나, 담당 파일, 단위작업, TODO 경로
   3. 계획서_경로: "$HOME/.claude/session-env/${UUID}/plans/oplan_final.md (또는 plan_1.md)"
   4. 파일_할당_매트릭스_경로: "$HOME/.claude/session-env/${UUID}/file_assignment.json"
-  5. 프로젝트 컨텍스트: "Skill('oinfra_{project}') 호출"  # 팀에이전트가 실행할 텍스트
+  5. 프로젝트 컨텍스트: "프로젝트 인프라는 INFRA.md 참조(경로는 프롬프트의 [INFRA_INJECT] 줄)"  # 팀에이전트가 실행할 텍스트
   6. 대화ID: "대화ID: {CONV_ID}"
   7. oi_queue_포함 (spawn 직전 메인이 확인 후 포함 — P1):
      # spawn 프롬프트 조립 전 oi_queue 파일 확인
@@ -509,7 +523,7 @@ sprint_contract (odev spawn 전 필수 — N1):
   금지: 일부 odev 미반환 상태에서 otest spawn (절대 금지)
 
 odev 완료 후:
-  0. checkpoint_기록_odev_완료: mcp__oio__bash_exec(command='bash ${HARNESS_HOOK_DIR}/lib/checkpoint_write.sh "${UUID}" "DEV_AGENT_DONE" "DEV" "" "odev-{N}" "완료"')
+  0. checkpoint_기록_odev_완료: mcp__oio__bash_exec(command='bash ${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/checkpoint_write.sh "${UUID}" "DEV_AGENT_DONE" "DEV" "" "odev-{N}" "완료"')
   1. 각 odev에 shutdown_with_verify 실행 (ok/references/SHUTDOWN_PROTOCOL.md "shutdown_with_verify 절차" 참조 — ok SKILL.md "shutdown_with_verify"에도 동일 정의)
   2. shutdown_sent 플래그 기록: 각 odev 에이전트 파일에 echo "shutdown_sent=true" >> $HOME/.claude/session-env/${UUID}/agents/odev-{N}
   2.7. pane 소멸 확인 + kill escalation (★ 필수 — L-362 — 2026-04-11):
@@ -538,8 +552,8 @@ odev 완료 후:
         fi
       done
     Agent_tool_방식_예외: pane_id 없는 에이전트 → 이 절차 스킵 (pane 없음이 정상)
-  2.5. checkpoint_기록_DEV_ALL_DONE: mcp__oio__bash_exec(command='bash ${HARNESS_HOOK_DIR}/lib/checkpoint_write.sh "${UUID}" "DEV_ALL_DONE" "DEV" "" "" ""')
-  3. 체크포인트 검증: bash ~/.claude/hooks/checkpoint_verify.sh "{팀명}" {odev수} "DEV완료→TEST진입" "${UUID}"
+  2.5. checkpoint_기록_DEV_ALL_DONE: mcp__oio__bash_exec(command='bash ${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/checkpoint_write.sh "${UUID}" "DEV_ALL_DONE" "DEV" "" "" ""')
+  3. 체크포인트 검증: bash ${HARNESS_HOME:-$HOME/.harness}/current/hooks/checkpoint_verify.sh "{팀명}" {odev수} "DEV완료→TEST진입" "${UUID}"
   4. otest spawn (3단계 — TEST 상태 전파는 3단계 spawn_직전에서 수행)
 ```
 
@@ -569,6 +583,66 @@ otest_done_guard.sh (Evidence Gate — ok_pipeline 관리):
 ```
 
 ```yaml
+otest_자원_축_병렬 (2026-10-04 — "otest 1개" 원칙의 목적을 자원 축 단위로 재정의):
+  목적: 같은 자원을 두 otest 가 동시에 건드리지 않게 한다. "개수 1"은 수단이었고 목적이 아니다.
+  자원_축:
+    데스크톱: 데스크톱 앱 실행본, 빌드 산출물(bin/obj), 사용자 데스크톱 화면·입력
+    모바일:   에뮬레이터·실기기, adb, APK 빌드 산출물
+    웹:       헤드리스 브라우저, 웹 빌드 산출물, 웹 테스트 URL(웹은 앱과 같은 게이트웨이 프로토콜을 쓴다)
+  규칙:
+    - 축이 다르면 동시 실행 허용 (데스크톱 otest 1개 + 모바일 otest 1개 + 웹 otest 1개)
+    - 같은 축 otest 2개는 금지 (기존 원칙 그대로)
+  이름_규약 (단일 출처: hooks/lib/otest_axis.sh — hook 이 이 이름으로 축을 판정한다):
+    데스크톱: otest-{N}      (기존 이름 그대로 — otest-1, otest-2 …)
+    모바일:   otest-m-{N}    (otest-m-1, otest-m-2 … / 별칭 otest-mobile-{N})
+              접미 변형도 모바일로 판정: otest-{임의}-m, otest-{임의}-mobile (예: otest-c1-m)
+    웹:       otest-w-{N}    (otest-w-1, otest-w-2 … / 별칭 otest-web-{N})
+              접미 변형도 웹으로 판정: otest-{임의}-w, otest-{임의}-web (예: otest-c1-w)
+    ⚠️ 데스크톱 otest 이름은 '-m' 또는 '-mobile' 로 끝나면 안 된다 — hook 이 모바일 축으로 판정한다.
+    ⚠️ 데스크톱·모바일 otest 이름은 '-w' 또는 '-web' 으로 끝나도 안 된다 — hook 이 웹 축으로 판정한다. 'otest-m-w' 같은 혼합 이름 금지.
+  축별_완료_마커 (evidence/ 하위 — 서로의 마커를 만들지 말 것):
+    데스크톱 otest: otest_done
+    모바일 otest:   otest_done_m  (+ 진입 즉시 otest_m_started 생성)
+    웹 otest:       otest_done_w  (+ 진입 즉시 otest_w_started 생성)
+  spawn_판정 (메인):
+    - 변경 범위에 데스크톱과 모바일이 둘 다 있으면 → otest 2개를 같은 메시지에서 병렬 spawn
+        Agent(name="otest-1", ...)  — 데스크톱 축만 담당
+        Agent(name="otest-m-1", ...) — 모바일 축만 담당
+      spawn 직전 evidence/otest_axes 에 "desktop mobile" 기록 (mcp__oio__file_write, overwrite=true)
+    - 변경 범위에 웹이 있으면 웹 축 otest-w-1 을 같은 메시지에서 함께 병렬 spawn (3축 동시 spawn: 데스크톱 + 모바일 + 웹)
+        Agent(name="otest-w-1", ...) — 웹 축만 담당 (헤드리스 브라우저)
+      spawn 직전 evidence/otest_axes 에 해당 축을 모두 기록 (예: "desktop mobile web")
+    - 웹만 → otest-w-1 1개 + evidence/otest_axes 에 "web" 기록
+        (이 기록이 있어야 otest_done_guard 가 otest_done 대신 otest_done_w 를 요구한다 — 웹이 데스크톱 마커를 대체하지는 않는다)
+    - 데스크톱만 → 기존과 동일 (otest-1 1개, otest_axes 기록 불필요)
+    - 모바일만 → otest-m-1 1개 + evidence/otest_axes 에 "mobile" 기록
+        (이 기록이 있어야 otest_done_guard 가 otest_done 대신 otest_done_m 을 요구한다)
+    - 각 프롬프트에 "담당 축: 데스크톱|모바일|웹 — 다른 축 자원(빌드·기동·디바이스·화면)에 손대지 말 것" 명시
+  물리_게이트 (otest_done_guard.sh — odone spawn 시):
+    - 이번 파이프라인에 모바일 흔적(otest_axes 의 mobile / otest_m_started / agents/otest-m-*)이 있으면
+      otest_done_m 도 필수 → 데스크톱이 먼저 끝나도 모바일 완료 전에는 odone 진입이 차단된다.
+    - 웹 흔적(otest_axes 의 web / otest_w_started / agents/otest-w-*)이 있으면 otest_done_w 도 필수 — 동일 방식으로 차단된다.
+    - 웹 축은 헤드리스 브라우저 사용이 기본이며 사용자 화면에 창을 띄우지 않는다.
+    - 같은 축 2개 동시 spawn 을 막는 hook 은 없다(동일 이름 재spawn 차단 L-DUP1 만 존재) — 위 이름 규약 준수는 메인 책임.
+  공유_자원_조정 (두 otest 사이 — 축이 달라도 겹치는 것):
+    테스트_데이터_정리:
+      - 정리(삭제) 목록은 하나만 둔다: evidence/test_data_cleanup.list 에 각 축 otest 가 각자 생성한 키를
+        "축 키" 형식으로 append 만 한다 (덮어쓰기 금지).
+      - 실제 정리 실행은 데스크톱 otest 1곳에서, 모바일·웹 otest 완료 보고를 메인 경유로 확인한 뒤 1회 수행한다.
+        (데스크톱이 없으면 남은 축 중 1곳이 수행 — 모바일 단독이면 모바일 otest, 웹 단독이면 웹 otest)
+      - 한 otest 가 상대 축이 만든 데이터를 지우거나 고치는 것 금지.
+    공용_서버(백엔드·게이트웨이·DB 스키마 등 두 클라이언트가 함께 붙는 서버):
+      - 웹은 앱과 같은 게이트웨이 프로토콜을 쓰므로 이 규칙은 웹 otest 에도 동일하게 적용된다 (공용 서버 재기동·재배포 금지).
+      - 어느 otest 도 단독으로 재기동·재배포·설정 변경하지 않는다.
+      - 필요하면 메인(team-lead)에 SendMessage 로 요청 → 메인이 다른 otest 진행 상황을 확인·통지한 뒤 1회 수행.
+      - 서버 측 빌드·배포가 이번 변경에 포함되면 데스크톱 otest 가 Phase 1 에서 1회 수행하고,
+        모바일·웹 otest 는 그 완료 통지(메인 경유)를 받은 뒤 서버 의존 검증을 시작한다.
+    공용_DB_행: 같은 레코드를 둘 이상의 otest 가 동시에 수정하는 시나리오 금지 — 축별로 다른 테스트 레코드를 쓴다.
+  완료_처리 (메인):
+    - spawn 한 모든 축 otest 의 Agent 반환/완료 보고를 모두 받은 뒤에만 TEST_ALL_DONE 기록·odone 진행
+    - 한쪽 FAIL 이면 그 축만 역라우팅(RETEST 는 FAIL 난 축 otest 에만 발송). PASS 한 쪽은 대기 유지.
+    - shutdown·shutdown_sent 기록은 두 에이전트 각각, checkpoint_verify 예상 멤버 수 = spawn 한 축 수(1~3)
+
 적용: o3~o5만 (o2는 2.5단계 obr으로 대체)
 
 spawn_직전 (진입 기반):
@@ -578,7 +652,7 @@ spawn_직전 (진입 기반):
   o3/o4: Agent(subagent_type="general-purpose", team_name="{팀명}", name="otest-1", model="sonnet", mode="bypassPermissions", prompt="...")
   o5:    Agent(subagent_type="general-purpose", team_name="{팀명}", name="otest-1", model="fable", mode="bypassPermissions", prompt="...")
 # ⚠️ 필수: team_name= 파라미터 반드시 포함. 누락 시 hook 차단됨. 팀은 첫 Agent 호출 시 자동 생성되며 소멸하지 않으므로 별도 사전 생성 불필요.
-checkpoint_기록_TEST_START: mcp__oio__bash_exec(command='bash ${HARNESS_HOOK_DIR}/lib/checkpoint_write.sh "${UUID}" "TEST_START" "TEST" "" "otest-1" "spawn"')
+checkpoint_기록_TEST_START: mcp__oio__bash_exec(command='bash ${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/checkpoint_write.sh "${UUID}" "TEST_START" "TEST" "" "otest-1" "spawn"')
 에이전트_프롬프트_구성:
   # 아래 항목들은 팀에이전트 prompt= 문자열에 포함시킬 텍스트다. 메인이 직접 실행하는 것이 아님.
   0. PIPELINE_UUID: "PIPELINE_UUID={UUID}"
@@ -597,7 +671,7 @@ checkpoint_기록_TEST_START: mcp__oio__bash_exec(command='bash ${HARNESS_HOOK_D
     이 프롬프트에 빌드/배포/구동 명령을 직접 작성하지 말 것.
     → Skill('otest_infra') 호출 시 otest_run이 자동 경유됨."
   2. 수정 파일 목록, 검증 체크리스트 (L-047 필수)
-  3. 프로젝트 컨텍스트: "Skill('oinfra_{project}') 호출"  # 팀에이전트가 실행할 텍스트
+  3. 프로젝트 컨텍스트: "프로젝트 인프라는 INFRA.md 참조(경로는 프롬프트의 [INFRA_INJECT] 줄)"  # 팀에이전트가 실행할 텍스트
   4. 대화ID: "대화ID: {CONV_ID}"
   5. UI_테스트_필수 (L-240): UI 파일(.xaml/Designer.cs/View*.cs/ViewModel*.cs) 변경 포함 시
        - o3/o4: "Skill('otestuiwinforms') 필수 실행"
@@ -606,13 +680,13 @@ checkpoint_기록_TEST_START: mcp__oio__bash_exec(command='bash ${HARNESS_HOOK_D
 비정상_반환_처리: Agent 반환 시 완료 보고 없으면 → 재spawn 1회 시도 (reroute_count +1)
 실패_시: odebug 호출 → 수정 → otest 재실행. 빌드 실패 시 odev 역라우팅 (→ 역라우팅 섹션 참조)
 otest 완료 후:
-  0. checkpoint_기록_TEST_ALL_DONE: mcp__oio__bash_exec(command='bash ${HARNESS_HOOK_DIR}/lib/checkpoint_write.sh "${UUID}" "TEST_ALL_DONE" "TEST" "" "" ""')
-  0.5. auto/RALPH 잔여 계약 보고 확인 (otest_verify "auto/RALPH DONE 전 잔여 계약 검증" 절차 결과 —
+  0. checkpoint_기록_TEST_ALL_DONE: mcp__oio__bash_exec(command='bash ${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/checkpoint_write.sh "${UUID}" "TEST_ALL_DONE" "TEST" "" "" ""')
+  0.5. auto/ROOF 잔여 계약 보고 확인 (otest_verify "auto/ROOF DONE 전 잔여 계약 검증" 절차 결과 —
        신규 2026-08-29, otest_verify/SKILL.md 참조):
-       otest가 "[otest] auto/RALPH 잔여 계약 미충족" 메시지를 보냈으면 (auto=ON 또는
-       status에 RALPH 없는 세션은 이 메시지 자체가 발생하지 않음 — 무조건 통과):
+       otest가 "[otest] auto/ROOF 잔여 계약 미충족" 메시지를 보냈으면 (auto=ON 또는
+       status에 ROOF(구 RALPH 포함 — ROOF-COMPAT) 없는 세션은 이 메시지 자체가 발생하지 않음 — 무조건 통과):
          a. mcp__oio__session_state(uuid="${UUID}", key="state", value="PLAN")
-         b. oralph_active(또는 oralph_active.json) current_iteration을 +1 하여 재기록
+         b. oroof_active(또는 oroof_active.json; 구 세션은 oralph_active(.json) — ROOF-COMPAT, deprecation window 1주기) current_iteration을 +1 하여 재기록
             (mcp__oio__file_read로 기존 JSON 읽은 뒤 current_iteration만 갱신,
              mcp__oio__file_write overwrite=true — 신규 카운터 생성 금지)
          c. oplan 팀에이전트 재spawn (Agent name="oplan-{N}", team_name="{팀명}", model="sonnet",
@@ -629,11 +703,23 @@ otest 완료 후:
        otest로부터 해당 메시지가 없으면 4번으로 정상 진행
   1. otest에 shutdown_with_verify 실행 (ok/references/SHUTDOWN_PROTOCOL.md "shutdown_with_verify 절차" 참조)
   2. shutdown_sent 플래그 기록: echo "shutdown_sent=true" >> $HOME/.claude/session-env/${UUID}/agents/otest-1
-  3. 체크포인트 검증: bash ~/.claude/hooks/checkpoint_verify.sh "{팀명}" 1 "TEST완료→DONE진입" "${UUID}"
+  3. 체크포인트 검증: bash ${HARNESS_HOME:-$HOME/.harness}/current/hooks/checkpoint_verify.sh "{팀명}" 1 "TEST완료→DONE진입" "${UUID}"
   4. otest_done_guard hook 검증 (3.5단계) → 통과 시 odone spawn, 실패 시 otest 재spawn
      (PreToolUse_done_gate.sh는 0.5를 건너뛰고 곧바로 state=DONE을 쓰려는 비정상 경로에서만
       발동하는 최종 안전망 — 정상 경로에서는 0.5가 먼저 처리하므로 발동하지 않는다)
 ```
+
+### 3단계 보강: QA 단계 축 (QA 선언 프로젝트 한정)
+
+원문 지시: "앞으로도 qa서버까지는 테스트를 진행하도록 하라. 다만 운영db와 연계되어있으므로 조심하고 최소한의 테스트만 진행하고 테스트전으로 완벽하게 되돌릴수있는 테스트만 진행하여야한다."(사용자 지시, 2026-10-10)
+
+- 프로젝트에 `.claude/qa_tier.json`(QA 선언, enabled=true, applies_tiers 에 현재 tier 포함)이 있으면 otest 축에 **QA 축(서버·DB 스냅샷 소유자 1명)**을 추가한다. 선언이 없으면 이 절은 적용하지 않는다.
+- 리드는 QA 배포가 끝난 뒤 QA 축 담당을 spawn 한다. 데스크톱·모바일 축과 병렬로 돌리되, 스냅샷(before/after)과 원복 쓰기는 QA 축 1명만 소유한다.
+- 원복 불가 항목은 **계획 단계에서 판정표로 걸러 낸다**. 시험 대상은 시험 전 상태로 완전 원복할 수 있는 최소 항목뿐이며, 판정표에 없는 항목은 시험하지 않는다.
+- 시험 순서는 스냅샷(before) → 시험 표식 → 삭제·원복 → 스냅샷(after) → 전후 대조이다.
+- QA 축 spawn 전에 계획서의 원복 시나리오(qa_reversibility_draft.json 등)가 있는지 확인한다. 없으면 oplan 으로 되돌린다.
+- 완료 시 `${SESSION_DIR}/evidence/qa_test_done` 마커를 쓴다. 첫 줄은 `PASS|PARTIAL|SKIPPED <ISO8601>`, PASS·PARTIAL 은 `before=`·`after=`·`compare=` 경로 줄, SKIPPED 는 `reason=` 줄(선언의 skip_reason_min_len 이상)을 포함한다.
+- 전후 state 가 불일치하면 DONE 전이는 done_gate 가 차단한다. 면제(SKIPPED)는 사용자에게 묻지 않고 리드·otest 가 판단해 쓴다 — 앱·서버 소스 변경이 없거나 QA 시험이 해당되지 않을 때만, reason= 에 근거를 남긴다(감사 기록, 사용자 지시 2026-10-27 15:53). 운영 배포 승인은 별도 유지다.
 
 ### 3.5단계: otest_verify (otest→odone 전환 게이트)
 
@@ -656,14 +742,14 @@ spawn_직전 (진입 기반):
 
 실행: Agent(subagent_type="general-purpose", team_name="{팀명}", name="odone-1", model="sonnet", mode="bypassPermissions", prompt="...")
 # ⚠️ 필수: team_name= 파라미터 반드시 포함. 누락 시 hook 차단됨. 팀은 첫 Agent 호출 시 자동 생성되며 소멸하지 않으므로 별도 사전 생성 불필요.
-checkpoint_기록_DONE_START: mcp__oio__bash_exec(command='bash ${HARNESS_HOOK_DIR}/lib/checkpoint_write.sh "${UUID}" "DONE_START" "DONE" "" "odone-1" "spawn"')
+checkpoint_기록_DONE_START: mcp__oio__bash_exec(command='bash ${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/checkpoint_write.sh "${UUID}" "DONE_START" "DONE" "" "odone-1" "spawn"')
 에이전트_프롬프트_구성:
   # 아래 항목들은 팀에이전트 prompt= 문자열에 포함시킬 텍스트다. 메인이 직접 실행하는 것이 아님.
   0. PIPELINE_UUID: "PIPELINE_UUID={UUID}"
   0.5. 도구 규칙: "Skill('agent_profiles') 로딩 후 [필수 규칙] 블록 준수 — 모든 셸 명령은 mcp__oio__bash_exec, 파일 I/O는 mcp__oio__file_* (내장 Bash/Read/Edit/Write 사용 시 write_guard 차단)"
   1. 스킬 로딩: "Skill('odone') 호출하여 스킬 로딩 후 실행"
   2. 경로 지정 + 수정 파일 목록
-  3. 프로젝트 컨텍스트: "Skill('oinfra_{project}') 호출"  # 팀에이전트가 실행할 텍스트
+  3. 프로젝트 컨텍스트: "프로젝트 인프라는 INFRA.md 참조(경로는 프롬프트의 [INFRA_INJECT] 줄)"  # 팀에이전트가 실행할 텍스트
   4. 대화ID: "대화ID: {CONV_ID}"
 경로 (tier별 분기):
   o3: Fast Path (odone_review → odone_docs → odone_git)
@@ -679,16 +765,17 @@ checkpoint_기록_DONE_START: mcp__oio__bash_exec(command='bash ${HARNESS_HOOK_D
   - o1/o2: odone 미실행 (ofinish Step 1.5 경량 교훈 + Step 7.5 경량 커밋으로 대체)
 
 odone 완료 후:
-  0. checkpoint_기록_DONE_ALL_DONE: mcp__oio__bash_exec(command='bash ${HARNESS_HOOK_DIR}/lib/checkpoint_write.sh "${UUID}" "DONE_ALL_DONE" "DONE" "" "" ""')
+  0. checkpoint_기록_DONE_ALL_DONE: mcp__oio__bash_exec(command='bash ${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/checkpoint_write.sh "${UUID}" "DONE_ALL_DONE" "DONE" "" "" ""')
   1. odone에 shutdown_with_verify 실행 (ok/references/SHUTDOWN_PROTOCOL.md "shutdown_with_verify 절차" 참조)
   2. shutdown_sent 플래그 기록: echo "shutdown_sent=true" >> $HOME/.claude/session-env/${UUID}/agents/odone-1
-  3. 체크포인트 검증: bash ~/.claude/hooks/checkpoint_verify.sh "{팀명}" 0 "DONE완료→FINISH" "${UUID}"
+  3. 체크포인트 검증: bash ${HARNESS_HOME:-$HOME/.harness}/current/hooks/checkpoint_verify.sh "{팀명}" 0 "DONE완료→FINISH" "${UUID}"
   3. ofinish 실행 (pane 정리 + 팀 삭제 — FINISH 상태 전파는 ofinish Step 0.5에서 수행)
 ```
 
 ### 4.5단계: Phase Batch Auto-Loop (다단계 자동 진행)
 
-> **목적**: oplan이 multi-phase batch 계획을 세운 경우, 모든 batch를 자동으로 순차 실행.
+> **목적**: oplan이 multi-phase batch 계획을 세운 경우, 모든 batch를 자동으로 끝까지 실행.
+> **병렬 기본 (2026-10-10)**: 선행이 충족되고 파일이 겹치지 않는 독립 batch 는 동시에 진행한다 — 아래 "3.5 독립 batch 병렬 집합 계산". 판정 체크리스트 단일 출처는 odev_parallel "병렬 판정 체크리스트".
 > **트리거**: odone 완료 보고 수신 직후 (ofinish 진입 전).
 > **조건**: phase_batches.json 존재 AND current_batch < total_batches.
 > **하위 호환**: phase_batches.json 미존재 시 기존 단일 사이클 동작 (이 단계 스킵 → ofinish 진입).
@@ -828,11 +915,50 @@ except Exception as e:
        current_batch >= total_batches:
          → 전체 batch 완료 → "전체 완료 시" 절차 → ofinish 진입
        current_batch < total_batches:
-         → 다음 batch 자동 진행 (아래 4번 절차)
+         → 3.5 독립 batch 병렬 집합 계산 → 집합 크기 1 이면 아래 4번(기존 직렬 2PC), 2 이상이면 3.6(병렬 집합 진행)
 
-    4. 다음 batch 자동 진행 (2PC 트랜잭션 — v2 B-1):
+    3.5. 독립 batch 병렬 집합 계산 (2026-10-10 — 사용자 지시 "병렬 가능한 작업은 자동 병렬"):
+       입력: phase_batches.json(불변) + 완료 집합 DONE = {N | evidence/batch_N_done 존재} ∪ active_phase_batches.json.done
+       READY = { b | b ∉ DONE, b 미착수, depends_on_batch 와 extra_depends_on 전부 ∈ DONE(null/빈 목록은 충족) }
+       병렬 집합 선택 (batch_id 오름차순 탐욕):
+         busy = ∅
+         for b in sorted(READY):
+           files(b) = b.file_assignment 의 모든 files (소문자·끝 슬래시 제거 정규화)
+           files(b) ∩ busy ≠ ∅ → 이번 집합에서 제외(다음 회차 후보)
+           odev_parallel "직렬_사유" 4·5(같은 프로젝트 빌드·같은 DB 객체 DDL·같은 기기/포트)에 걸리면 → 제외
+           그 외 → 집합에 추가, busy |= files(b)
+       계산 스니펫 (mcp__oio__bash_exec — 판정만, 쓰기 없음):
+         python3 -c "
+import json,os
+S=os.environ.get('CLAUDE_CONFIG_DIR',os.path.expanduser('~/.claude'))+'/session-env/${UUID}'
+d=json.load(open(S+'/plans/phase_batches.json'))
+done={int(n[6:-5]) for n in os.listdir(S+'/evidence') if n.startswith('batch_') and n.endswith('_done') and n[6:-5].isdigit()}
+F=lambda b:{f.lower().rstrip('/') for a in (b.get('file_assignment') or {}).values() for f in a.get('files',[])}
+busy=set();pick=[]
+for b in sorted(d['batches'],key=lambda x:x['batch_id']):
+  i=b['batch_id']; deps=[x for x in [b.get('depends_on_batch')]+list(b.get('extra_depends_on') or []) if isinstance(x,int)]
+  if i in done or not all(x in done for x in deps): continue
+  if F(b)&busy: continue
+  pick.append(i); busy|=F(b)
+print(json.dumps(pick))"
+       기록: active_phase_batches.json (아래 "루프_상태_파일" 참조) — phase_batch.lock(0.5단계) 보유 중에만 쓴다.
+
+    3.6. 병렬 집합 진행 (집합 크기 ≥ 2):
+       a. 진행 배너: "🔄 Phase Batch {집합} 병렬 진행 ({완료}/{total})" + 직렬로 미룬 READY batch 와 사유 번호 1줄
+       b. file_assignment.json = 집합 batch 들의 file_assignment 를 batches[] 형식으로 합쳐 쓴다(에이전트 이름은 batch 별 고유 — 예 odev-{batch}-{n})
+       c. state → DEV, 집합 전체의 odev 를 한 응답에서 동시 spawn (한 메시지 최대 4개, 초과분은 다음 응답에서 즉시 — 완료 대기 금지. + 세션 동시 생존 팀원 ≤9(메인 포함 10) 상한(F-AGENT-CAP) — 남은 슬롯만큼만 보내고 나머지는 팀원 종료 시 즉시)
+          상한에 걸리면 차단 안내의 회수 후보(1순위 완료 후 유휴 → 2순위 agent_keep 대기, 작업 중 제외)에게 메인이 shutdown_request → pane 소멸 실측 → 재spawn (hook 은 SendMessage 불가). 회수한 keep 팀원은 필요 시 work/<이름>_result.json 으로 같은 역할 재spawn — 상세 WAVE_SPAWN.md 4-1
+          프롬프트에 "Phase Batch {b}/{total} (병렬 집합 {집합})" 명시
+       d. odev 전원 완료 대기 → otest 는 자원 축당 1개로 집합 전체 변경을 한 번에 검증 → odone 1회
+       e. 성공: 집합의 각 batch 에 evidence/batch_{b}_done 기록 + checkpoint BATCH_NEXT(batch=b) 1줄씩
+          active_phase_batches.json.done 에 추가, active 비움, current_phase_batch = (미완료 batch 최소값, 없으면 total) — 레거시 호환
+          (batch_transition.py 2PC 는 from→to 단일 전이용이므로 병렬 집합에는 쓰지 않는다. 원자성은 phase_batch.lock + 파일 단위 원자 쓰기로 대신한다)
+       f. 실패: 실패 batch 만 reroute_count_batch_{b} +1 → 역라우팅(해당 batch odev 재spawn). 성공한 batch 는 done 처리 유지
+       g. 4.5단계 절차 2번으로 재진입 → 3.5 재계산(새로 READY 가 된 batch 포함)
+
+    4. 다음 batch 자동 진행 (2PC 트랜잭션 — v2 B-1 — 병렬 집합 크기 1 일 때):
        0. [사전 교차 불변식 검증] (AC-25/26/27/33):
-          VERIFY=$(python3 ~/.claude/lib/batch_transition.py verify \
+          VERIFY=$(python3 ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/lib/batch_transition.py verify \
             --uuid "${UUID}" --session-id "${SESSION_ID}" --owner-lock "${LOCK_ID}")
           echo "$VERIFY" | jq -e '.valid == true' >/dev/null || {
             echo "⚠️ 교차 불변식 위반 감지: $VERIFY"
@@ -861,7 +987,7 @@ except Exception as e:
 " 2>/dev/null
           fi
           next_batch=$((current_batch + 1))
-          TX_ID=$(python3 ~/.claude/lib/batch_transition.py prepare \
+          TX_ID=$(python3 ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/lib/batch_transition.py prepare \
             --uuid "${UUID}" --session-id "${SESSION_ID}" \
             --owner-lock "${LOCK_ID}" --from "${current_batch}" --to "${next_batch}")
           # 실패 시 AC-11/25/33 reject → ofinish 진입
@@ -889,7 +1015,7 @@ except Exception as e:
           # 5) 멱등성 체크 (이미 완료된 batch 스킵)
           if [ -f "$HOME/.claude/session-env/${UUID}/evidence/batch_${next_batch}_done" ]; then
             echo "⏭️ batch ${next_batch} 이미 완료됨 — ABORT + 다음 batch로 건너뜀"
-            python3 ~/.claude/lib/batch_transition.py abort \
+            python3 ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/lib/batch_transition.py abort \
               --tx-id "$TX_ID" --uuid "${UUID}" --session-id "${SESSION_ID}" \
               --owner-lock "${LOCK_ID}" --reason "idempotent_skip"
             next_batch=$((next_batch + 1))
@@ -940,14 +1066,14 @@ except Exception as e:
 
        f. [COMMIT 또는 ABORT 단계] (AC-11/12):
           odev 성공:
-            python3 ~/.claude/lib/batch_transition.py commit \
+            python3 ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/lib/batch_transition.py commit \
               --tx-id "$TX_ID" --uuid "${UUID}" --session-id "${SESSION_ID}" \
               --owner-lock "${LOCK_ID}"
             # 성공 시 current_batch가 next_batch로 원자 승격 (AC-11)
             echo "✅ COMMIT tx=${TX_ID:0:8} (current=${next_batch})"
 
           odev 실패:
-            python3 ~/.claude/lib/batch_transition.py abort \
+            python3 ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/lib/batch_transition.py abort \
               --tx-id "$TX_ID" --uuid "${UUID}" --session-id "${SESSION_ID}" \
               --owner-lock "${LOCK_ID}" --reason "odev_fail"
             # AC-12: pending 삭제, current_batch 유지
@@ -955,7 +1081,7 @@ except Exception as e:
             → 역라우팅 로직 진입 (reroute_limit 체크)
 
        g. checkpoint 기록 (COMMIT 성공 시):
-          mcp__oio__bash_exec(command='bash ${HARNESS_HOOK_DIR}/lib/checkpoint_write.sh "${UUID}" "BATCH_NEXT" "DEV" "" "" "batch=${next_batch}/${total_batches} tx=${TX_ID}"')
+          mcp__oio__bash_exec(command='bash ${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/checkpoint_write.sh "${UUID}" "BATCH_NEXT" "DEV" "" "" "batch=${next_batch}/${total_batches} tx=${TX_ID}"')
           # current_phase_batch 파일도 갱신 (레거시 호환)
           mcp__oio__file_write(path="$HOME/.claude/session-env/${UUID}/current_phase_batch", content="${next_batch}", overwrite=true)
 
@@ -977,7 +1103,7 @@ except Exception as e:
         Step 3: git log 확인 (커밋 해시 검증)
           HASH=$(cd $(git rev-parse --show-toplevel) && git log -1 --format="%H" 2>/dev/null)
           if [ -z "$HASH" ]; then
-            Step 4: 커밋 실패 → AskUserQuestion("커밋 생성 실패. 수동 처리 후 계속?")
+            Step 4: 커밋 실패 → 원인 1줄 기록 후 odone_git 1회 재시도, 그래도 실패면 최종 보고 보류 목록에 남기고 ofinish 진입 (사람 대기 없음)
           else
             echo "✅ 커밋 확인: ${HASH:0:8}"
           fi
@@ -1026,7 +1152,7 @@ except Exception as e:
           # max_batches 초과와 동일한 폴백 절차:
           # Step 1: odone 강제 실행 (Full Path, odone_git 포함)
           # Step 2: git log -1 --format="%H" 로 커밋 해시 검증
-          # Step 3: 해시 없으면 AskUserQuestion("커밋 생성 실패. 수동 처리 후 계속?")
+          # Step 3: 해시 없으면 odone_git 1회 재시도 → 실패 시 보류 목록 기록 후 진행 (사람 대기 없음)
           # Step 4: ofinish 진입
         fi
 
@@ -1047,6 +1173,14 @@ except Exception as e:
       수정 금지: odev/otest/odone 모두 읽기 전용
 
     주의: phase_batches.json의 current_batch 필드는 레거시 호환용이며 실제 로직에서 참조 금지.
+
+    active_phase_batches.json (병렬 집합 표현 — 2026-10-10):
+      경로: $HOME/.claude/session-env/${UUID}/active_phase_batches.json
+      스키마: {"active":[2,3], "done":[1], "deferred":[{"batch":5,"reason":"직렬_사유1 공용 파일 중첩(batch 2)"}], "updated_at":"ISO"}
+      갱신: ok_pipeline 만(phase_batch.lock 보유 중). 부재 시 = 직렬 모드(current_phase_batch 단독) — 하위 호환
+      current_phase_batch 와의 관계: current_phase_batch 는 "미완료 batch 최소값"(레거시·autoloop_bypass_guard·oresume 호환)으로 유지하고,
+        실제 진행 집합의 정본은 active_phase_batches.json.active 다. ABORT/PAUSE 특수값은 current_phase_batch 에만 쓴다.
+      완료 판정 정본: evidence/batch_{N}_done (병렬 가드 hook 도 이 파일로 선행 충족을 판정한다)
 ```
 
 ### 전체 완료 시
@@ -1063,6 +1197,103 @@ except Exception as e:
   3. ofinish 실행 (FINISH 상태 전파는 ofinish Step 0.5에서 수행)
   주의: 각 단계 완료 시 이미 shutdown_request 발송됨. pane 물리적 정리만 ofinish가 수행
 ```
+
+---
+
+## 병렬 극대화 체크리스트 (리드 — 배정·spawn·대기 관리, L-1202)
+
+리드는 배정 메시지를 보내기 전과 대기 중 팀원이 생길 때마다 아래 8항목을 확인한다.
+
+| # | 항목 | 리드 행동 | 물리 장치 |
+|---|---|---|---|
+| 1 | 독립 과업 분리 | 서로 다른 파일을 건드리는 과업은 팀원을 따로 두고 같은 응답에서 동시에 spawn 한다. 한 메시지에 "추가 배정 N건"으로 몰지 않는다. 순서 의존(앞 결과를 뒤가 쓰는) 과업만 한 팀원에게 묶는다. | `PreToolUse_multi_task_assign_guard.sh`(경고) |
+| 2 | 파일 소유자 1명 | 파일마다 담당 팀원은 1명이다. 재배정할 때는 기존 담당에게 먼저 "그 파일을 멈춰라"를 보내고 회신을 받은 뒤 새 담당에게 넘긴다. 메시지가 늦게 도착할 수 있으니 두 사람이 같은 파일을 동시에 가진 시간을 만들지 않는다. | — |
+| 3 | 대기 팀원 선행 배정 | "입력이 오면 하겠다"며 쉬는 팀원에게는 지금 할 수 있는 부분 작업(부분 병합·초안·검증 스크립트·도착한 산출물 선처리)을 준다. | `teammate_idle_guard` P 규칙(경고) |
+| 4 | 90초 호출 상한 | 팀원 지시에 "bash_exec 한 번은 90초 이내"를 넣는다. 120초를 넘긴 MCP 호출은 자동으로 백그라운드로 넘어가고, 그런 호출이 남은 세션은 이후 oio 호출이 모두 "Invalid request parameters"로 실패할 수 있다. | `PreToolUse_oio_bash_duration_guard.sh`(팀원 차단) |
+| 5 | 폴링은 짧게 끊고 메시지 확인 | 긴 대기는 `setsid nohup … &` 로 분리하고 `timeout 85 bash -c 'until <조건>; do sleep 10; done'` 를 반복 호출해 확인한다. 호출 사이에 도착한 메시지를 먼저 처리한다. Monitor 에는 test·`[ ]`·pgrep·sleep·echo·date·true·false 와 그것만으로 된 `until`/`while` 대기 루프, `;`·`&&`·`||` 사슬이 통과한다. cat·tail·grep·ls·awk 등 permissions.deny 명령이 섞이거나 리다이렉트·명령 치환·파이프·그 밖의 명령이 섞이면 막힌다. bash_exec 는 긴 명령을 자동으로 백그라운드로 넘기므로 `…; sleep N` 꼴 대기를 쓰지 않고, 결과 내용은 끝난 뒤 oio 로 읽는다. | 같은 hook(Monitor 선검사) + `bg_job_guard` |
+| 6 | 물리 자원만 직렬 | 직렬로 돌리는 것은 단일 인스턴스 앱·실기기·같은 프로젝트 빌드·phase_batches 의 내부 스테이지 순서뿐이다. 그 밖의 독립 과업은 병렬이 기본이다. | `PreToolUse_Agent_parallel_spawn_guard.sh`(stage 인식) |
+| 7 | 적극 병렬 + 세션 동시 생존 팀원 ≤9(메인 포함 10) | 이 세션에서 동시에 살아 있는 팀원(oplan·odev·otest 등 전부 합산)은 `max_live_teammates`(9) 이하로 둔다. 메인을 포함하면 10개다. 초과분은 대기열에 두고, 보고를 끝낸 팀원을 즉시 shutdown 한 뒤 다음 spawn 을 보낸다. 상한에 걸리면 차단 안내의 회수 후보(1순위 유휴 → 2순위 keep 대기, 작업 중 제외)를 메인이 shutdown → pane 소멸 실측 → spawn 한다. | `PreToolUse_Agent_cap.sh`(7.5 closed — 정체 시에도 확정) + 구 경로 `PreToolUse_Agent_parallel_spawn_guard.sh` → `lib/agent_cap.py`(F-AGENT-CAP 차단·회수 후보) |
+| 8 | 부하 대기 기준(사용자 지시, L-600) | 무거운 시험이나 비가역 1회 실행 앞에서 부하 때문에 기다릴 때는 `load` 1분 평균 **50 이하**를 사전 거름으로 쓴다. 실행 가능 여부는 절대 부하값이 아니라 **같은 시간 상한의 직전 리허설 PASS 실측**으로 판정한다. 근거 없는 낮은 임계값(예: 10)으로 무기한 대기하는 것은 금지다. 다른 세션이 작업 중이면 부하는 50을 넘기 쉽다. 이 원칙은 다음 작업에도 자동 적용된다. | **물리 장치 없음(문서 규칙)** — 리드의 대기 판단을 강제할 hook 수단이 없다. 리드의 자율 준수에 달려 있다. |
+
+### 부하 정체 중 spawn 절차 (F-LOAD-STAGGER · spawn_ack_watch, 위 7·8항과 정합)
+
+- `load` 1분 평균이 50 이하이면 평소처럼 병렬 spawn 한다(8항의 사전 거름 기준과 같다).
+- 50을 넘으면 `PreToolUse_Agent_load_stagger.sh` 가 최근 20초 안 3번째 팀원 spawn 부터 보류한다. 2개씩 20초 간격으로 나눠 spawn 하고, 보류 안내의 "N초 뒤 재시도"를 지킨다. 7항의 동시 생존 상한(9)은 그대로 적용된다.
+- 이 hook 은 동시 기동 수를 줄여 소실 확률을 낮추는 완화책이다. 팀원 프로세스가 사라지는 원인 자체는 하네스 밖이라 고치지 못한다.
+- 소실 시 복구는 `TaskStop("<이름>")` 으로 남은 작업 항목을 정리한 뒤, 같은 역할을 다른 이름(예: odev-A6 → odev-A6b)으로 재spawn 하는 것이다. 같은 이름은 in-process 레지스트리 잔존으로 막힐 수 있다.
+- `spawn_ack_watch`(PostToolUse Agent, asyncRewake) 경보 해석은 이렇다.
+  - 기한(기본 150초) 안에 첫 지시 소비(ack)가 관측되지 않으면 "미소비" 경보가 온다. 먼저 SendMessage 로 재송신해 보고, 프로세스가 없으면 TaskStop 후 재spawn 한다.
+  - ack 뒤 연속 2회 프로세스가 없고 inbox 에 shutdown_request 도 없으면 "소실" 경보가 온다. 리드가 TaskStop 으로 의도적으로 멈춘 팀원이면 무시한다.
+  - 판정 불가는 조용히 끝난다(fail-open).
+
+## 팀원 생명주기 관리 (보고 후 대기·완료 즉시 shutdown·비정상 복구)
+
+> 팀원 pane 상태 점(`@agent_state`)은 팀원 hook(`pane_state_dot.sh`)과 판정기(`hooks/lib/teammate_turn_report.py`)가 정한다.
+> 리드는 아래 표의 상태를 보고 행동한다. 리드 가드(`hooks/lib/teammate_idle_guard.py`) 규칙 D/E/F 가 이 행동을 강제한다.
+
+### 상태 범례와 리드 행동
+
+| 상태 | 표시 | 의미 | 리드 행동 |
+|---|---|---|---|
+| run | ◜◝◞◟ 스피너 — 연한 배경 1초마다 빨강 colour217 → 초록 157 → 노랑 229 → 파랑 153 순환, 글자 검정 colour16 (테두리 선 colour203) | 작업 중 | 대기한다. |
+| idle | 빈 원 ◯ — 글자 green (선 green) | 보고 후 대기(정상, 중간 보고 있음) | 보고를 읽고 다음 지시 또는 shutdown 을 보낸다. |
+| silent | 빈 원 ◯ — 글자 magenta(자홍) (선 magenta) | 무보고 대기(이번 턴에 team-lead 보고 없음) | 즉시 상태를 묻는다. 장기화(기본 10분)되면 가드 D 가 차단하므로 아래 복구 절차를 수행한다. |
+| keep | 가득 찬 원 ⬤ — 글자 colour39(파랑) (선 colour39) | 재사용 대기(완료 보고 + 유효한 agent_keep) | 재사용할 작업을 지시한다. 만료되면 done 으로 바뀐다. |
+| done | 가득 찬 원 ⬤ — 글자 colour240(회색) (선 colour240) | 완료 보고 후 대기 = 정리 대상 | 즉시 shutdown_request 를 보낸다. 방치하면 가드 F 가 차단한다(기본 5분). |
+| 신호 종료 | 가득 찬 원 ⬤ — 글자 colour240(회색) | pane_dead(신호 또는 정상 종료 0) | shutdown 을 보내지 않았다면 비정상 종료다. 아래 복구 절차를 수행한다. 보냈다면 죽은 pane 을 정리한다. |
+| 오류 종료 | 가득 찬 원 ⬤ — 글자 yellow | pane_dead(0 이 아닌 종료 코드) | 아래 복구 절차를 수행한다. |
+
+우선순위는 pane_dead > done > keep > silent > idle > run 이다.
+
+원 모양 — 빈 원 ◯ = 살아서 다음 지시를 기다림(idle·silent), 가득 찬 원 ⬤ = 완료·종료로 리드 정리 대상(keep·done·pane 종료). 배경색은 동작 중(run)에만 쓴다.
+
+### 보고 후 대기 규칙 (팀원 측 강제)
+
+- 팀원은 매 턴 끝에 SendMessage(to="team-lead", summary 필수)로 진행·결과·막힌 점을 보고한 뒤 대기한다. 보고할 것이 없으면 "대기 — 사유" 한 줄이라도 보고한다.
+- `TeammateIdle_report_guard.sh`(TeammateIdle hook)가 이번 턴 무보고를 감지하면 exit 2 로 턴을 이어가게 한다. 같은 턴에서 최대 2회(`TRG_MAX_BLOCKS`) 차단한 뒤에는 silent 로 기록하고 놓아준다(무한 루프 방지).
+- 기록 파일은 `session-env/${UUID}/teammate_turn/{이름}.json` 이다. 스위치는 전역 `touch ${HARNESS_HOME:-$HOME/.harness}/current/hooks/.teammate_report_guard_off`, 세션 `session-env/${UUID}/teammate_report_guard_mode`(off|warn|block) 이다.
+
+### 완료 = 즉시 shutdown 원칙
+
+- 완료 보고를 받으면 **바로** 그 팀원에게 shutdown_request 를 보낸다. "나중에 쓸지도 모른다"는 이유로 남겨두지 않는다.
+- 재사용할 예정일 때만 `session-env/${UUID}/agent_keep/{이름}` 에 사유를 5자 이상 기록한다. 유효 시간은 120분(`TIG_KEEP_TTL_MIN`)이며, 그동안 상태가 keep(파랑 ◯)으로 표시된다.
+- 사유 없는 done 잔존과 신호 종료 잔존은 정리 대상이다. 가드 F(사유 없는 done)와 E(pane_dead)가 리드의 다른 도구 사용을 차단한다.
+
+### 사용자 중지·범위 지시 전파 / 실업무 쓰기 스냅샷 (사이클172 gate)
+
+- **중지·범위 지시(L-1195)**: 사용자 중지·범위 지시를 받으면 리드는 SendMessage 와 **함께** `mcp__oio__file_write` 로 `session-env/${UUID}/scope_markers/{팀원이름}.json`(팀 전체는 `_all.json`)에 `{"type":"stop|scope","message":"사용자 지시 원문","by":"team-lead","created_at":"ISO8601"}` 를 쓴다. `PreToolUse_stop_marker_gate.sh` 가 팀원의 다음 도구 호출을 1회 보류하며 원문을 전달하고, stop 이면 이후 읽기·SendMessage 외 도구를 차단한다. 해제는 리드가 파일을 삭제한다(팀원은 마커를 지울 수 없다). 비상 해제는 `hooks/DISABLE_STOP_MARKER_GATE` 이다. 또 PLAN~DONE 중 사용자 입력은 `UserPromptSubmit.sh` 가 `scope_markers/_user.json`(type=info, 중지성 어휘면 suspected=stop)에 자동 기록해 팀원에게 1회 전달한다. info 는 지속 차단하지 않으므로 **진짜 중지는 리드가 stop 마커를 써야 지속 차단된다**.
+- **실업무 행 스냅샷(L-1200)**: 팀원이 MySQL 실업무 테이블에 UPDATE/DELETE 하려면 먼저 `session-env/${UUID}/evidence/snapshot_{테이블}_{HHMMSS}.json` 에 `{"table","where","rows":[SELECT 결과],"taken_at"}` 를 남겨야 한다(`PreToolUse_snapshot_gate.sh`). `[cNNNtest]` 표식 행 한정 쓰기와 INSERT 는 통과한다. 앱(UI→GW) 경유 쓰기는 hook 이 감지하지 못하므로 그 경우도 같은 파일을 먼저 남긴다. 사후 게이트로 `verify_crud_executed.py --emit-from-goal` 이 item_crud:true 항목의 스냅샷 mtime < 첫 쓰기(write_ts/gw_log_ts)를 요구하며, 못 맞추면 make_ok 대신 make_partial 이다(표식 신규 행만이면 증거에 `"live_rows": false`).
+
+### 복구 절차 (pane_dead / 무보고 장기화 / API Connection lost)
+
+사례: 2026-10-08 09:38 oplan-1 이 API Connection lost 로 무보고 중단됐다. 사용자가 pane 을 보고서야 알았다.
+차단 중에도 아래 ①~③ 도구는 가드가 허용한다.
+
+1. **① pane 캡처**: `tmux capture-pane -p -t %N -S -300` 을 단독 명령으로 실행하고, 결과를 `mcp__oio__file_write` 로 `session-env/${UUID}/evidence/pane_capture_{이름}_{HHMMSS}.txt` 에 저장한다.
+2. **② 죽은 pane 정리**: 팀 config members 에서 그 팀원의 tmuxPaneId 를 확인한다(자기 팀 pane 만 대상). 확인 후 `tmux kill-pane -t %N` 을 단독 명령으로 실행한다. 타 세션 pane 은 건드리지 않는다.
+3. **③ 같은 역할 재spawn**: 이름은 `{역할}-{N+1}` 로 하고, model 과 team_name 은 원래와 같게 한다. 프롬프트에는 다음을 반드시 넣는다.
+   - (a) 원 spawn 프롬프트 요지
+   - (b) 마지막 handoff 파일 경로(`plans/handoff_*.md`)
+   - (c) ①의 캡처 파일 경로
+   - (d) 마지막으로 수신한 보고 원문
+   - (e) 완료·미완 항목 목록과 "중단 지점부터 재개, 완료분 재실행 금지" 지시
+4. **④ reroute_count 미증가**: 인프라 장애이므로 역라우팅 횟수에 넣지 않는다. 같은 역할이 연속 2회 실패하면 조기 종료하고 사용자에게 보고한다(기존 fallback 과 같다).
+5. **⑤ 교훈 위임**: 같은 원인이 2회 이상 반복되면 odone 이 LESSONS 에 교훈을 기록한다.
+
+### 팀원 교대 절차 (장기 팀원 메모리 누적 방지)
+
+- 기본 원칙은 **작업 1건 = 팀원 1개**다. 보고 후 즉시 shutdown 하며(위 "완료 = 즉시 shutdown 원칙"), 같은 팀원에 작업을 계속 얹지 않는다.
+- 장기 팀원(생존 90분 이상 또는 RSS 1200MB 이상)은 교대를 권고한다. 순서는 다음과 같다.
+  1. **인계 파일 작성**: 선임이 `session-env/${UUID}/plans/handoff_{이름}.md` 에 완료·미완 항목, 수정 파일, 막힌 점, 다음 단계를 남긴다.
+  2. **후임 spawn**: 이름은 `{역할}-{N+1}`, model·team_name 은 선임과 같게 하고 프롬프트에 인계 파일 경로와 "완료분 재실행 금지"를 넣는다.
+  3. **선임 shutdown**: 후임의 첫 보고를 확인한 뒤 선임에게 shutdown_request 를 보낸다.
+- `teammate_reaper`·`Stop_teammate_reaper` 는 사후 회수(유휴·고착 정리) 안전망이고, 이 절차는 그 전에 리더가 계획적으로 바꾸는 선제 교대다.
+
+### 한계
+
+- hook 은 Agent 를 호출할 수 없다. 따라서 자동 재spawn 은 불가하다. 리드 가드 E/D 차단으로 리드에게 복구를 강제한다.
+- in-process 모드 팀원은 TeammateIdle 가드 대상이 아니다(`--agent-id` 경로 식별 불가).
+- 이미 기동한 세션은 settings hooks 를 시작 시 캐시하므로, TeammateIdle 가드 등록은 새로 시작한 세션부터 적용된다.
 
 ---
 
@@ -1114,12 +1345,12 @@ handoff_artifact:
 
 ```yaml
 원칙: 각 단계 실패 시 메인이 이전 단계 상태를 설정(진입 기반) 후 해당 단계 재spawn
-카운터: $HOME/.claude/session-env/${UUID}/reroute_count (0→+1, 10 초과 시 조기 종료)
+카운터: $HOME/.claude/session-env/${UUID}/reroute_count (0→+1, 20 초과 시 조기 종료)
 
 reroute_count_원자적_증가:
   방법: mcp__oio__session_state(uuid="${UUID}", key="reroute_count", value="increment")
   처리: flock 기반 원자적 +1 (session_ops.py 내장)
-  checkpoint_기록_REROUTE: mcp__oio__bash_exec(command='bash ${HARNESS_HOOK_DIR}/lib/checkpoint_write.sh "${UUID}" "REROUTE" "{from_stage}" "" "" "{from}→{to}: {사유}"')
+  checkpoint_기록_REROUTE: mcp__oio__bash_exec(command='bash ${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/checkpoint_write.sh "${UUID}" "REROUTE" "{from_stage}" "" "" "{from}→{to}: {사유}"')
   reroute_log_기록 (교훈 분석용 — 필수):
     시점: 역라우팅 결정 직후, 재spawn 직전
     방법: mcp__oio__bash_exec(command='echo "[$(date +%Y-%m-%dT%H:%M:%S)] from:{에이전트명} to:{대상단계} reason:{구체적사유}" >> $HOME/.claude/session-env/${UUID}/reroute_log')
@@ -1164,7 +1395,7 @@ reroute_count_원자적_증가:
     실행_순서: 1→2→3 순차 (모두 완료 후 재spawn 진행)
     검증: odone_review가 reroute_context.md + pipeline_events.jsonl 양쪽에서 REROUTE 이벤트 교차 확인
 
-허용: DEV→PLAN, TEST→DEV, TEST→PLAN, DONE→TEST (최대 10회)
+허용: DEV→PLAN, TEST→DEV, TEST→PLAN, DONE→TEST (최대 20회)
   TEST→PLAN 조건: otest에서 근본 원인이 설계/계획 단계 재검토를 요구할 때만 (단순 버그 수정은 TEST→DEV)
 제한: 증거파일 초기화 필수, 팀 재사용(L-221)
 
@@ -1175,8 +1406,8 @@ reroute_count_원자적_증가:
     1~2회: odev 자동 (구현 버그 — 실행 에러/크래시)
     동일항목_2연속: oplan 에스컬레이션 (설계 재검토)
     3~4회: oplan (설계 결함)
-    5회+: 사용자 AskUserQuestion (자동 진행 금지)
-    10회: EARLY_TERM (강제 중단)
+    5회+: 메인 자율 판정 — advisor 조언(메인 한정) 후 이전과 다른 접근법 강제 (사람 대기 없음)
+    20회: EARLY_TERM (강제 중단)
 
   reroute_history 기반 자동 판정:
     파일: $HOME/.claude/session-env/${UUID}/evidence/reroute_history.json
@@ -1272,21 +1503,21 @@ reroute_context_생성 (역라우팅 결정 시 즉시):
 동일_경로_서브리밋 (P0):
   감지: reroute_context.md에서 최근 3회 역라우팅 경로 비교
   조건: 동일 경로(예: TEST→DEV) 3회 연속 반복 시
-  처리: 자동 에스컬레이션 — TEST→PLAN 강제 전환 또는 사용자 확인
+  처리: 자동 에스컬레이션 — TEST→PLAN 강제 전환
   근거: 동일 패턴 반복은 근본 원인이 다른 곳에 있음을 의미
 
 점진적_backoff (역라우팅 단계별 전략):
   1-3회: 즉시 역라우팅 (동일 경로 3연속 시 에스컬레이션)
   4-7회: reroute_context.md 필수 확인 + 이전과 다른 접근법 강제
-  8-10회: 사용자 AskUserQuestion 확인 필수 (자동 진행 금지)
-  10회_초과: 조기 종료 (EARLY_TERM)
+  8-20회: 메인 자율 판정 — reroute_context.md 대조 + 접근법 전환 강제 (사람 대기 없음)
+  20회_초과: 조기 종료 (EARLY_TERM)
 ```
 
 ## 조기 종료 (Early Termination) # H-03
 
 ```yaml
 트리거_조건 (ANY 충족 시 즉시 발동):
-  1. reroute_count 10회 초과
+  1. reroute_count 20회 초과
   2. 동일 에이전트 비정상 반환 연속 3회
   3. 외부 의존성 장애 (DB 연결 불가, 빌드 도구 미설치 등)
   4. 사용자 명시적 중단 요청
@@ -1391,9 +1622,10 @@ Fallback (spawn 위임 실패 시):
 
 파이프라인_동시_실행_경고:
   # [P2-isolation] CLAUDE.md §세션 격리 불변식 §(c) 정보_노출_금지 준수.
-  # 타 세션 UUID/STATE를 감지하거나 stdout으로 노출하지 않는다.
+  # 타 세션 UUID/STATE를 hook stdout으로 노출하지 않는다.
   # session-env/*/ 루프 탐색 금지. 자기 세션(${UUID})만 독립적으로 진행한다.
-  차단_여부: 차단하지 않음 — 타 세션과 완전 격리되어 있으므로 경고 자체 불필요
+  같은_프로젝트_세션_확인·통지: ok/SKILL.md 시작 통지 절차와 ofinish 종료 통지가 담당한다 (공식 ListAgents/SendMessage 경유 — CLAUDE.md 「타 세션 통지 정책」)
+  차단_여부: 차단하지 않음 — 통지만 하고 파이프라인은 자기 세션 기준으로 진행한다
 ```
 
 > 에이전트 무응답 fallback: 비정상 반환 시 재spawn 1회 → 재실패 시 조기 종료(ofinish 경량 모드) + 사용자 보고

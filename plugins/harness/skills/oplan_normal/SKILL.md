@@ -19,6 +19,11 @@ o3(Normal) 파이프라인 전용 계획 수립. 독자적 실행 Phase A~J를 �
 > 메인 에이전트는 이 판정을 수행하지 않는다 (CLAUDE.md "ogrill 호출 정책" 참조).
 > 상세 절차: oplan/SKILL.md "ogrill 5축 결손 판정" 섹션 참조 (단일 출처).
 
+## 레퍼런스 조사 (계획 수립 전)
+
+- Stage_0_레퍼런스_조사: 요청에 벤치마킹·레퍼런스·경쟁 솔루션 분석이 있으면 tier 와 무관하게 Phase A 진입 전에 `Skill('oplan_research')` 의 Phase_R0(REA 필요시 판정표)를 거친다. 같은 사이클에서 이미 거쳤으면 그 결과를 재사용한다.
+- ref_root(`Skill('ocanon')` §1)가 있으면 plan root 유무와 무관하게 `<ref_root>/README.md` 색인을 읽고, 참조할 항목은 `ref:<id>@<커밋 12자>:<경로>` 표기로 계획서에 남긴다.
+
 ## 트리거 조건
 
 ```yaml
@@ -82,7 +87,7 @@ Deep_조건 (OR — 하나라도 해당 시):
     oto가 이미 locked=true로 만들어 두었으면 write_guard F-GOAL-1이 재생성을 차단하므로,
     기존 goal.json을 읽어 시드로만 쓰고 생성을 건너뛴다.
   - goal.json 부재 시 기존 동작 폴백 (오류 아님)
-  - odeep/oconsult/odebate/oralph 통합, ofinish 게이트, hook 강제화는 본 PoC 범위 외
+  - odeep/oconsult/odebate/oroof 통합, ofinish 게이트, hook 강제화는 본 PoC 범위 외
 실패_처리: goal/SKILL.md 검증 실패 시 경고 출력 후 Step_1 계속 (PoC라 강제 차단 없음)
 ```
 
@@ -125,11 +130,26 @@ Step_8_테스트_검수조건:
   - acceptance_criteria.json 생성 (o3~o5 필수 — ★물리 강제됨★):
     저장: ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/session-env/${UUID}/plans/acceptance_criteria.json
     형식: {"criteria": [{"id":"AC-001", "category":"backend|frontend|db|api", "description":"...", "method":"...", "expected":"...", "priority":"must|should|nice"}]}
-    ⚠️ 계획서 본문 표로만 쓰고 이 파일을 빠뜨리면 안 된다 (사이클31 실측 사고):
+    ★상시 생성 의무 (F-AC-DEV)★: o3~o5 에서는 CRUD 여부와 무관하게 매 사이클 이 파일을 $SESSION_DIR/plans/acceptance_criteria.json 에 새로 쓴다.
+       비-CRUD 작업도 생략하지 않고 최상위 crud_대상:false + crud_미해당_사유, criteria[] 원소마다 item_crud:false 와 검증 대상 files(수정 파일 경로)를 기재한다.
+       기존 파일이 같은 경로에 남아 있어 고정 파일명 덮어쓰기가 F-AC-1 에 막히면 우회하지 말고 규칙대로 prev 사본(acceptance_criteria_*.json 새 사본)을 만들어 진행한다.
+       (새 사이클 진입 시 phase_guard 의 pea_archive 가 이전 AC 를 logs/prev_cycle/ 로 보관 이동하므로 보통은 새로 쓰면 된다.)
+       누락 또는 pipeline_start_time 보다 오래된 이전 사이클 본이면 PreToolUse_dev_ac_gate.sh(F-AC-DEV)가 메인의 state=DEV 전이를 block 하므로 odev 로 넘어갈 수 없다.
+       Step 8 완료 보고 직전에 mcp__oio__file_read 로 이 파일의 실존을 자기 점검한다.
+    ⚠️ 계획서 본문 표로만 쓰고 이 파일을 빠뜨리면 안 된다 (사이클31 실측 사고, 사이클134 재확인 — L-538):
        CRUD 실행증거 게이트(verify_crud_executed.py)가 이 파일을 입력으로 읽는다.
        파일이 없으면 게이트가 무력화되므로, o3~o5 에서 부재 시 게이트가 exit 1 로 차단하고
        write_guard.sh F-CRUD-1 이 otest_done/make_ok 쓰기를 물리 차단한다.
-       ⇒ 이 파일을 생성하지 않으면 파이프라인이 otest 에서 진행 불가하다.
+       ★주의(L-538 — 방어 시점의 한계를 정확히 인지할 것)★:
+       이 물리 강제는 "otest_done/make_ok 쓰기 시점"에만 작동한다. oplan 완료 → odev spawn
+       사이 시점에는 이 파일 부재를 막는 물리 강제가 아직 없다(사이클134에서 이 파일 없이도
+       odev·otest가 끝까지 진행되어 DONE 직전까지 도달한 사고 실측). 즉 "파이프라인이 otest에서
+       진행 불가"는 최종 방어선이 작동한다는 뜻이지, oplan 직후 즉시 막힌다는 뜻이 아니다.
+       ⇒ oplan 담당자는 Step 8 완료 시점에 이 파일이 실제로 디스크에 쓰였는지 스스로 ls로
+          확인하고 넘어가라 — "물리 강제되니 최종적으로는 걸리겠지"라고 안심하고 건너뛰지 마라.
+       ⇒ (후속 과제, L-538 참조) oplan→odev spawn 사이를 막는 PreToolUse hook은 기존
+          `PreToolUse_Agent_team_param_guard.sh`(Agent matcher, settings.json 362행)와의
+          상호작용 미검증으로 아직 보류 상태다. 구현 전 그 hook의 판정 로직을 먼저 분석하라.
     ★CRUD 항목 필수 표기★ (저장/등록/수정/삭제를 다루는 검수 항목):
        category 를 "crud" 또는 "db" 로 두거나 criterion 에 저장/등록/수정/삭제 동사를 남긴다.
        그리고 검증 방법에 ① 저장 경로 실행 로그 ② DB 전후 COUNT 실측 을 명시한다.
@@ -138,12 +158,33 @@ Step_8_테스트_검수조건:
     must: 전부 PASS 필수 (1개 FAIL → 역라우팅)
     should: 80%+ PASS (미달 시 경고)
     nice: 참고용
+    ★UI 토글/체크박스형 옵션 조합 안전성 검증 (L-P43 재발방지 — 2026-09-29)★:
+      배경: 사용자가 UI에서 독립적으로 켜고 끌 수 있는 boolean 옵션이 N개 있을 때,
+            최종 채택 조합(예: 전부 켬)만 안전성 지표를 측정하고 부분 조합(예: 옵션 1개만 켬)은
+            측정하지 않아 "애드립만 켬" 조합에서 hit -0.0037·거짓점프 +3 악화를 뒤늦게 발견한 사례가 있었다.
+      규칙: acceptance_criteria.json에 검수 대상 UI 옵션이 2개 이상이고 사용자가 자유 조합으로
+            켜고 끌 수 있다면, must 또는 should 항목에 "채택 조합" 외에 최소 1개의 극단 부분조합
+            (예: 옵션 1개만 켜고 나머지 끔)에 대한 안전성 회귀 확인 항목을 포함한다.
+    ★임계값/엔진 상수 튜닝 시 holdout 비악화 검증 (L-P44 재발방지 — 2026-09-29)★:
+      배경: 실세션 1건 관찰에 맞춰 조정한 엔진 상수(경계값 등)가 다른 세션(holdout)에서
+            부작용(거짓 점프 0→3)을 유발한 사례가 있었다.
+      규칙: acceptance_criteria.json에 임계값/엔진 상수 조정이 포함된 작업이면, 조정에 사용된
+            데이터셋과 별도인 holdout 세트에 대한 비악화(non-regression) 확인 항목을 must 또는
+            should로 반드시 포함한다.
   - acceptance_criteria.json에 auto_script 필드 추가 (must 항목 80%+ 필수):
     형식 확장: {"criteria": [{"id":"AC-001", ..., "auto_script":"curl -s -o /dev/null -w '%{http_code}' http://localhost:5000/api/users | grep -q 200"}]}
     auto_script 작성 규칙:
       - sandbox 허용 명령만: curl, jq, python3, grep, test
       - exit code 0 = PASS, 그 외 = FAIL
       - 에이전트 주관 개입 없이 자동 판정
+      - ★셸 문법★: bash_exec 는 bash 가 아니라 dash(/bin/sh) 다. auto_script 는 `bash -c '...'` 로 감싸거나 POSIX sh 문법만 쓴다.
+        금지(dash 미지원): $'\r' · [[ ]] · 배열 · ${PIPESTATUS} · 중괄호확장 {a,b}
+        예시: "bash -c 'grep -c $'\"'\"'\\r'\"'\"' file.sh | grep -qx 0'" 처럼 bash 전용 문법은 반드시 bash -c 안에 둔다.
+              POSIX 대안: "test \"$(grep -c \"$(printf '\\r')\" file.sh)\" = 0"
+      - ★작성 직후 사전 실행 (L-1384)★: 쓴 auto_script 는 acceptance_criteria.json 저장 전에 구문만이라도 실제로 실행해 본다
+        (예: `bash -n`, `python3 -c "compile(...)"`). 큰따옴표 안 Windows 경로의 `\U` 같은 이스케이프 오류가 그대로 들어가는 것을 막는다.
+      - ★무거운 시험은 1회 실행 후 결과 파일 공유 (L-1385)★: 여러 AC 가 같은 selftest 전체를 각자 다시 돌리게 설계하지 않는다.
+        한 AC(또는 사전 단계)가 1회 실행해 결과 파일에 남기고 나머지 AC 는 그 파일을 읽어 판정한다. 부하 시 거짓 FAIL/UNDET 방지.
     canary_test (필수 1개):
       - expected_result=FAIL인 항목 포함 (예: 존재하지 않는 엔드포인트 404 확인)
       - 목적: 기계적 PASS 처리 감지
@@ -185,6 +226,21 @@ Step_8_테스트_검수조건:
       - crud_대상: acceptance_criteria.json **전체**가 비-CRUD 작업인지 판정하는 파일 레벨 필드.
       - item_crud: **개별 AC 항목**이 CRUD 실행 증거를 요구하는지 판정하는 항목 레벨 필드.
       - crud_대상=false인 파일도 criteria[] 원소마다 item_crud(보통 전부 false)를 반드시 기재해야 한다.
+
+    ★category와 item_crud 정합성 필수 (L-P46 재발방지 — 2026-09-29)★:
+      배경: item_crud:false로 정확히 선언했음에도 category를 "backend"로 남겨(예: 게이트가 원 로그에서
+            수치를 재계산하는 순수 검증형 AC인데 category="backend") verify_crud_executed.py의
+            is_non_crud_declared()가 trust_item_crud=False로 category/CRUD_KEYWORDS 폴백 재판정을
+            수행하면서 CRUD로 재차 의심해 otest_done 마커 생성이 2사이클 연속 오탐 차단된 사례가 있었다.
+            (is_non_crud_declared의 content_suspects 계산은 설계상 item_crud를 신뢰하지 않는다 —
+            "작성자 선언이 검증을 이기면 검증 장치가 존재할 이유가 없다"는 의도된 fail-safe이므로
+            게이트 코드 수정 대상이 아니다. 원인은 AC 작성 시점의 category 값 부정확함이다.)
+      규칙: item_crud:false인 항목은 category도 CRUD_CATEGORIES({"crud","db","backend"})에 속하지
+            않는 값(예: "infra", "test", "config", "docs")으로 기재한다. item_crud:false이면서
+            category:"backend"/"db"/"crud"를 쓰는 조합은 금지 — 게이트의 재검증 폴백과 충돌해
+            정상 통과가 재차 차단될 수 있다.
+      검증: oplan Step 8 작성 직후 criteria[]를 순회하며 (item_crud==false AND category in
+            CRUD_CATEGORIES) 조합이 있으면 즉시 category를 재작성 후 저장한다.
 
     완성된_JSON_예시 (CRUD 항목 true + 검증형 항목 false 대비 포함 — 그대로 필드 구조를 복붙하여 값만 교체):
       {"crud_대상": true, "crud_미해당_사유": "", "작업유형": "backend_api",
@@ -258,6 +314,16 @@ Step_1~10: Quick과 동일하게 전체 실행
     - 기술적 타당성 검증
 ```
 
+## QA 원복 시나리오 선행 수립 (QA 선언 프로젝트 한정)
+
+> 사용자 원문(2026-10-10): "개발서버에서는 테스트데이터를 지우지 않아도 된다. 하지만 앞으로 qa서버에서는 데이터 원복을 위한 시나리오부터 계획하도록 하라."
+
+- 프로젝트가 QA(운영 데이터 연계) 단계를 선언(`.claude/qa_tier.json`)했으면, 계획서는 시험 항목보다 먼저 "원복 시나리오"를 세운다.
+- 항목마다 다음을 적는다. 대상 표·행 범위, 시험 전 스냅샷 방법, 시험 표식, 삭제·원복 절차, AUTO_INCREMENT·휘발 열 처리, 원복 불가 판정과 제외 사유.
+- 원복 시나리오가 판정을 통과한 항목만 QA 시험 목록에 올린다. 판정표에 없는 항목은 QA 에서 시험하지 않는다.
+- 예시 산출물은 세션 plans 디렉토리의 `qa_reversibility_draft.json` 이다.
+- 선언이 없으면 이 절은 적용하지 않는다.
+
 ## 산출물
 
 ```yaml
@@ -270,6 +336,10 @@ Step_1~10: Quick과 동일하게 전체 실행
 
   ## 코드 탐색 결과
   - 파일별 현재 상태
+
+  ## 정본 참조
+  - 색인·관련 문서·시험 자산·반영 예정 (o3 필수 — 누락 시 DEV 전이 차단)
+  # plan/index.json 은 mcp__oio__file_read 로 연다. 절차·규격은 Skill('oplan') "정본 참조" 절과 Skill('ocanon') 참조.
 
   ## 영향도 분석
   - 참조 관계
@@ -463,4 +533,47 @@ N:M_매핑_정합성_점검 (L-375):
   금지:
     - N:M 매핑 정합성 없이 "PC 메서드 수 = GW 메서드 수" 전제 계획 수립
     - oplan_debate 이후 oplan-fix에서 사후 발견(비용 크고 Wave 재구성 필요)
+```
+
+## 반복 회차(oroof 2회차 이상) 이전 회차 인용 검증 규칙 (L-P49 재발방지 — 2026-09-29)
+
+```yaml
+배경: 1회차 handoff가 서술한 사례 ID/수치("복귀 미도달 3건 = adlib_user_*_s2 e2 k60")가
+      2회차 계획(§0 실패 원인표·과적합 출처표)에 검증 없이 그대로 인용됐다. 2회차 진행 중
+      원 로그를 직접 대조한 뒤에야 실제로는 adlib_bench_*_s1 k13이었음이 드러났다.
+      회차가 거듭될수록 서술 인용이 누적 전파되어 잘못된 전제로 설계가 진행될 위험이 있다.
+
+규칙: 2회차 이상(oroof N회차, N≥2)의 계획 수립 시, 이전 회차 handoff/oplan 문서에서
+      가져오는 사례 ID·수치(실패 항목, 버킷 카운트, 과적합 출처 등)는 서술 인용을 금지하고
+      원천 metrics/log 파일에서 기계적으로 재조회한 값만 계획서에 싣는다.
+      계획서에는 각 사례 옆에 [원천: 파일경로#필드/키] 표기를 의무화한다.
+
+검증: 계획서 §0(또는 실패 원인 분석 절) 작성 완료 후, 인용된 사례 ID 중 최소 1건을
+      원천 파일에서 직접 재조회해 일치 여부를 확인한 로그를 남긴다.
+```
+
+## 반영 채택 시 실행 경로 진입 확인 규칙 (L-P55 재발방지 — 2026-09-29)
+
+```yaml
+배경: 폴백(fallback) 스트림에 채택된 엔진 옵션(NearBackJunctionRivalMode:1)이 "비악화"로
+      판정되어 반영됐으나, 실제로는 폴백에 필요한 선행 조건 키(NearBackJunctionEvidence)가
+      없어 해당 옵션을 평가하는 코드 경로 자체가 호출되지 않는 dead code였다. "비악화"가
+      "진짜 효과 없이 안전함"이 아니라 "애초에 실행되지 않아 영향이 0"이었던 것을 뒤늦게 발견했다.
+
+규칙: 엔진 옵션/상수를 특정 스트림(main/fallback 등)에 반영(채택)하기 전, 해당 스트림의
+      실행 로그에서 관련 코드 경로 진입(발동) 횟수가 1회 이상 관측되는지 확인한다.
+      발동 횟수가 0이면 "no-op"로 분류하고 반영하지 않거나, 반영하더라도 계획서에
+      "해당 스트림에서는 비활성(dead code)"임을 명시한다.
+```
+
+## 가족 자격 판정 시 독립 사례 수 명시 규칙 (L-P56 재발방지 — 2026-09-29)
+
+```yaml
+배경: 수치상 더 우수한 변형(D안)이 부작용 기준(거짓 점프 3건)으로 자격 미달 판정을 받았으나,
+      이 3건은 실제로는 동일한 1개 사용자 대본 위치가 3개 조건(clean/noise/revise)으로
+      증폭되어 집계된 것이었다 — 사실상 독립 사례 1건이 자격 판정 표에서는 3건으로 보였다.
+
+규칙: 가족(family) 자격 판정표에 부작용/거짓 점프 등 탈락 사유를 집계할 때, 원시 건수와
+      별도로 "독립 사례 수"(대본 위치·세션 등 근본 식별자 기준 중복 제거) 열을 함께 명시한다.
+      자격 판정은 독립 사례 수를 우선 근거로 삼고, 원시 건수만으로 판정하지 않는다.
 ```

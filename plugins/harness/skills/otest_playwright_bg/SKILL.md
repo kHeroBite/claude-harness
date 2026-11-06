@@ -114,7 +114,7 @@ Agent:
   run_in_background: true
   prompt: |
     Skill('otest_playwright_bg') 로딩.
-    oinfra_{project} 테스트 절차에 따라 UI 테스트 수행:
+    INFRA.md 테스트 절차에 따라 UI 테스트 수행:
     1. oio file_write로 /tmp/pw_bg.js 작성 (boilerplate 기반)
     2. node /tmp/pw_bg.js 실행
     3. 스크린샷 결과 확인 (/tmp/test-*.png)

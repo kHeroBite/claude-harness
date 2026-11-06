@@ -1,8 +1,4 @@
 #!/bin/bash
-# >>> harness preamble
-_HP="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)}"
-[ -f "$_HP/hooks/harness_preamble.sh" ] && . "$_HP/hooks/harness_preamble.sh" 2>/dev/null || { [ -f "$_HP/harness_preamble.sh" ] && . "$_HP/harness_preamble.sh" 2>/dev/null; } || true
-# <<< harness preamble
 # bash_orphan_poller.sh — 백그라운드 daemon: bash 고아 pane 주기적 감지 + 자동 kill
 #
 # 목적: 메인의 shutdown_request 없이도 팀에이전트가 bash로 탈출하면 자동 종료
@@ -11,12 +7,12 @@ _HP="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null
 # 종료: state=IDLE 30초 연속 or agents/ 30초 연속 비어있으면 자동 종료 / PID 파일로 중복 방지
 #
 # 사용 예:
-#   nohup bash "${HARNESS_HOOK_DIR}/lib/bash_orphan_poller.sh" "$UUID" > /dev/null 2>&1 &
+#   nohup bash ${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/bash_orphan_poller.sh "$UUID" > /dev/null 2>&1 &
 #
 # 관련: pane_sweeper.sh (is_bash_orphan, kill_bash_pane)
 
 # F-NEW-3: flock 기반 state_read() 로드
-source "${HARNESS_HOOK_DIR}/lib/session_id.sh" 2>/dev/null || true
+source "${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/session_id.sh" 2>/dev/null || true
 
 UUID="${1:-}"
 if [[ -z "$UUID" ]]; then
@@ -39,8 +35,8 @@ HEARTBEAT_GRACE=120     # 초 (2분) — heartbeat 파일 미존재 시 유예
 
 # pane_sweeper.sh 소싱 (심볼릭링크 경유 없이 실제 경로 사용)
 SWEEPER_CANDIDATES=(
-  "$(readlink -f "${HARNESS_HOOK_DIR}/lib/pane_sweeper.sh" 2>/dev/null || echo "")"
-  "${HARNESS_HOOK_DIR}/lib/pane_sweeper.sh"
+  "$(readlink -f "$CLAUDE_CONFIG_DIR/hooks/lib/pane_sweeper.sh" 2>/dev/null || echo "")"
+  "$CLAUDE_CONFIG_DIR/hooks/lib/pane_sweeper.sh"
 )
 SWEEPER=""
 for _s in "${SWEEPER_CANDIDATES[@]}"; do

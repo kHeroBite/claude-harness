@@ -114,6 +114,66 @@ Phase 2 (구현 검증): otest_make + otest_ui + otest_log
   → "계획대로 구현됐나?" (acceptance_criteria.json 대조)
 ```
 
+## 자원 축 (데스크톱 / 모바일) — 담당 범위 판정 (2026-10-04)
+
+```yaml
+배경: otest 는 "자원 축당 1개"다. 변경 범위에 데스크톱과 모바일이 둘 다 있으면 메인이
+      데스크톱 otest(otest-N)와 모바일 otest(otest-m-N)를 병렬 spawn 한다 (ok_pipeline 3단계 참조).
+      한 otest 가 두 축을 모두 검증하면 병목이 되므로 이 분리가 기본이다.
+축_판정: 자기 이름으로 정한다 (hooks/lib/otest_axis.sh 와 동일 규칙)
+  otest-m-{N} / otest-mobile-{N} / 접미 -m·-mobile(otest-{임의}-m) → 모바일 축
+  그 밖의 otest*                 → 데스크톱 축
+데스크톱_축_otest:
+  - 데스크톱 앱·빌드 산출물·화면만 다룬다. otest_ui 에서 모바일 서브스킬(otest_mobile)은 호출하지 않는다
+    (메인이 모바일 otest 를 따로 spawn 했을 때). 모바일 otest 가 없는데 모바일 변경이 있으면 메인에 보고.
+  - 완료 마커: evidence/otest_done
+모바일_축_otest:
+  - 진입 즉시 evidence/otest_m_started 생성 (내용 = 시각 1줄). odone 게이트가 이것으로 모바일 축 존재를 안다.
+  - 에뮬레이터·실기기·adb·APK 만 다룬다. Phase 1 은 모바일 빌드·설치·기동만, Phase 2 UI 는 Skill('otest_mobile').
+    otest_mobile 은 라우터다 — 실기기 연결 시 otest_mobile_phone, 없으면 otest_mobile_emulator 로 보낸다(대형 태블릿 항목은 emulator 명시 호출).
+    모바일 에뮬레이터 시험은 기본적으로 Skill('otest_mobile_emulator_bg')(헤드리스, 사용자 화면에 창 노출 금지).
+  - 데스크톱 앱 빌드·기동·종료, 데스크톱 화면 조작 금지.
+  - 완료 마커: evidence/otest_done_m — ★otest_done 은 만들지 말 것★ (데스크톱 게이트를 거짓으로 연다)
+웹_축_otest (모바일웹 — 데스크톱/모바일 축과 병렬, 이름 otest-w-{N} / 접미 -w):
+  - 진입 즉시 evidence/otest_w_started 생성 (내용 = 시각 1줄). 웹 UI 시험은 Skill('otest_mobileweb') 에 위임한다.
+  - 앱 화면 변경이 변경 범위에 있으면 웹 축의 동기화(parity) 검증이 필요하다. 웹이 아직 구축되지 않았으면 N/A 로 정직 보고하고 PASS 로 처리하지 않는다.
+  - 데스크톱 앱·모바일 앱(adb) 조작 금지. 공유 자원 규칙은 다른 축과 동일하다.
+  - 완료 마커: evidence/otest_done_w — ★otest_done / otest_done_m 은 만들지 말 것★ (다른 축 게이트를 거짓으로 연다)
+공유_자원 (축이 달라도 겹치는 것 — 위반 시 상대 otest 결과가 무효가 된다):
+  - 공용 서버 재기동·재배포·설정 변경 금지 → 필요 시 메인에 SendMessage 요청 (메인이 조정 후 1회 수행)
+  - 테스트 데이터 정리 목록은 evidence/test_data_cleanup.list 하나에 "축 키" 형식으로 append 만 한다.
+    정리 실행은 데스크톱 otest 가 모바일 완료 확인(메인 경유) 뒤 1회 (모바일 단독이면 모바일 otest).
+  - 상대 축이 만든 테스트 데이터·DB 행 수정/삭제 금지. 같은 레코드를 동시에 쓰는 시나리오 금지.
+단독_실행: 축 하나만 spawn 된 경우에도 위 이름·마커 규칙은 그대로다 (모바일 단독 = otest-m-1 + otest_done_m).
+```
+
+### QA 단계 축 (선언 프로젝트 한정)
+
+> 사용자 지시(2026-10-10): "앞으로도 qa서버까지는 테스트를 진행하도록 하라. 다만 운영db와 연계되어있으므로 조심하고 최소한의 테스트만 진행하고 테스트전으로 완벽하게 되돌릴수있는 테스트만 진행하여야한다."
+
+```yaml
+적용_조건: 프로젝트에 QA(운영 데이터 연계) 단계 선언 `.claude/qa_tier.json` 이 있을 때만. 없으면 이 절은 무시한다.
+원칙: 시험은 개발 PASS 뒤 QA 까지 진행한다. 단 최소화하고, 시험 전 상태로 완전 원복할 수 있는 시험만 한다.
+최소화:
+  - 핵심 경로를 1회만 잰다. 반복·회귀 전수 시험은 개발 단계에서 끝낸 것으로 본다.
+  - 쓰기 없이 증명할 수 있으면(읽기 전용 조회·바이너리 동일성·개발 PASS 증거) 그 방식을 우선한다.
+완전_원복_판정_4요건 (하나라도 못 채우면 그 항목은 시험하지 않는다):
+  1. 시험 전 스냅샷(대상 표의 COUNT·행 해시, 허용 표는 AUTO_INCREMENT 포함)
+  2. 시험 표식이 붙은 행만 생성한다
+  3. 시험 후 그 행을 삭제·원복한다
+  4. 전후 COUNT·행해시(+허용 표의 AUTO_INCREMENT)가 동일함을 실측한다
+금지:
+  - 공유 설정, 실업무 행, 타 직원 계정 사용
+  - 활성 공유 표에 행을 남기는 시험(AUTO_INCREMENT 는 되돌릴 수 없다) — "원복 불가"로 제외한다
+  - 원복을 위한 추가 쓰기로 불일치를 덮는 행위 (불일치는 PARTIAL 로 보고한다)
+원복_불가_항목: 시험에서 제외하고 사유를 기록한다. 제외 목록은 원복 판정표에 남긴다.
+담당_분리:
+  - 스냅샷·전후 비교는 1명(서버·DB 축)이 단독 소유한다. 다른 축은 스냅샷을 만들거나 DB 를 직접 쓰지 않는다.
+  - 같은 계정을 두 단말에서 동시에 쓰지 않는다 (PC·모바일은 직렬, 서버 API 축은 병렬 가능).
+증거: evidence/qa_test_done 마커 (형식은 otest_verify "QA 단계 검증" 절).
+  마커가 없거나 전후 불일치 PARTIAL 이면 DONE 전이가 차단된다. 면제(SKIPPED)는 원복 시나리오 판정에서 빠진 항목에만 기록한다 — 사람 판단 없음, 사유를 보류 목록에 남긴다.
+```
+
 ## tier별 실행 범위
 
 ```yaml
@@ -237,7 +297,7 @@ RETEST_수신_프로토콜:
        개선: 이전 실패 항목 → PASS 전환
        유지: 동일 실패 패턴 지속 (카운터 누적)
        회귀: 이전 PASS 항목 → FAIL 전환 (긴급)
-    5. 회귀 감지 시: AskUserQuestion으로 즉시 사용자 보고 (자동 진행 금지)
+    5. 회귀 감지 시: 회귀 항목을 명시해 즉시 oplan 역라우팅 (사람 대기 없음 — 최종 보고에 회귀 항목 기록)
 
 스냅샷_누적:
   test_snapshot_v1.json: 1차 FAIL 시
@@ -254,7 +314,7 @@ RETEST_수신_프로토콜:
   1~2회: odev 자동 역라우팅 (구현 버그)
   동일항목_2연속: oplan 에스컬레이션 (설계 재검토)
   3~4회: oplan 역라우팅
-  5회~: 사용자 AskUserQuestion (자동 진행 금지)
+  5회~: 메인 자율 판정 — 이전과 다른 접근법을 강제해 oplan 역라우팅 (사람 대기 없음)
   10회: 강제 중단 (EARLY_TERM)
 
 Evidence_Gate (odone 진입 전 hook 물리 차단):
@@ -270,7 +330,9 @@ Evidence_Gate (odone 진입 전 hook 물리 차단):
     - 미충족 시: 역라우팅 신호
 
 auto_script_프레임워크:
-  실행: acceptance_criteria.json의 각 must 항목 auto_script를 Bash로 실행
+  실행: acceptance_criteria.json의 각 must 항목 auto_script를 공용 CLI 로 실행 (직접 dash 실행 금지 — bash_exec 는 dash 라 $'\r' 등 오판)
+    bash "${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/goal_autoscript_run.sh" --criteria <acceptance_criteria.json> --timeout N [--id <ID>]
+    rc 0=전부 PASS / 1=FAIL / 3=UNDET·NOSCRIPT·비정상 (rc≠0 은 전부 미통과)
   sandbox: curl, jq, python3, grep, test 만 허용
   retry: 2회 재시도 후 FAIL 확정 (환경 노이즈 대응)
   결과: exit code 0 = PASS, 그 외 = FAIL (에이전트 주관 배제)
@@ -308,10 +370,10 @@ acceptance_criteria_immutable:
   Phase_2: 영향받는 모든 프로젝트 검증 필수
     - 빌드 성공 ≠ 런타임 정상 (시그니처 호환이어도 동작 변경 가능)
   공유라이브러리_영향도_판정:
-    매핑_위치: PROJECT.md의 dependencies 또는 oinfra_{project}의 library_references
+    매핑_위치: PROJECT.md의 dependencies 또는 INFRA.md 의 library_references
     판정_절차: git diff HEAD → 공유 라이브러리 파일 감지 → 영향받는 프로젝트 목록 결정
 복수_프로젝트_수정: 해당 프로젝트들 모두
-감지_방법: git diff로 변경 파일 경로 → oinfra_{project} 프로젝트 매핑
+감지_방법: git diff로 변경 파일 경로 → INFRA.md 프로젝트 매핑
 ```
 
 ## Bash 명령어 실행 규칙
@@ -372,6 +434,17 @@ Iron_Law: 실패하는 테스트 없이 프로덕션 코드 작성 금지
   - 해결: {해결 방법 | 미해결}
 ```
 
+## 정본 참조
+
+시험 자산과 시험 문서의 위치·규칙은 `Skill('ocanon')` 이 정본이다. plan root·test_root 가 없는 프로젝트는 이 절을 건너뛴다.
+
+1. **시험 전 읽기**: 계획서 `## 정본 참조` 절의 `시험 자산`(`<test_root>/README.md`)과 시험계획·케이스(plan `test_plan`·`test_cases`)를 `mcp__oio__file_read` 로 읽고, 이미 있는 스크립트·시나리오를 먼저 재사용한다.
+2. **판정 규칙 사전 고정**: 합격 기준·판정 규칙은 결과를 보기 전에 정한다. 회차와 무관한 규칙만 `<test_root>/<축>/judge/rules_*.md` 로 남긴다.
+3. **재사용 소스 보존**: 이번 시험에 쓴 measure·judge·record 스크립트, 자동화 시나리오, 픽스처·기대값, 회귀용 재현 스크립트 중 다시 쓸 가치가 있는 것만 test_root 에 둔다. `<test_root>/README.md` 색인표에 경로·용도·재사용 이유(K1|K2|K3)·실행 명령·마지막 사용일을 적는다. 이유 칸을 비우지 않는다.
+4. **남기지 않을 것**: 결과 데이터·스크린샷·콘솔 출력(→ logs·archive), 1회성 탐침, 판 사본(`_v1`·`_r2`·`_old`), 실계정·토큰·실서버 주소가 든 파일은 test_root 에 두지 않는다.
+5. **시험 문서**: o3+ 새 기능이면 시험계획·케이스를 만들거나 고친다. 결과서(`test_report`)는 회차 요약·남은 FAIL·증거 위치만 쓴다.
+6. **보존 판정 기록**: 남긴 자산은 result json 에 `reusable_assets:[{path,area,reason:"K1|K2|K3 …"}]` 로 적는다. 없으면 `"reusable_assets": []` 와 `"reusable_assets_note": "해당 없음"` 을 적는다. 판정 기준은 `ocanon/references/ASSET_RULES.md` 다.
+
 ## 결과 파일 저장
 
 ```yaml
@@ -408,7 +481,7 @@ Iron_Law: 실패하는 테스트 없이 프로덕션 코드 작성 금지
   Phase 2 (구현) 실패 세분화:
     실행_오류 (크래시, 500 에러, timeout): odev (구현 버그)
     결과_불일치 (기능 누락, 설계 오류): oplan (요구사항 재검토)
-    회귀_감지: AskUserQuestion 즉시 (자동 진행 금지)
+    회귀_감지: oplan (회귀 항목 명시 — 사람 대기 없음)
 
 금지:
   - 실패 보고 없이 자체 재시도 무한 반복
@@ -525,6 +598,11 @@ mcp__oio__file_write(
 - 목적: otest_done_guard.sh hook이 이 파일(evidence/otest_done)로 otest 수행 여부 검증
 - 미생성 시: odone spawn 시 hook에 의해 물리 차단됨 + 완료 SendMessage도 차단됨
 - o2_분류: Phase 1만 실행 → Phase 1 완료 후 otest_done 생성 (Phase 2 불필요)
+- ★goal 사이클(goal.json locked + cNNN_gate.py)★: 마커 생성 ★전★ `python3 .claude/skills/otest_make/scripts/verify_crud_executed.py --uuid ${PIPELINE_UUID} --emit-from-goal --before-stage odone` 1회(otest_verify 2단계). `--before-stage odone` 는 판정 시점을 odone 진입 전으로 고정하기 위해 명시한다.
+  rc 0 → content "PASS …" / rc 1(make_partial) → content "PARTIAL {미통과 id 나열}" (PASS 금지) / rc 3 → 마커 생성 금지, 원인 해소 후 재실행.
+- ★모바일 축 otest(otest-m-N)는 위 경로의 파일명을 `otest_done_m` 으로 바꿔 생성한다★ — otest_done 생성 금지.
+  두 hook 모두 이름으로 축을 판정해 모바일 축에는 otest_done_m 을 요구한다 (본 문서 "자원 축" 절).
+- ★웹 축 otest(otest-w-N)는 파일명을 `otest_done_w` 로 바꿔 생성한다★ — otest_done / otest_done_m 생성 금지. 웹 미구축 N/A 는 PASS 가 아니다.
 
 ⚠️ otest_done 마커 — 절대 스킵 금지:
   - 검증 PASS 직후(o2: Phase 1 완료, o3~o5: Phase 2 완료) 즉시 생성이 마지막 필수 step
@@ -591,7 +669,7 @@ mcp__oio__file_write(
 
 3. otest_done 마커 PARTIAL 생성:
    content: "PARTIAL {ISO타임스탬프} deferred={항목수}"
-   (PASS 대신 PARTIAL — hook이 odone 진입 허용하되 Gate에서 사용자 확인)
+   (PASS 대신 PARTIAL — hook이 odone 진입 허용, Gate 는 자동 판정하고 deferred 항목은 보류 목록)
 
 4. ui_test_done 마커 PARTIAL 생성 (UI 미실행 시):
    content: "PARTIAL {ISO타임스탬프} reason=external_dependency_disconnected"
@@ -613,6 +691,6 @@ mcp__oio__file_write(
 
 ### otest_done PARTIAL 마커와 Gate
 
-- PARTIAL 마커는 odone 진입을 허용하나 o5 Gate 단계에서 사용자 최종 승인 필수
-- Gate 요청 시 deferred 항목 전체 명시 + 옵션 A/B/C/D 재제시
-- Gate 후 commit/push 결정은 사용자 권한 (odone_git은 승인 후 실행)
+- PARTIAL 마커는 odone 진입을 허용하고, o5 Gate 는 자동 판정한다 — deferred 항목을 최종 보고의 보류 목록에 남긴다
+- Gate 판정 시 deferred 항목 전체를 명시한다 (옵션 재제시·사람 대기 없음)
+- Gate 후 commit/push 는 odone_git 정책대로 자동 수행한다 (사람 승인 없음, 운영 배포는 실행하지 않고 보류 목록)

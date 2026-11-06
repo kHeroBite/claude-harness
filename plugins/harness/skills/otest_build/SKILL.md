@@ -1,15 +1,15 @@
 ---
 name: otest_build
-description: "빌드 실행 본체. otest_infra에서 호출. 프로젝트별 oinfra_{project} 빌드 섹션 참조."
+description: "빌드 실행 본체. otest_infra에서 호출. 프로젝트별 INFRA.md 빌드 절 참조."
 invocation:
   user_callable: false
   pipeline_callable: true
   called_by: ["otest_infra", "obr"]
-  calls: ["oinfra_{project}"]
+  calls: []
 ---
 # otest_build — 빌드 실행 본체
 
-> **프로젝트별 빌드 명령**: `oinfra_{project} "빌드 방법" 섹션` 참조
+> **프로젝트별 빌드 명령**: `INFRA.md "빌드 방법" 절` 참조
 
 ## UUID 결정 (첫 번째 mcp__oio__bash_exec 명령)
 > ⚠️ 모든 셸 명령은 `mcp__oio__bash_exec` 전용. Claude 내장 `Bash` 도구 사용 절대 금지 (write_guard.sh 차단)
@@ -25,7 +25,11 @@ mcp__oio__bash_exec(command='mkdir -p "$HOME/.claude/session-env/${UUID}/evidenc
 방법: CWD 기반 프로젝트 판별 (대화 맥락이 아닌 CWD만 신뢰)
 명령: |
   CWD=$(pwd)
-  PROJECT=$(basename "$CWD" | tr '[:upper:]' '[:lower:]')
+  if [[ "$CWD" == *"/Jarvis"* ]]; then PROJECT="jarvis"
+  elif [[ "$CWD" == *"/rtx5070"* ]]; then PROJECT="rtx5070"
+  elif [[ "$CWD" == *"/MaiX"* ]]; then PROJECT="maix"
+  elif [[ "$CWD" == *"/MARS"* ]]; then PROJECT="mars"
+  else PROJECT=$(basename "$CWD" | tr '[:upper:]' '[:lower:]'); fi
   echo "📦 빌드 대상: $PROJECT (CWD=$CWD)"
 금지: 최근 작업 맥락이나 수정한 파일 경로로 프로젝트를 추측하는 행위
 ```
@@ -33,8 +37,8 @@ mcp__oio__bash_exec(command='mkdir -p "$HOME/.claude/session-env/${UUID}/evidenc
 ## 프로젝트별 자동 로딩
 
 ```yaml
-방법: oinfra_{PROJECT} "빌드 방법" 섹션 참조 (PROJECT = 위 감지 결과)
-  - otest_build는 oinfra_{PROJECT}의 빌드 방법 섹션을 참조하여 빌드 명령 실행
+방법: {프로젝트 루트}/INFRA.md "빌드 방법" 절 참조 (프로젝트 = 위 감지 결과)
+  - otest_build는 INFRA.md 의 "빌드 방법" 절을 참조하여 빌드 명령 실행
 ```
 
 ## 빌드 절차
@@ -42,11 +46,11 @@ mcp__oio__bash_exec(command='mkdir -p "$HOME/.claude/session-env/${UUID}/evidenc
 ```yaml
 1_프로세스_종료:
   자동화: prebuild_shutdown.sh Hook이 dotnet build 감지 시 자동 shutdown+taskkill
-  수동_Fallback: oinfra_{project}의 shutdown 명령 참조
+  수동_Fallback: INFRA.md의 shutdown 명령 참조
 
 2_빌드_실행:
-  명령: oinfra_{project} "빌드 방법" 섹션 참조
-  포그라운드/백그라운드: oinfra_{project} 설정 따름
+  명령: INFRA.md "빌드 방법" 절 참조
+  포그라운드/백그라운드: INFRA.md 설정 따름
   성공_감지: "Build succeeded"
   실패_감지: "Build FAILED"
 
@@ -75,8 +79,8 @@ UUID_규칙 (팀에이전트):
 ## 빌드 대상 자동 감지
 
 ```yaml
-방법: git diff --name-only HEAD → 변경 파일의 최상위 폴더 → oinfra_{project} 빌드 섹션 매핑 테이블 참조
-공유_라이브러리_수정: 참조 프로젝트 전체 빌드 (oinfra_{project} 빌드 섹션 참조)
+방법: git diff --name-only HEAD → 변경 파일의 최상위 폴더 → INFRA.md 빌드 절 매핑 테이블 참조
+공유_라이브러리_수정: 참조 프로젝트 전체 빌드 (INFRA.md 빌드 절 참조)
 비코드_파일만_변경: 빌드 스킵 (증거 파일 없이 통과)
 ```
 

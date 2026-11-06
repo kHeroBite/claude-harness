@@ -13,11 +13,11 @@ invocation:
 ## 개요
 
 스크린샷 시각 분석 + REST API 검증 + 로그 분석 삼각검증 스킬.
-프로젝트별 경로/엔드포인트는 `oinfra_{project}`에서 주입받는다.
+프로젝트별 경로/엔드포인트는 `{프로젝트 루트}/INFRA.md` 에서 읽는다(필요 절만).
 
 ## 사전 준비 — 프로젝트 설정 확인
 
-oinfra_{project} 로드 후 아래 값을 확인한다:
+INFRA.md 에서 필요한 절을 읽은 뒤 아래 값을 확인한다:
 
 ```yaml
 필수_확인:
@@ -28,7 +28,7 @@ oinfra_{project} 로드 후 아래 값을 확인한다:
   curl_cmd: {플랫폼별 curl 경로}
 ```
 
-oinfra 없을 경우 → 사용자에게 포트/경로 확인 요청.
+INFRA.md 없을 경우 → 사용자에게 포트/경로 확인 요청.
 
 ## 스크린샷 캡처 모드
 
@@ -47,7 +47,7 @@ noactivate_모드 (창 최소화/백그라운드 상태):
     - window_activate 호출 불필요
     - SW_SHOWNOACTIVATE(4)로 포커스 없이 복원 → PrintWindow 캡처 → SW_MINIMIZE(6)로 재최소화
     - 캡처 후 창이 다시 최소화됨 (사용자 작업 방해 없음)
-    - 스크린샷 API 를 제공하는 앱에서만 사용 가능 (앱 측 구현 필요)
+    - MARS API 전용 구현 (2026-05-01 추가)
   사용_시점:
     - 사용자가 다른 앱을 사용 중일 때
     - CI/자동화 환경에서 포그라운드 없이 테스트할 때
@@ -174,13 +174,14 @@ API_FAIL      → 백엔드 오류 → 로그 확인 후 odebug
 
 ## 프로젝트별 세부 설정
 
-모든 프로젝트 설정은 `oinfra_{project}` 스킬의 `test_env` 섹션에서 로드한다.
+모든 프로젝트 설정은 INFRA.md "테스트 역량" 절(없으면 목차의 "테스트 설정"·"테스트 환경" 등 시험 환경 절)의 `test_env` 블록에서 읽는다.
 프로젝트별 별도 references 파일 없음.
 
 프로젝트별 기본 동작:
-- 데스크톱 UI 프로젝트: otest_ux 항상 실행 (o2), o3/o4/o5는 otest_ux+otest_winforms
-- 스크린샷 API 제공 프로젝트: otest_ux 사용 (oinfra_{project} 에 포트·엔드포인트 명시)
-- 스크린샷 API 없는 프로젝트: REST API 검증만 수행
+- **MARS**: otest_ux 항상 실행 (o2), o3/o4/o5는 otest_ux+otest_winforms_bg
+- **meTube**: otest_ux 사용 (포트 19850, /api/screenshot 직접 반환)
+- **MaiX**: otest_ux 사용
+- **allBot**: REST API 검증만 (스크린샷 API 없음)
 
 ## 완료 증거파일 생성 (필수 — L-240)
 

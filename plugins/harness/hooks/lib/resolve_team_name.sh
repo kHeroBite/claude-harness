@@ -1,8 +1,4 @@
 #!/bin/bash
-# >>> harness preamble
-_HP="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)}"
-[ -f "$_HP/hooks/harness_preamble.sh" ] && . "$_HP/hooks/harness_preamble.sh" 2>/dev/null || { [ -f "$_HP/harness_preamble.sh" ] && . "$_HP/harness_preamble.sh" 2>/dev/null; } || true
-# <<< harness preamble
 # 팀에이전트의 실제 런타임 팀명을 우선순위에 따라 해석하는 공용 헬퍼
 # resolve_team_name <INPUT_JSON> <UUID>  → stdout 에 팀명, rc=0 항상 (fail-soft)
 #
@@ -109,7 +105,7 @@ except Exception:
         printf '%s\n' "$_rtn_team" > "$_rtn_team_file" 2>/dev/null
       ) 2>/dev/null
       if ! declare -f _mirror_file >/dev/null 2>&1; then
-        source "${HARNESS_HOOK_DIR}/lib/session_mirror.sh" 2>/dev/null
+        source "${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/session_mirror.sh" 2>/dev/null
       fi
       if declare -f _mirror_file >/dev/null 2>&1; then
         _mirror_file "$_rtn_team_file" 2>/dev/null

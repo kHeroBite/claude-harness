@@ -1,8 +1,4 @@
 #!/bin/bash
-# >>> harness preamble
-_HP="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)}"
-[ -f "$_HP/hooks/harness_preamble.sh" ] && . "$_HP/hooks/harness_preamble.sh" 2>/dev/null || { [ -f "$_HP/harness_preamble.sh" ] && . "$_HP/harness_preamble.sh" 2>/dev/null; } || true
-# <<< harness preamble
 # agent_lifecycle.sh — Agent/TeamCreate 생명주기 통합 관리
 # 통합: pane_marker_create.sh + pane_marker_post.sh + team_created_flag.sh
 # 등록:
@@ -26,7 +22,7 @@ else
 fi
 
 # --- UUID 결정 ---
-source "${HARNESS_HOOK_DIR}/lib/session_id.sh"
+source "${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/session_id.sh"
 if ! resolve_uuid "$INPUT" 2>/dev/null; then
   # fallback 1: session_id 직접 사용
   if [[ -n "$SESSION_ID" ]]; then
@@ -50,13 +46,69 @@ export SID
 SESSION_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/session-env/${UUID}"
 
 # 사이클46 축① — 반대편 base 미러 (읽는 쪽이 다른 base 를 볼 수 있다)
-source "${HARNESS_HOOK_DIR}/lib/session_mirror.sh" 2>/dev/null
-type _mirror_file >/dev/null 2>&1 || _mirror_file() { :; }
+source "${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/session_mirror.sh" 2>/dev/null
+declare -F _mirror_file >/dev/null 2>&1 || _mirror_file() { :; }
 
 # 팀에이전트(PIPELINE_UUID 환경변수 존재)에서는 Agent lifecycle 불필요 — 메인 전용
 if [[ -n "${PIPELINE_UUID:-}" ]]; then
   exit 0
 fi
+
+# ===== 사이클182 A: post 단계 pre_spawn 부재 시 폴백 등록 =====
+# pre_spawn 이 없으면(PreToolUse 가 정체로 예산 초과) 예전에는 흔적 없이 exit 0 → agents/ 미등록 → sweep 이 고아로 오판했다.
+# 여기서는 pane 의 프로세스 인자를 보고 --agent-id <이름>@ 와 --parent-session-id <자기 UUID> 가 ★둘 다★ 맞는 pane 만 인정한다.
+# (sweep 과 같은 추출 규칙. 이름만 같은 타 세션 pane 은 등록하지 않는다.)
+# 하네스 timeout 을 고려해 최대 2회(1초 간격)만 본다. 어떤 결과든 hook_debug.log 에 1행을 남긴다.
+_post_fallback_register() {
+  local _dbg="${SESSION_DIR}/hook_debug.log"
+  local _try _pane _pid _args _aid _par _found="" _pids _panes _psout
+  mkdir -p "${SESSION_DIR}/agents" 2>/dev/null || true
+  echo "$(date +%T) AGENT_DBG: PRE_MISSING NAME=${AGENT_NAME} TEAM=${TEAM_NAME} UUID=${UUID} — ps 폴백 시도" >> "$_dbg" 2>/dev/null || true
+  for _try in 1 2; do
+    _panes=$(timeout 2 tmux list-panes -a -F '#{pane_id} #{pane_pid}' 2>/dev/null) || _panes=""
+    _pids=$(printf '%s\n' "$_panes" | awk 'NF==2{print $2}' | paste -sd, -) || _pids=""
+    if [[ -n "$_pids" ]]; then
+      # ★-ww 필수★ 열 폭에 잘리면 --parent-session-id 가 사라진다. ps 는 1회로 모든 pane_pid 를 본다.
+      # 죽은 pid 가 섞이면 ps 가 rc=1 이지만 나머지 출력은 유효하다 → 출력을 버리지 않는다.
+      _psout=$(timeout 2 ps -ww -o pid=,args= -p "$_pids" 2>/dev/null) || true
+      while read -r _pane _pid; do
+        [[ -z "$_pane" || -z "$_pid" ]] && continue
+        _args=$(printf '%s\n' "$_psout" | awk -v p="$_pid" '$1==p{$1="";sub(/^ /,"");print;exit}') || _args=""
+        case "$_args" in *--agent-id*) : ;; *) continue ;; esac
+        _aid=$(printf '%s' "$_args" | sed -n 's/.*--agent-id[ =]\([^ ]*\).*/\1/p' | head -1) || _aid=""
+        _par=$(printf '%s' "$_args" | sed -n 's/.*--parent-session-id[ =]\([^ ]*\).*/\1/p' | head -1) || _par=""
+        if [[ "${_aid%%@*}" == "$AGENT_NAME" && -n "$_par" && "$_par" == "$UUID" ]]; then
+          _found="$_pane"
+          break
+        fi
+      done <<< "$_panes"
+    fi
+    [[ -n "$_found" ]] && break
+    if [[ $_try -lt 2 ]]; then sleep 1; fi
+  done
+
+  if [[ -n "$_found" ]]; then
+    printf "pane_id=%s\nteam=%s\nspawned_at=%s\nagent_type=%s\nsource=post_fallback\n" \
+      "$_found" "$TEAM_NAME" "$(date +%s)" "${AGENT_NAME%%-*}" \
+      > "${SESSION_DIR}/agents/${AGENT_NAME}" 2>/dev/null || true
+    _mirror_file "${SESSION_DIR}/agents/${AGENT_NAME}"
+    # 등록이 됐으면 예전 실패 마커는 지운다(남아 있으면 중복 이름 가드가 실패로 오인한다).
+    rm -f "${SESSION_DIR}/agents/${AGENT_NAME}.failed" 2>/dev/null || true
+    mkdir -p "${SESSION_DIR}/panes" 2>/dev/null || true
+    echo "${_found}=${AGENT_NAME}" >> "${SESSION_DIR}/panes/pane_index" 2>/dev/null || true
+    _mirror_file "${SESSION_DIR}/panes/pane_index"
+    echo "$(date +%T) AGENT_DBG: POST_FALLBACK_REGISTERED NAME=${AGENT_NAME} PANE=${_found} TEAM=${TEAM_NAME} UUID=${UUID}" >> "$_dbg" 2>/dev/null || true
+    echo "✅ 에이전트 등록(폴백): ${AGENT_NAME} (${_found}) — pre_spawn 부재, 프로세스 인자로 확인"
+  else
+    printf "pane_id=\nteam=%s\nspawned_at=%s\nstatus=PRE_MISSING_NO_PANE\n" \
+      "$TEAM_NAME" "$(date +%s)" \
+      > "${SESSION_DIR}/agents/${AGENT_NAME}.failed" 2>/dev/null || true
+    _mirror_file "${SESSION_DIR}/agents/${AGENT_NAME}.failed"
+    echo "$(date +%T) SPAWN_UNVERIFIED: AGENT=${AGENT_NAME} TEAM=${TEAM_NAME} UUID=${UUID} why=PRE_MISSING_NO_PANE (in-process 팀원이면 pane 이 없어 정상)" >> "$_dbg" 2>/dev/null || true
+    echo "⚠️ [SPAWN_UNVERIFIED] ${AGENT_NAME} — pre_spawn 부재 + 일치하는 pane 없음. in-process 팀원이면 정상, pane 팀원이면 등록 누락이므로 확인 필요."
+  fi
+  _mirror_file "$_dbg"
+}
 
 # ===== 호출 컨텍스트 판별 =====
 # Pre/Post: tool_response 필드 존재 여부로 구분 (PostToolUse에만 존재)
@@ -67,7 +119,7 @@ case "$TOOL_NAME" in
   # --- Agent ---
   Agent)
     # 팀명 해석은 공용 헬퍼(resolve_team_name)에 위임 — tool_input.team_name → team_name 파일 → 런타임 teams/session-* 단일 디렉토리 → session-${UUID:0:8} 순서로 폴백
-    source "${HARNESS_HOOK_DIR}/lib/resolve_team_name.sh" 2>/dev/null
+    source "${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/resolve_team_name.sh" 2>/dev/null
     TEAM_NAME=$(resolve_team_name "$INPUT" "$UUID")
     # F8: name 파라미터 원본 추출 (unnamed fallback 전 검사)
     _RAW_AGENT_NAME=$(echo "$INPUT" | jq -r '.tool_input.name // empty' 2>/dev/null || echo "")
@@ -84,9 +136,21 @@ case "$TOOL_NAME" in
       [[ "$_F8_STATE" == "__LOCK_FAIL__" ]] && _F8_STATE="IDLE"  # F6 fallback
       case "$_F8_STATE" in
         PLAN|DEV|TEST|OK)
-          case "$_SUBAGENT_TYPE" in
-            general-purpose|Explore)
-              : ;;  # 예외: 메인 일회성 호출 허용
+          # --- [K10-MCP-ONDEMAND-F8 2026-11-06] 온디맨드 MCP 에이전트(mcp-*) 예외 (K10 스스로 ON) ---
+          # 통과 조건(전부 충족): name 없음(이 블록 진입 조건), subagent_type 이 mcp- 로 시작하고
+          #   뒤에 [A-Za-z0-9._-] 1글자 이상, prompt 에 PIPELINE_UUID= 없음.
+          #   full_task_team_guard.sh 의 K7-MCP-ONDEMAND 와 같은 조건이다(team_name 검사는 그쪽이 맡는다).
+          _F8_PROMPT=$(echo "$INPUT" | jq -r '.tool_input.prompt // empty' 2>/dev/null || echo "")
+          _F8_CASE_TYPE="$_SUBAGENT_TYPE"
+          if [[ "$_SUBAGENT_TYPE" =~ ^mcp-[A-Za-z0-9._-]+$ && "$_F8_PROMPT" != *"PIPELINE_UUID="* ]]; then
+            _F8_CASE_TYPE="__mcp_ondemand__"
+            mkdir -p "${SESSION_DIR}/logs" 2>/dev/null || true
+            echo "$(date -Iseconds)|ALLOW_MCP_ONDEMAND_F8|state=${_F8_STATE}|subagent_type=${_SUBAGENT_TYPE}" \
+              >> "${SESSION_DIR}/logs/mcp_ondemand_allow.log" 2>/dev/null || true
+          fi
+          case "$_F8_CASE_TYPE" in
+            general-purpose|Explore|__mcp_ondemand__)
+              : ;;  # 예외: 메인 일회성 호출 허용 + 온디맨드 MCP 에이전트(K10)
             *)
               echo "{\"decision\":\"block\",\"reason\":\"🚫 [F8/V6] 파이프라인 활성(${_F8_STATE}) 중 Agent() 호출에 name 파라미터 필수. subagent_type=${_SUBAGENT_TYPE}. 예: Agent(name=\\\"odev-1\\\", subagent_type=\\\"...\\\")\"}"
               exit 2
@@ -123,7 +187,11 @@ case "$TOOL_NAME" in
       else
         PRE_FILE="${SESSION_DIR}/panes/pre_spawn_${AGENT_NAME}.txt"
       fi
-      [[ -z "$PRE_FILE" || ! -f "$PRE_FILE" ]] && exit 0
+      if [[ -z "$PRE_FILE" || ! -f "$PRE_FILE" ]]; then
+        # 사이클182 A: pre_spawn 부재(PreToolUse 가 time_budget 초과 등으로 미완)여도 흔적 없이 끝내지 않는다.
+        _post_fallback_register
+        exit 0
+      fi
 
       # NEW_PANES 감지 — 최대 5회 2초 간격 retry (기본 총 10초)
       # NTFS_WSL 환경(마운트 경로 /mnt/ 감지) 시 추가 5회 2초 (총 20초)

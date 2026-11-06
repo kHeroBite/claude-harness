@@ -1,8 +1,4 @@
 #!/bin/bash
-# >>> harness preamble
-_HP="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)}"
-[ -f "$_HP/hooks/harness_preamble.sh" ] && . "$_HP/hooks/harness_preamble.sh" 2>/dev/null || { [ -f "$_HP/harness_preamble.sh" ] && . "$_HP/harness_preamble.sh" 2>/dev/null; } || true
-# <<< harness preamble
 # sendmessage_shutdown_sweep.sh — shutdown_request 발송 후 pane 자동 정리
 # 매처: PostToolUse:SendMessage
 # 원칙: shutdown_request 발송 → ACK 2단계(received/done) 대기 → 미수신 시 retry queue + 물리 kill
@@ -102,13 +98,42 @@ if [[ "$MSG_TYPE" != "shutdown_request" ]]; then
   # ★ 발신자 식별은 ack_utils.sh 의 resolve_sender_from_tmux 단일 경로만 쓴다 (L-457).
   #   CLAUDE_AGENT_NAME 은 **실재하지 않는 환경변수**임을 실측 확인했고,
   #   ack_utils.sh 서두(V3)가 그 사용을 명시적으로 금지한다. 쓰면 조용히 죽은 코드가 된다.
+  #
+  # [c182 H-2 근본 수정] 이 hook 은 ★응답한 팀원 프로세스★ 에서 돈다. 그래서 .session_id(=UUID)는
+  #   팀원 자신의 세션이고, 마커는 ★리드 UUID★ 하위에 있다 → 종전 코드는 한 번도 지우지 못했다(실측
+  #   shutdown_response 7건 전부 팀원 UUID 로그에만 존재). 아울러 resolve_sender_from_tmux 는
+  #   "PANE|NAME" 을 돌려주는데 그대로 정규화해 '81odev-6' 이 되어 이름도 맞지 않았다.
+  #   1순위: 조상 argv(--agent-id NAME@TEAM + --parent-session-id LEAD) 를 chain_agent_resolve 로 읽고,
+  #          리드 session-env/team_name == TEAM 소유 검증까지 통과한 경우에만 ★리드 UUID 의 자기 이름 마커★
+  #          하나를 지운다(그 외 타 세션 파일은 건드리지 않는다 — §a).
+  #   2순위(증명 실패): 종전 경로(자기 UUID)에서 이름만 바로잡아 해제 시도 + H2_CLEAR_UNPROVEN 기록.
+  #          이 경우 리드 마커는 남고, 판정 측(orphan_scan shutdown_stale_list 의 pane 소멸·spawned_at
+  #          제외)이 오탐을 흡수한다.
   if [[ "$MSG_TYPE" == "shutdown_response" && -n "${UUID:-}" ]]; then
-    _H2_LIB_R="${HARNESS_HOOK_DIR}/lib/orphan_scan.sh"
-    _H2_ACK="${HARNESS_HOOK_DIR}/lib/ack_utils.sh"
-    if [[ -r "$_H2_LIB_R" && -r "$_H2_ACK" ]]; then
-      _H2_SELF=$(timeout 2 bash -c "source '$_H2_ACK' 2>/dev/null; resolve_sender_from_tmux '$UUID' 2>/dev/null" 2>/dev/null) || _H2_SELF=""
-      if [[ -n "$_H2_SELF" ]]; then
-        timeout 2 bash -c "source '$_H2_LIB_R' 2>/dev/null; shutdown_marker_clear '$UUID' '$_H2_SELF'" 2>/dev/null || true
+    _H2_LIB_R="${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/orphan_scan.sh"
+    _H2_ACK="${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/ack_utils.sh"
+    _H2_CA="${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/chain_agent.sh"
+    if [[ -r "$_H2_LIB_R" ]]; then
+      # 본 프로세스에서 직접 호출한다 — chain_agent_resolve 는 $$ 부터 조상 6단계만 본다.
+      #   timeout·$( ) 서브셸로 감싸면 그만큼 단계를 잃어 claude 프로세스에 못 닿을 수 있다.
+      #   (함수 정의만 있는 파일이고 /proc 읽기뿐이라 블로킹 위험 없음. 실패는 if 조건이라 ERR trap 미발동.)
+      _H2_LEAD=""; _H2_NAME=""
+      if [[ -r "$_H2_CA" ]] && source "$_H2_CA" 2>/dev/null && chain_agent_resolve 2>/dev/null; then
+        _H2_LEAD="${CA_LEAD:-}"; _H2_NAME="${CA_NAME:-}"
+      fi
+      if [[ "$_H2_LEAD" =~ ^[0-9a-f-]{36}$ && "$_H2_NAME" =~ ^[A-Za-z0-9._-]+$ ]]; then
+        timeout 2 bash -c "source '$_H2_LIB_R' 2>/dev/null; shutdown_marker_clear '$_H2_LEAD' '$_H2_NAME'" 2>/dev/null || true
+        _log "H2_CLEAR" "lead=$_H2_LEAD name=$_H2_NAME proof=argv"
+      else
+        _H2_SELF=""
+        if [[ -r "$_H2_ACK" ]]; then
+          _H2_SELF=$(timeout 2 bash -c "source '$_H2_ACK' 2>/dev/null; resolve_sender_from_tmux '$UUID' 2>/dev/null" 2>/dev/null) || _H2_SELF=""
+          _H2_SELF="${_H2_SELF##*|}"
+        fi
+        if [[ -n "$_H2_SELF" ]]; then
+          timeout 2 bash -c "source '$_H2_LIB_R' 2>/dev/null; shutdown_marker_clear '$UUID' '$_H2_SELF'" 2>/dev/null || true
+        fi
+        _log "H2_CLEAR_UNPROVEN" "self=${_H2_SELF:-?} 리드 소유 증명 실패 — 판정 측 제외(pane 소멸·spawned_at)에 위임"
       fi
     fi
   fi
@@ -141,7 +166,7 @@ REQUEST_ID=$(echo "$INPUT" | jq -r '.tool_input.message.request_id // empty' 2>/
 # fail-open: 라이브러리 부재/오류/타임아웃 전부 무시하고 기존 흐름 그대로 진행한다.
 # 세션 격리: 자기 UUID 하위(session-env/$UUID/evidence/shutdown_sent)에만 쓴다.
 # ============================================================================
-_H2_LIB="${HARNESS_HOOK_DIR}/lib/orphan_scan.sh"
+_H2_LIB="${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/orphan_scan.sh"
 if [[ -r "$_H2_LIB" ]]; then
   timeout 2 bash -c "source '$_H2_LIB' 2>/dev/null; shutdown_marker_write '$UUID' '$TO'" 2>/dev/null || true
 fi
@@ -182,7 +207,12 @@ if [[ -z "$PANE_ID" ]]; then
 fi
 
 # L-213 보호 (M2): 다른 tmux 세션 소속 pane이면 스킵
-MY_TMUX_SESSION=$(tmux display-message -p '#{session_name}' 2>/dev/null || echo "")
+# [c182 H-2] -t 보완 — 미지정 시 hook 의 pane 이 아니라 클라이언트 활성 pane 의 세션을 읽는다.
+if [[ "${TMUX_PANE:-}" =~ ^%[0-9]+$ ]]; then
+  MY_TMUX_SESSION=$(tmux display-message -t "$TMUX_PANE" -p '#{session_name}' 2>/dev/null || echo "")
+else
+  MY_TMUX_SESSION=$(tmux display-message -p '#{session_name}' 2>/dev/null || echo "")
+fi
 PANE_TMUX_SESSION=$(tmux display-message -t "$PANE_ID" -p '#{session_name}' 2>/dev/null || echo "")
 if [[ -n "$MY_TMUX_SESSION" && -n "$PANE_TMUX_SESSION" && "$MY_TMUX_SESSION" != "$PANE_TMUX_SESSION" ]]; then
   _sweep_skip "cross_tmux_session" "my=$MY_TMUX_SESSION pane=$PANE_TMUX_SESSION"
@@ -219,8 +249,31 @@ AGENT_TIMEOUT=$(_timeout_by_type "$AGENT_TYPE")
 # F3: 백그라운드 sweeper를 timeout 30s로 래핑 + PPID 감시
 # F2: ACK 2단계 (received 5s×3 → done AGENT_TIMEOUT) → 실패 시 retry_queue + kill
 # ============================================================================
-PARENT_PID=$$
-_log "DISPATCH" "sweeper_pid=pending parent_pid=$PARENT_PID timeout=$AGENT_TIMEOUT"
+# [c182] 생존 기준 = 조상 체인의 ★리드 claude 프로세스★ PID.
+#   종전 PARENT_PID=$$ 는 이 hook 자신인데, hook 은 아래 nohup 디스패치 직후 exit 0 한다.
+#   그래서 sweeper 는 첫 재시도(5초) 뒤 kill -0 실패로 항상 종료됐다(실측: 리드 로그 ACK_RECEIVED_RETRY
+#   132건 전부 try=1, try=2 이상 0건). 5초 넘게 늦은 ACK 는 한 번도 잡힌 적이 없다.
+#   판별: argv0 가 */claude/versions/* 이거나 basename 이 claude 인 첫 조상(최대 8단계).
+#   못 찾으면 빈 값 → 생존 확인 생략, 재시도 횟수·HARD_LIMIT(timeout) 상한까지만 돈다(무한 대기 없음).
+_sweep_lead_pid() {
+  local _p=$$ _i _a0 _s
+  for _i in 1 2 3 4 5 6 7 8; do
+    [[ "$_p" =~ ^[0-9]+$ ]] && (( _p > 1 )) || return 1
+    _a0=""
+    if [[ -r "/proc/$_p/cmdline" ]]; then
+      IFS= read -r -d '' _a0 < "/proc/$_p/cmdline" || true
+    fi
+    case "$_a0" in
+      */claude/versions/*|claude|*/claude) printf '%s' "$_p"; return 0 ;;
+    esac
+    _s=$(<"/proc/$_p/stat") || return 1
+    _s="${_s##*) }"
+    read -r _ _p _ <<<"$_s"
+  done
+  return 1
+}
+PARENT_PID=$(_sweep_lead_pid 2>/dev/null) || PARENT_PID=""
+_log "DISPATCH" "sweeper_pid=pending parent_pid=${PARENT_PID:-none} timeout=$AGENT_TIMEOUT"
 
 # F3: timeout 명령으로 서브쉘 전체 수명 제한 (SIGKILL escalation 2초)
 # 주의: AGENT_TIMEOUT이 30 초과(oplan 120/odev 90/otest 60)인 경우 해당 값 사용
@@ -236,7 +289,12 @@ _log "DISPATCH" "sweeper_pid=pending parent_pid=$PARENT_PID timeout=$AGENT_TIMEO
 # 설정된 경우에만 그 값을 사용(검증 목적 — 실제 운영 경로에서는 절대 설정되지 않음).
 _G4_SAMPLE_INTERVAL="${G4_SAMPLE_INTERVAL_OVERRIDE:-30}"
 _G4_THRESHOLD_PRECALC=$(( AGENT_TIMEOUT * 5 ))
-HARD_LIMIT=$(( _G4_THRESHOLD_PRECALC + 60 ))
+# [c182] received 대기 = 5초 × _RECV_TRIES (AGENT_TIMEOUT 만큼, 최소 종전 3회).
+#   종전 3회(15초)는 PARENT_PID 결함 때문에 실제로는 5초였고, 정상화해도 15초는 짧다.
+#   최악 경로 = received(AT) + done(AT) + G4 추가대기(4AT) + 샘플 30s → HARD_LIMIT 을 6AT+60 으로 맞춘다.
+_RECV_TRIES=$(( AGENT_TIMEOUT / 5 ))
+(( _RECV_TRIES < 3 )) && _RECV_TRIES=3
+HARD_LIMIT=$(( AGENT_TIMEOUT * 6 + 60 ))
 
 if [[ -f "$AGENT_FILE" && -n "$PANE_ID" ]]; then
   echo "shutdown_sent_at=$(date +%s)" >> "$AGENT_FILE"
@@ -245,14 +303,19 @@ fi
 nohup timeout -k 2 "${HARD_LIMIT}s" bash -c "
   # F3: PPID 감시 sleep loop (1초 단위)
   PARENT_PID='$PARENT_PID'
+  # [c182] 리드 생존 확인 — PID 미상이면 참(상한은 재시도 횟수·timeout HARD_LIMIT 이 보장).
+  _lead_alive() {
+    [ -z \"\$PARENT_PID\" ] && return 0
+    kill -0 \"\$PARENT_PID\" 2>/dev/null
+  }
   _wait_with_ppid_watch() {
     local _secs=\"\$1\"
     local _i=0
     while [ \"\$_i\" -lt \"\$_secs\" ]; do
       sleep 1
       _i=\$((_i + 1))
-      if ! kill -0 \"\$PARENT_PID\" 2>/dev/null; then
-        exit 0  # 부모 사망 → 즉시 종료
+      if ! _lead_alive; then
+        exit 0  # 리드 사망 → 즉시 종료
       fi
     done
   }
@@ -278,20 +341,20 @@ nohup timeout -k 2 "${HARD_LIMIT}s" bash -c "
 
   # F2: ack_utils.sh source
   # shellcheck disable=SC1091
-  source \"\${HARNESS_HOOK_DIR}/lib/ack_utils.sh\" 2>/dev/null || {
+  source \"\${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/ack_utils.sh\" 2>/dev/null || {
     _log_bg 'ERR_ACK_UTILS_MISSING'
   }
 
   # pane_sweeper.sh 선행 로드 (어느 단계에서든 즉시 kill 가능)
   # shellcheck disable=SC1091
-  source \"\${HARNESS_HOOK_DIR}/lib/pane_sweeper.sh\" 2>/dev/null
+  source \"\${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/pane_sweeper.sh\" 2>/dev/null
 
   # F-BASH-EXIT: pane이 이미 bash 상태이면 ACK 대기 없이 즉시 kill
   # 이유: /exit로 bash 탈출한 경우 received ACK를 절대 받을 수 없음
   #       ACK 대기 15s + hook timeout 15s → PPID 사망 → sweeper 종료 → kill 미실행 버그
-  if type is_bash_orphan >/dev/null 2>&1 && is_bash_orphan '$PANE_ID'; then
+  if declare -F is_bash_orphan >/dev/null 2>&1 && is_bash_orphan '$PANE_ID'; then
     _log_bg 'BASH_ORPHAN_IMMEDIATE' 'skipping_ack_wait'
-    if type kill_bash_pane >/dev/null 2>&1 && kill_bash_pane '$PANE_ID' 'bash_exit(to=$TO)'; then
+    if declare -F kill_bash_pane >/dev/null 2>&1 && kill_bash_pane '$PANE_ID' 'bash_exit(to=$TO)'; then
       _log_bg 'FORCE_KILL_OK' 'immediate'
       if [ -f '$AGENT_FILE' ]; then
         CURRENT_PANE=\$(grep '^pane_id=' '$AGENT_FILE' 2>/dev/null | cut -d= -f2)
@@ -305,10 +368,12 @@ nohup timeout -k 2 "${HARD_LIMIT}s" bash -c "
     exit 0
   fi
 
-  # F2: received ACK 대기 — 3회 × 5초 재시도
+  # F2: received ACK 대기 — $_RECV_TRIES 회 × 5초 재시도 (c182: 리드 생존 동안, 횟수 상한)
   _received=0
-  if type ack_wait_for >/dev/null 2>&1; then
-    for _try in 1 2 3; do
+  if declare -F ack_wait_for >/dev/null 2>&1; then
+    _try=0
+    while [ \"\$_try\" -lt $_RECV_TRIES ]; do
+      _try=\$((_try + 1))
       if ack_wait_for '$UUID' '$TO' '$REQUEST_ID' 'received' 5; then
         _received=1
         _log_bg 'ACK_RECEIVED' \"try=\$_try\"
@@ -316,9 +381,9 @@ nohup timeout -k 2 "${HARD_LIMIT}s" bash -c "
       fi
       _log_bg 'ACK_RECEIVED_RETRY' \"try=\$_try\"
       # ACK 대기 중 bash 탈출 감지 → 즉시 kill (hook timeout 이내 처리)
-      if type is_bash_orphan >/dev/null 2>&1 && is_bash_orphan '$PANE_ID'; then
+      if declare -F is_bash_orphan >/dev/null 2>&1 && is_bash_orphan '$PANE_ID'; then
         _log_bg 'BASH_ORPHAN_DURING_WAIT' \"try=\$_try\"
-        if type kill_bash_pane >/dev/null 2>&1 && kill_bash_pane '$PANE_ID' 'bash_exit_during_wait(to=$TO)'; then
+        if declare -F kill_bash_pane >/dev/null 2>&1 && kill_bash_pane '$PANE_ID' 'bash_exit_during_wait(to=$TO)'; then
           _log_bg 'FORCE_KILL_OK' \"during_wait_try=\$_try\"
           if [ -f '$AGENT_FILE' ]; then
             CURRENT_PANE=\$(grep '^pane_id=' '$AGENT_FILE' 2>/dev/null | cut -d= -f2)
@@ -331,24 +396,27 @@ nohup timeout -k 2 "${HARD_LIMIT}s" bash -c "
         fi
         exit 0
       fi
-      # PPID 감시
-      kill -0 \"\$PARENT_PID\" 2>/dev/null || exit 0
+      # 리드 생존 감시 (c182: hook 자신이 아니라 리드 claude)
+      if ! _lead_alive; then
+        _log_bg 'LEAD_GONE' \"try=\$_try\"
+        exit 0
+      fi
     done
   fi
 
   if [ \"\$_received\" -eq 0 ]; then
-    _log_bg 'ACK_RECEIVED_TIMEOUT' 'no_response_in_15s'
-    if type retry_queue_append >/dev/null 2>&1; then
+    _log_bg 'ACK_RECEIVED_TIMEOUT' \"no_response_in_\$(( $_RECV_TRIES * 5 ))s\"
+    if declare -F retry_queue_append >/dev/null 2>&1; then
       retry_queue_append '$UUID' '$TO' '$REQUEST_ID' 'received_timeout'
     fi
   else
     # received OK → done 대기 (pane이 실제로 claude 종료까지 갈 시간)
-    if type ack_wait_for >/dev/null 2>&1; then
+    if declare -F ack_wait_for >/dev/null 2>&1; then
       if ack_wait_for '$UUID' '$TO' '$REQUEST_ID' 'done' '$AGENT_TIMEOUT'; then
         _log_bg 'ACK_DONE' 'graceful'
       else
         _log_bg 'ACK_DONE_TIMEOUT' \"waited=$AGENT_TIMEOUT\"
-        if type retry_queue_append >/dev/null 2>&1; then
+        if declare -F retry_queue_append >/dev/null 2>&1; then
           retry_queue_append '$UUID' '$TO' '$REQUEST_ID' 'done_timeout'
         fi
       fi
@@ -356,8 +424,8 @@ nohup timeout -k 2 "${HARD_LIMIT}s" bash -c "
   fi
 
   # 물리 회수: pane 상태 확인 후 bash 잔류 시 kill (force)
-  if type is_bash_orphan >/dev/null 2>&1 && is_bash_orphan '$PANE_ID'; then
-    if type kill_bash_pane >/dev/null 2>&1 && kill_bash_pane '$PANE_ID' 'shutdown_sweep(to=$TO)'; then
+  if declare -F is_bash_orphan >/dev/null 2>&1 && is_bash_orphan '$PANE_ID'; then
+    if declare -F kill_bash_pane >/dev/null 2>&1 && kill_bash_pane '$PANE_ID' 'shutdown_sweep(to=$TO)'; then
       _log_bg 'FORCE_KILL_OK'
       # 에이전트 등록 파일 정리 (M3 race 방어)
       if [ -f '$AGENT_FILE' ]; then
@@ -378,10 +446,11 @@ nohup timeout -k 2 "${HARD_LIMIT}s" bash -c "
       _G4_THRESHOLD=\$(( $AGENT_TIMEOUT * 5 ))
       _G4_STATUS_OK=0
       _G4_STATUS_FILE=\"${CLAUDE_CONFIG_DIR:-\$HOME/.claude}/session-env/${UUID}/status\"
-      if source \"\${HARNESS_HOOK_DIR}/lib/state_machine.sh\" 2>/dev/null && type status_read >/dev/null 2>&1; then
+      if source \"\${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/state_machine.sh\" 2>/dev/null && declare -F status_read >/dev/null 2>&1; then
         _G4_CUR_STATUS=\$(status_read \"\$_G4_STATUS_FILE\" 2>/dev/null)
         case \"\$_G4_CUR_STATUS\" in
-          *PAUSE*|*ABORT*|*RALPH*|__LOCK_FAIL__)
+          # ROOF-COMPAT(deprecation window 1주기 — 구 RALPH/oralph_active 인식 제거 예정)
+          *PAUSE*|*ABORT*|*ROOF*|*RALPH*|__LOCK_FAIL__)
             _log_bg 'G4_SKIP_STATUS' \"status=\$_G4_CUR_STATUS\" ;;
           *)
             _G4_STATUS_OK=1 ;;
@@ -397,7 +466,7 @@ nohup timeout -k 2 "${HARD_LIMIT}s" bash -c "
         while [ \"\$_G4_ELAPSED\" -lt \"\$_G4_EXTRA_WAIT\" ]; do
           sleep 5
           _G4_ELAPSED=\$((_G4_ELAPSED + 5))
-          if ! kill -0 \"\$PARENT_PID\" 2>/dev/null; then
+          if ! _lead_alive; then
             _G4_ABORTED=1
             break
           fi
@@ -415,11 +484,11 @@ nohup timeout -k 2 "${HARD_LIMIT}s" bash -c "
         if [ \"\$_G4_ABORTED\" -eq 0 ]; then
           _G4_SAMPLE_1=\$(tmux capture-pane -p -t '$PANE_ID' 2>/dev/null | tail -30)
           sleep $_G4_SAMPLE_INTERVAL
-          if kill -0 \"\$PARENT_PID\" 2>/dev/null && tmux list-panes -a -F '#{pane_id}' 2>/dev/null | grep -qF '$PANE_ID' && [ ! -f \"\$_NO_KILL_MARKER\" ]; then
+          if _lead_alive && tmux list-panes -a -F '#{pane_id}' 2>/dev/null | grep -qF '$PANE_ID' && [ ! -f \"\$_NO_KILL_MARKER\" ]; then
             _G4_SAMPLE_2=\$(tmux capture-pane -p -t '$PANE_ID' 2>/dev/null | tail -30)
             if [ \"\$_G4_SAMPLE_1\" = \"\$_G4_SAMPLE_2\" ]; then
               _log_bg 'G4_TEXT_UNCHANGED' \"confirmed_still\"
-              if type kill_bash_pane >/dev/null 2>&1 && kill_bash_pane '$PANE_ID' 'G4_conditional_auto_kill(to=$TO)'; then
+              if declare -F kill_bash_pane >/dev/null 2>&1 && kill_bash_pane '$PANE_ID' 'G4_conditional_auto_kill(to=$TO)'; then
                 _log_bg 'G4_KILL_OK'
                 if [ -f '$AGENT_FILE' ]; then
                   CURRENT_PANE=\$(grep '^pane_id=' '$AGENT_FILE' 2>/dev/null | cut -d= -f2)

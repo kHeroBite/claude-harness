@@ -1,8 +1,4 @@
 #!/bin/bash
-# >>> harness preamble
-_HP="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)}"
-[ -f "$_HP/hooks/harness_preamble.sh" ] && . "$_HP/hooks/harness_preamble.sh" 2>/dev/null || { [ -f "$_HP/harness_preamble.sh" ] && . "$_HP/harness_preamble.sh" 2>/dev/null; } || true
-# <<< harness preamble
 # git ls-tree/ls-files 의 한글 파일명 8진 이스케이프 누락을 경고하는 PreToolUse hook (경고 전용 — 절대 차단하지 않음)
 #
 # ─────────────────────────────────────────────────────────────────────────────
@@ -11,9 +7,9 @@ _HP="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null
 # git 의 `core.quotepath` 기본값(true)은 비ASCII 파일명을 8진 이스케이프 + 따옴표로
 # 감싸서 출력한다. 예:
 #     git ls-tree -r --name-only HEAD
-#     → "src/1002_\354\227\260\352\263\204\353\217\204\355\214\235\354\227\205.Designer.cs"
+#     → "Mars/1002_\354\227\260\352\263\204\353\217\204\355\214\235\354\227\205.Designer.cs"
 #
-# 실측 (한글 파일명이 다수인 저장소, HEAD 기준):
+# 실측 (2026-09-13, /mnt/c/DATA/Project/Mars, HEAD 기준):
 #     git ls-tree -r --name-only HEAD | grep -c '\.cs$'                        → 287
 #     git -c core.quotepath=false ls-tree -r --name-only HEAD | grep -c '\.cs$' → 406
 #     git ls-tree -r --name-only -z HEAD | tr '\0' '\n' | grep -c '\.cs$'       → 406
@@ -106,7 +102,7 @@ fi
 cat >&2 <<'WARN'
 ⚠️ [git quotepath 경고] git ls-tree/ls-files 출력을 필터·비교에 쓰고 있는데 이스케이프 해제 옵션이 없습니다.
    문제: core.quotepath 기본값이 한글 파일명을 8진 이스케이프+따옴표로 감쌉니다.
-         실측 예시: `.cs` 필터 기준 287 vs 406 — ★119건(29.3%) 누락★.
+         실측 (Mars/HEAD): `.cs` 필터 기준 287 vs 406 — ★119건(29.3%) 누락★.
          ※ 전체 개수(wc -l)는 2026=2026 으로 차이가 안 보입니다. 필터에서만 드러납니다.
    교정: `git -c core.quotepath=false ls-tree ...`  또는  `git ls-tree -z ... | tr '\0' '\n'`
          (둘 중 ★하나만★ 써도 해결됩니다 — 실측 둘 다 406)

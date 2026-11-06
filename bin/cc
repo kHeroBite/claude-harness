@@ -1,31 +1,59 @@
 #!/bin/bash
 # cc — Claude Code 진입 (계정 메뉴 + cas 격리 진입)
-# 버전: 2.1 (--continue 옵션 지원)
+# 버전: 2.3 (계정 메뉴 → 롤 메뉴 / 재개 메뉴, 공용 상자형 메뉴 _box_menu)
 # 변경: 2.0(멀티계정) → 2.1(--continue 파싱, ccc는 cc 래퍼로 단순화)
+#       → 2.2(cc back · cc --role front · cc back:결제 · cc <계정> <롤>, 기동 전 롤 검증·기록, ccc 재개 통로 --resume)
+#       → 2.3(인자 없이 tty 로 실행하면 계정 메뉴 다음 같은 모양의 롤 메뉴(6롤 + 직접 입력),
+#             ccc 가 넘기는 --resume-pick 이면 롤별 최신 세션·최근 대화 미리보기 재개 메뉴)
+# 사용: cc [작업디렉터리] [계정] [롤[:영역]] [--role 롤] [--profile 계정] [--continue]
+#       cc                 계정 메뉴 → 롤 메뉴(tty 대화형일 때만, 계정·롤 인자가 있으면 메뉴 없이 기존 동작)
+#       (ccc 전용) --resume <sid> [--role 롤] [--profile-default 계정] · --resume-pick(계정 메뉴 → 재개 메뉴)
+# 시험: CC_ROLE_CHECK_ONLY=1 이면 cas 를 띄우지 않고 최종 인자만 출력한다(주입이 없으면 계정 메뉴도 건너뛴다).
+#       CC_MENU_PICK=토큰,토큰… 은 메뉴마다 1개씩 소비한다(번호 1부터·enter·q·항목 키). CC_ROLE_INPUT=입력,… 은 직접 입력마다 1개.
 set -euo pipefail
 
-# 인수 파싱: WORK_DIR(위치 인수) + --continue 플래그 + --profile NAME (메뉴 우회)
+# 롤 공용 CLI(role_lib). 시험·스테이징은 ROLE_LIB 로 바꾼다.
+ROLE_LIB="${ROLE_LIB:-${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/role_lib.py}"
+
+# 인수 파싱: 플래그 + 위치 인수(디렉터리·계정·롤은 아래에서 판정)
 WORK_DIR=""
 CONTINUE_FLAG=""
 FORCED_PROFILE=""
-_skip_next=0
+ROLE_ARG=""
+RESUME_SID=""
+DEFAULT_PROFILE=""
+RESUME_PICK=""
+declare -a _POS=()
 _args=("$@")
-for _i in "${!_args[@]}"; do
-    if [[ "$_skip_next" == "1" ]]; then _skip_next=0; continue; fi
+_n_args=${#_args[@]}
+_i=0
+while (( _i < _n_args )); do
     _arg="${_args[$_i]}"
-    if [[ "$_arg" == "--continue" ]]; then
-        CONTINUE_FLAG="--continue"
-    elif [[ "$_arg" == "--profile" ]]; then
-        # 다음 인자를 프로파일명으로 사용 (메뉴 우회)
-        _next=$((_i + 1))
-        FORCED_PROFILE="${_args[$_next]:-}"
-        _skip_next=1
-    elif [[ -z "$WORK_DIR" ]]; then
-        WORK_DIR="$_arg"
-    fi
+    case "$_arg" in
+        --continue)
+            CONTINUE_FLAG="--continue" ;;
+        --profile)
+            # 다음 인자를 프로파일명으로 사용 (메뉴 우회)
+            _i=$((_i + 1)); FORCED_PROFILE="${_args[$_i]:-}" ;;
+        --role)
+            _i=$((_i + 1)); ROLE_ARG="${_args[$_i]:-}"
+            if [[ -z "$ROLE_ARG" ]]; then echo "❌ --role 뒤에 롤이 없습니다." >&2; exit 1; fi ;;
+        --resume)
+            _i=$((_i + 1)); RESUME_SID="${_args[$_i]:-}"
+            if [[ ! "$RESUME_SID" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
+                echo "❌ --resume 값이 세션 ID(UUID) 형식이 아닙니다: ${RESUME_SID}" >&2; exit 1
+            fi ;;
+        --profile-default)
+            _i=$((_i + 1)); DEFAULT_PROFILE="${_args[$_i]:-}" ;;
+        --resume-pick)
+            # ccc 가 넘긴다: 대화형이면 계정 메뉴 → 재개 메뉴, 아니면 --continue 로 폴백
+            RESUME_PICK=1 ;;
+        *)
+            _POS+=("$_arg") ;;
+    esac
+    _i=$((_i + 1))
 done
-WORK_DIR="${WORK_DIR:-$(pwd)}"
-PROFILES_ROOT="$HOME/.claude-profiles"
+PROFILES_ROOT="${CLAUDE_PROFILES_ROOT:-$HOME/.claude-profiles}"
 
 # 프로파일 목록 수집 (.credentials.json 존재하는 디렉토리만, 알파벳 정렬)
 mapfile -t PROFILES < <(
@@ -38,16 +66,243 @@ mapfile -t PROFILES < <(
 # 0개: 에러 종료
 if [[ ${#PROFILES[@]} -eq 0 ]]; then
     echo "❌ 등록된 프로파일이 없습니다."
-    echo ""
-    echo "   하네스를 처음 설치했다면 프로파일을 1개 만들어야 합니다."
-    echo "   다음 명령으로 만드세요:"
-    echo ""
-    echo "       cas create <이름>       (예: cas create default)"
-    echo ""
-    echo "   생성 후 해당 프로파일로 1회 로그인하면 .credentials.json 이 만들어지고"
-    echo "   이후 cc 가 정상 동작합니다."
+    echo "   다음 명령으로 만드세요: cas create <이름>"
     exit 1
 fi
+
+_is_profile() {
+    local p
+    for p in "${PROFILES[@]}"; do [[ "$p" == "$1" ]] && return 0; done
+    return 1
+}
+
+# 롤 정규화: 성공하면 _ROLE_OUT=저장 값 rc=0, 롤이 아니면 rc=3, 롤이지만 영역 오류면 rc=2(사유는 _ROLE_ERR)
+_ROLE_ERR=""
+_ROLE_OUT=""
+_NORM_KEY=""; _NORM_RC=0; _NORM_OUT=""; _NORM_ERR=""
+_role_norm() {
+    local out rc
+    _ROLE_ERR=""; _ROLE_OUT=""
+    if [[ ! -f "$ROLE_LIB" ]]; then _ROLE_ERR="롤 정의 도구 없음: $ROLE_LIB"; return 3; fi
+    # 같은 작업 디렉터리·같은 값의 직전 결과는 재사용한다(인자 해석 직후 _resolve_role 이 같은 값을 다시 정규화함)
+    if [[ "$_NORM_KEY" == "$WORK_DIR|$1" ]]; then
+        _ROLE_OUT="$_NORM_OUT"; _ROLE_ERR="$_NORM_ERR"; return "$_NORM_RC"
+    fi
+    out=$(cd "$WORK_DIR" && python3 -B "$ROLE_LIB" norm "$1" 2>&1) && rc=0 || rc=$?
+    if [[ $rc -eq 0 ]]; then _ROLE_OUT="$out"
+    else
+        _ROLE_ERR="$out"
+        if printf '%s' "$out" | grep -q '^AREA_'; then rc=2; else rc=3; fi
+    fi
+    _NORM_KEY="$WORK_DIR|$1"; _NORM_RC=$rc; _NORM_OUT="$_ROLE_OUT"; _NORM_ERR="$_ROLE_ERR"
+    return "$rc"
+}
+
+_reject() {
+    # 기동 전 거부: 사유 + 롤 목록 + 프로파일 목록, rc=1
+    echo "❌ $1" >&2
+    [[ -n "${2:-}" ]] && printf '%s\n' "$2" >&2
+    echo "사용: cc [작업디렉터리] [계정] [롤[:영역]]  (예: cc back · cc --role front · cc back:결제 · cc ${PROFILES[0]} back)" >&2
+    if [[ -f "$ROLE_LIB" ]]; then
+        echo "롤 목록:" >&2
+        python3 -B "$ROLE_LIB" list 2>/dev/null | grep -v '^  \[그룹\]' >&2 || true
+    fi
+    echo "프로파일 목록: ${PROFILES[*]}" >&2
+    exit 1
+}
+
+# 위치 인수 판정 1단계: 존재하는 디렉터리 → WORK_DIR (첫 번째만, 기존 동작 보존)
+declare -a _REST=()
+for _arg in "${_POS[@]}"; do
+    if [[ -z "$WORK_DIR" && -d "$_arg" ]]; then
+        WORK_DIR="$_arg"
+        if [[ "$_arg" != */* && -f "$ROLE_LIB" ]] && python3 -B "$ROLE_LIB" norm "$_arg" >/dev/null 2>&1; then
+            echo "ℹ️  '$_arg' 는 디렉터리로 해석했습니다. 롤로 쓰려면: cc --role $_arg" >&2
+        fi
+    else
+        _REST+=("$_arg")
+    fi
+done
+WORK_DIR="${WORK_DIR:-$(pwd)}"
+WORK_DIR="$(cd "$WORK_DIR" && pwd)"
+
+# 위치 인수 판정 2단계: 롤 별칭 → 롤, 프로파일 이름 → 계정, 둘 다·둘 다 아님 → 거부
+for _arg in "${_REST[@]}"; do
+    _rrc=0
+    _role_norm "$_arg" || _rrc=$?
+    if [[ $_rrc -eq 2 ]]; then _reject "영역이 정의와 맞지 않습니다: $_arg" "$_ROLE_ERR"; fi
+    if [[ $_rrc -eq 0 ]] && _is_profile "$_arg"; then
+        _reject "'$_arg' 는 롤 별칭이자 프로파일 이름이라 모호합니다. --role $_arg 또는 --profile $_arg 로 지정하세요."
+    elif [[ $_rrc -eq 0 ]]; then
+        [[ -n "$ROLE_ARG" ]] && _reject "롤이 두 번 지정됐습니다: $ROLE_ARG, $_arg"
+        ROLE_ARG="$_arg"
+    elif _is_profile "$_arg"; then
+        [[ -n "$FORCED_PROFILE" ]] && _reject "계정이 두 번 지정됐습니다: $FORCED_PROFILE, $_arg"
+        FORCED_PROFILE="$_arg"
+    else
+        _why=""; [[ -f "$ROLE_LIB" ]] || _why="롤 라이브러리 없음: $ROLE_LIB"
+        _reject "알 수 없는 인자: $_arg (디렉터리·롤·프로파일 어느 것도 아님)" "$_why"
+    fi
+done
+
+# --role 값 검증(인자 해석 직후 + 재개·롤 메뉴 선택 뒤에 다시 호출)
+ROLE_VALUE=""
+_resolve_role() {
+    local _rrc _rid
+    ROLE_VALUE=""
+    [[ -n "$ROLE_ARG" ]] || return 0
+    _rrc=0
+    _role_norm "$ROLE_ARG" || _rrc=$?
+    if [[ $_rrc -eq 2 && -n "$RESUME_SID" ]]; then
+        # 재개: 기록된 영역이 지금 정의에 없으면(정의 변경·삭제) 롤만 유지하고 재개는 막지 않는다
+        _rid="${ROLE_ARG%%:*}"; _rid="${_rid%%#*}"
+        echo "⚠️  기록된 영역이 현재 정의에 없어 롤 ${_rid} 로 재개합니다: ${ROLE_ARG}" >&2
+        _rrc=0
+        _role_norm "$_rid" || _rrc=$?
+    fi
+    if [[ $_rrc -ne 0 ]]; then _reject "알 수 없는 롤: $ROLE_ARG" "$_ROLE_ERR"; fi
+    ROLE_VALUE="$_ROLE_OUT"
+}
+_resolve_role
+
+# 메뉴 연쇄 판정(단일 출처): 계정·롤 인자 없이 tty 대화형(또는 CC_MENU_PICK 주입)일 때만 롤·재개 메뉴를 띄운다.
+#   --resume-pick 은 --profile 과 함께 와도 된다(ccc <계정> → 계정 메뉴만 생략하고 그 계정 기준 재개 메뉴).
+#   --profile 만 있는 cc(cmon 경로)·롤 인자·--continue·--resume·비 tty 는 메뉴 없이 기존 동작.
+_PICK_MODE=0
+if [[ -z "$ROLE_ARG" && -z "$CONTINUE_FLAG" && -z "$RESUME_SID" ]] \
+   && [[ -z "$FORCED_PROFILE" || -n "$RESUME_PICK" ]]; then
+    if [[ -t 0 && -t 1 ]] || [[ -n "${CC_MENU_PICK:-}" ]]; then _PICK_MODE=1; fi
+fi
+# --resume-pick 인데 대화형이 아니면 재개 메뉴 없이 기존 ccc 동작(--continue)
+if [[ -n "$RESUME_PICK" && $_PICK_MODE -eq 0 && -z "$ROLE_ARG" && -z "$RESUME_SID" ]]; then
+    CONTINUE_FLAG="--continue"
+fi
+if [[ -n "$ROLE_VALUE" && -n "$CONTINUE_FLAG" ]]; then
+    _reject "--continue 와 롤 지정은 함께 쓸 수 없습니다(이어갈 세션이 정해지지 않음). 롤별 재개는 ccc <롤> 을 쓰세요."
+fi
+if [[ -n "$RESUME_SID" && -n "$CONTINUE_FLAG" ]]; then
+    _reject "--continue 와 --resume 은 함께 쓸 수 없습니다."
+fi
+
+# 새 세션 ID(롤 지정 새 세션만): 기동 전에 정해 role 을 기록하고 --session-id 로 넘긴다
+# (메뉴로 롤·재개를 정한 경우 메뉴 뒤에 다시 계산한다)
+NEW_SID=""
+declare -a SESSION_ARGS=()
+_build_session_args() {
+    NEW_SID=""
+    if [[ -n "$ROLE_VALUE" && -z "$RESUME_SID" ]]; then
+        # 커널 UUID 우선(python 기동 1회 절약), 없으면 python
+        NEW_SID=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || true)
+        [[ "$NEW_SID" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || NEW_SID=$(python3 -c 'import uuid;print(uuid.uuid4())')
+    fi
+    SESSION_ARGS=()
+    [[ -n "$CONTINUE_FLAG" ]] && SESSION_ARGS+=("--continue")
+    [[ -n "$RESUME_SID" ]] && SESSION_ARGS+=("--resume" "$RESUME_SID")
+    [[ -n "$NEW_SID" ]] && SESSION_ARGS+=("--session-id" "$NEW_SID")
+    return 0
+}
+_build_session_args
+
+# 롤 기록(기동 전): 새 세션은 source=launcher, 재개는 source=resume. home 기준에만 쓴다.
+ROLE_SET_VALUE=""
+_apply_role() {
+    local prof="$1" sid src out rc val
+    [[ -z "$ROLE_VALUE" ]] && return 0
+    if [[ -n "$RESUME_SID" ]]; then sid="$RESUME_SID"; src="resume"; else sid="$NEW_SID"; src="launcher"; fi
+    val="$ROLE_VALUE"
+    while true; do
+        out=$(cd "$WORK_DIR" && env -u PIPELINE_UUID -u CLAUDE_SESSION_ID python3 -B "$ROLE_LIB" set --sid "$sid" "$val" \
+                --source "$src" --base home --cwd "$WORK_DIR" --profile "$prof" 2>&1) && rc=0 || rc=$?
+        [[ $rc -eq 0 ]] && break
+        if printf '%s\n' "$out" | grep -q '^NAME_REQUIRED\|^NAME_TAKEN'; then
+            # 같은 프로젝트에 같은 영역의 활성 세션이 있다 → 에이전트명을 입력받아 롤#이름 으로 다시 기록한다
+            echo "⚠️  $(printf '%s\n' "$out" | sed -n '1p')" >&2
+            if ! declare -F _ask_agent_name >/dev/null; then
+                echo "❌ 에이전트명이 필요합니다. 롤#이름 형식으로 지정하세요(예: cc ${ROLE_VALUE%%#*}#이름)" >&2
+                exit 1
+            fi
+            if _ask_agent_name; then
+                val="${ROLE_VALUE%%#*}#${_AGENT_NAME}"
+                continue
+            fi
+            # 취소: 롤 메뉴로 돌아갈 수 있으면 돌아가고(rc=9), 아니면 기동하지 않는다
+            if (( _PICK_MODE == 1 )) && [[ -z "$RESUME_SID" ]]; then return 9; fi
+            echo "❌ 에이전트명 없이는 같은 영역의 두 번째 세션을 시작할 수 없습니다." >&2
+            exit 1
+        fi
+        echo "❌ 롤 기록 실패(rc=$rc): $out" >&2
+        exit 1
+    done
+    ROLE_VALUE="$val"
+    ROLE_SET_VALUE=$(printf '%s\n' "$out" | sed -n 's/^ROLE_SET //p' | sed -n '1p')
+    # 경고 줄(같은 롤+영역 활성 등)은 그대로 보여 준다
+    printf '%s\n' "$out" | grep -v '^ROLE_SET ' >&2 || true
+}
+
+# 에이전트명 입력(같은 프로젝트·같은 영역의 활성 세션이 있을 때): 확정 rc=0(_AGENT_NAME), 빈 값 rc=1(취소), 형식 오류는 사유 후 재입력
+# 시험 주입은 직접 입력과 같은 CC_ROLE_INPUT 큐를 쓴다. 아래 시험 모드 블록이 메뉴 정의보다 먼저 실행되므로 큐 해석을 여기서 한 번 더 한다.
+declare -a _ROLE_INPUTS=()
+[[ -n "${CC_ROLE_INPUT:-}" ]] && IFS=',' read -r -a _ROLE_INPUTS <<< "${CC_ROLE_INPUT}"
+_ROLE_INPUT_I=0
+_role_input_next() {
+    _INPUT_TOK=""
+    (( _ROLE_INPUT_I < ${#_ROLE_INPUTS[@]} )) || return 1
+    _INPUT_TOK="${_ROLE_INPUTS[$_ROLE_INPUT_I]}"
+    _ROLE_INPUT_I=$((_ROLE_INPUT_I + 1))
+    return 0
+}
+_AGENT_NAME=""
+_ask_agent_name() {
+    local txt chk crc _prompt="에이전트명 입력 (예: 철수, 빈 값=취소): "
+    _AGENT_NAME=""
+    while true; do
+        if [[ -n "${CC_MENU_PICK:-}" || -n "${CC_ROLE_INPUT:-}" ]]; then
+            if ! _role_input_next; then echo "❌ 직접 입력 주입이 바닥났습니다(CC_ROLE_INPUT)." >&2; exit 1; fi
+            txt="$_INPUT_TOK"
+            echo "${_prompt}${txt}  (주입)"
+        else
+            IFS= read -r -p "$_prompt" txt </dev/tty || txt=""
+        fi
+        txt="$(printf '%s' "$txt" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+        [[ -z "$txt" ]] && return 1
+        crc=0
+        chk=$(python3 -B "$ROLE_LIB" name-check "$txt" 2>&1) || crc=$?
+        if [[ $crc -eq 0 ]]; then _AGENT_NAME="$txt"; return 0; fi
+        echo "❌ $chk" >&2
+    done
+}
+
+# 시험 모드: 메뉴·cas 없이 해석 결과만 출력(CC_MENU_PICK 주입이 있으면 메뉴를 지난 뒤 cas 직전에 출력)
+if [[ "${CC_ROLE_CHECK_ONLY:-}" == "1" && -z "${CC_MENU_PICK:-}" ]]; then
+    _chk_prof="${FORCED_PROFILE:-MENU}"
+    _apply_role "${FORCED_PROFILE:-}"
+    echo "CC_CHECK profile=${_chk_prof} role=${ROLE_SET_VALUE} flag=${SESSION_ARGS[*]:-} sid=${NEW_SID:-${RESUME_SID:-}} default=${DEFAULT_PROFILE} dir=${WORK_DIR}"
+    exit 0
+fi
+
+# 정렬 점수: 사용량 정보 없음(내림차순 정렬에서 정보 있는 계정 아래로 가는 값)
+_PROJ_NO_INFO="-999999999999"
+
+# 프로필의 실제 계정 이메일 — 로그인 때 기록되는 .claude.json 이 정본, .account_email_cache 는 낡을 수 있어 폴백
+_profile_email() {
+    # 두 파일이 모두 없으면 python 기동 없이 빈 값(출력은 python 의 print("") 와 같은 빈 줄)
+    if [[ ! -f "$PROFILES_ROOT/$1/.claude.json" && ! -f "$PROFILES_ROOT/$1/.account_email_cache" ]]; then echo; return 0; fi
+    python3 - "$PROFILES_ROOT/$1" <<'PYEOF' 2>/dev/null
+import json, os, sys
+d = sys.argv[1]
+email = ""
+try:
+    email = (json.load(open(os.path.join(d, ".claude.json"))).get("oauthAccount") or {}).get("emailAddress") or ""
+except Exception:
+    pass
+if not email:
+    try:
+        email = json.load(open(os.path.join(d, ".account_email_cache"))).get("email") or ""
+    except Exception:
+        pass
+print(email.strip())
+PYEOF
+}
 
 # 사용량 캐시 한 줄 텍스트 반환
 _usage_line() {
@@ -55,6 +310,38 @@ _usage_line() {
     local _batch_cache="$HOME/.claude-as/batch_cache/${p}.json"
     local _self_cache="$PROFILES_ROOT/$p/.usage_cache.json"
     local _cache_file="$_self_cache"
+    # 프로필 실제 계정 이메일과 캐시 account_email 이 다르면 그 캐시는 후보에서 제외
+    local _acct_email
+    _acct_email="$(_profile_email "$p")"
+    local _existed=0
+    [[ -f "$_batch_cache" || -f "$_self_cache" ]] && _existed=1
+    local _mismatch='import json,sys
+pe=sys.argv[2].strip().lower()
+try:
+    ce=(json.load(open(sys.argv[1])).get("account_email") or "").strip().lower()
+except Exception:
+    ce=""
+sys.exit(1 if (pe and ce and pe != ce) else 0)'
+    [[ -f "$_batch_cache" ]] && ! python3 -c "$_mismatch" "$_batch_cache" "$_acct_email" 2>/dev/null && _batch_cache=""
+    [[ -f "$_self_cache" ]] && ! python3 -c "$_mismatch" "$_self_cache" "$_acct_email" 2>/dev/null && _self_cache=""
+    _cache_file="$_self_cache"
+    # 이 프로필 캐시가 전부 다른 계정 것이면, 같은 계정을 가진 다른 프로필의 최신 사용량을 쓴다(사용량은 계정 단위다)
+    if [[ ! -f "$_batch_cache" && ! -f "$_self_cache" && -n "$_acct_email" ]]; then
+        _cache_file="$(python3 - "$PROFILES_ROOT" "$HOME/.claude-as/batch_cache" "$_acct_email" <<'PYEOF' 2>/dev/null
+import glob, json, os, sys
+root, batch, email = sys.argv[1], sys.argv[2], sys.argv[3].strip().lower()
+best, best_ts = "", -1
+for f in glob.glob(os.path.join(root, "*", ".usage_cache.json")) + glob.glob(os.path.join(batch, "*.json")):
+    try:
+        d = json.load(open(f))
+    except Exception:
+        continue
+    if (d.get("account_email") or "").strip().lower() == email and int(d.get("timestamp", 0)) > best_ts:
+        best, best_ts = f, int(d.get("timestamp", 0))
+print(best)
+PYEOF
+)"
+    fi
     if [[ -f "$_batch_cache" ]] && [[ -f "$_self_cache" ]]; then
         if python3 -c "import json,sys; b=json.load(open(sys.argv[1])); s=json.load(open(sys.argv[2])); sys.exit(0 if int(b.get('timestamp',0)) >= int(s.get('timestamp',0)) else 1)" "$_batch_cache" "$_self_cache" 2>/dev/null; then
             _cache_file="$_batch_cache"
@@ -62,8 +349,10 @@ _usage_line() {
     elif [[ -f "$_batch_cache" ]]; then
         _cache_file="$_batch_cache"
     fi
-    if [[ -f "$_cache_file" ]]; then
-        python3 - "$_cache_file" <<'PYEOF' 2>/dev/null || printf "AGE:\n      → (캐시 손상)\n      "
+    if [[ -z "$_cache_file" && $_existed -eq 1 ]]; then
+        printf "AGE:\n      → (다른 계정 캐시 — 갱신 필요)\n      \n      \nPROJ:$_PROJ_NO_INFO\n"
+    elif [[ -f "$_cache_file" ]]; then
+        python3 - "$_cache_file" <<'PYEOF' 2>/dev/null || printf "AGE:\n      → (캐시 손상)\n      \n      \nPROJ:$_PROJ_NO_INFO\n"
 import json, sys, time
 
 R  = "\033[0m"
@@ -75,6 +364,8 @@ YELLOW = "\033[93m"
 ORANGE = "\033[38;2;255;165;0m"
 PINK   = "\033[38;2;255;105;180m"
 GOLD   = "\033[38;2;255;215;0m"
+PROJECT_MIN_ELAPSED = 0.1  # 창의 10% 이상 지나야 남은예상치를 낸다(statusline.py 와 같은 기준)
+PROJ_NO_INFO = "-999999999999"  # 정렬 점수: 사용량 정보 없음 — 정보 있는 계정 아래로
 
 def fmt_remain(secs):
     if secs <= 0: return f"{PINK}만료{R}"
@@ -82,8 +373,8 @@ def fmt_remain(secs):
     m = int((secs % 3600) // 60)
     if h >= 24:
         d, rh = h // 24, h % 24
-        return f"-{d}日{rh}時"
-    return f"-{h}時{m:02d}分"
+        return f"{d}日{rh}時"
+    return f"{h}時{m:02d}分"
 
 def fmt_remain_colored(secs, color_fn):
     c = color_fn(secs)
@@ -135,6 +426,19 @@ def fmt_remain_colored(secs, color_fn):
     c = color_fn(secs)
     return f"{c}{fmt_remain(secs)}{R}"
 
+WD = "월화수목금토일"
+
+def fmt_clock(t):
+    if not t: return "?"
+    lt = time.localtime(t)
+    return f"{WD[lt.tm_wday]} {lt.tm_hour:02d}:{lt.tm_min:02d}"
+
+def fmt_upd(t, now):
+    lt = time.localtime(t)
+    if time.strftime("%Y%m%d", lt) == time.strftime("%Y%m%d", time.localtime(now)):
+        return f"{lt.tm_hour:02d}:{lt.tm_min:02d}"
+    return f"{lt.tm_mon:02d}-{lt.tm_mday:02d} {lt.tm_hour:02d}:{lt.tm_min:02d}"
+
 try:
     d = json.load(open(sys.argv[1]))
     ts = int(d.get("timestamp", 0))
@@ -155,12 +459,14 @@ try:
     if   age < 60:    a = f"{DIM}[방금]{R}"
     elif age < 3600:  a = f"{DIM}[{age//60}분 전]{R}"
     elif age < 21600: a = f"{DIM}[{age//3600}시간 전]{R}"
-    else:             a = f"{DIM}[stale {age//3600}h]{R}"
+    else:             a = f"{DIM}[stale]{R}"
+    a += f" {DIM}{'' if age >= 21600 else '갱신 '}{fmt_upd(ts, now)}{R}" if ts else ""
     print(f"AGE:{a}")
 
     # 세션(5h) 라인
     if fh_pct is not None:
-        fh_used = float(fh_pct)
+        fh_expired = bool(fh_reset) and fh_reset <= now  # 5h 창 경과 → 사용0% 잔100% (남은시간 괄호 생략)
+        fh_used = 0.0 if fh_expired else float(fh_pct)
         fh_rem_pct = 100 - fh_used
         fh_remain_secs = max(0, fh_reset - now)
         fh_elapsed_secs = 18000 - fh_remain_secs
@@ -171,21 +477,27 @@ try:
         tc = remain_color_5h(fh_remain_secs)
         rem_str = fmt_remain(fh_remain_secs)
         time_left_h = fh_remain_secs / 3600
-        proj = fh_used + fh_rate * time_left_h if fh_rate > 0 else fh_used
+        proj = min(1099, fh_used + fh_rate * time_left_h if fh_rate > 0 else fh_used)
         rem_proj = 100 - proj  # 남은예상치 (음수 허용)
-        if rem_proj <= 0:    proj_str = f":{PINK}⛔ {rem_proj:.0f}%{R}"
+        if fh_elapsed_secs < 18000 * PROJECT_MIN_ELAPSED: proj_str = ""  # 창 초반은 표본이 적어 예상치를 내지 않는다
+        elif rem_proj <= 0:  proj_str = f":{PINK}⛔ {rem_proj:.0f}%{R}"
         elif rem_proj <= 10: proj_str = f":{ORANGE}⚠ {rem_proj:.0f}%{R}"
         elif rem_proj <= 20: proj_str = f":{YELLOW}⚡ {rem_proj:.0f}%{R}"
         else:                proj_str = f":{DIM}{rem_proj:.0f}%{R}"
-        print(f"      ⏱  {rc}{bar}{R} {rc}{fh_rem_pct:.0f}%{R} ({tc}{rem_str}{R}) {bc}{fh_rate:.1f}%/h{R}{proj_str}")
+        fh_remain_part = "" if fh_expired else f" ({tc}{rem_str if fh_reset else "?"}{R})"
+        print(f"      ⏱  {rc}{bar}{R} {rc}사용{fh_used:.0f}% 잔{fh_rem_pct:.0f}%{R}{fh_remain_part} {bc}{fh_rate:.1f}%/h{R}{proj_str}")
     else:
         print(f"      ⏱  {DIM}(세션 데이터 없음){R}")
 
     # 주간(7d) 라인
+    sd_reset_disp = sd_reset
     if sd_pct is not None:
-        sd_used = float(sd_pct)
+        sd_expired = bool(sd_reset) and sd_reset <= now
+        if sd_expired:  # 7일 단위 이동 계산값 (주간 창이 7일 주기로 반복됨을 이용)
+            sd_reset_disp = sd_reset + 604800 * (int((now - sd_reset) // 604800) + 1)
+        sd_used = 0.0 if sd_expired else float(sd_pct)
         sd_rem_pct = 100 - sd_used
-        sd_remain_secs = max(0, sd_reset - now)
+        sd_remain_secs = max(0, sd_reset_disp - now)
         sd_elapsed_secs = 604800 - sd_remain_secs
         sd_rate = (sd_used / (sd_elapsed_secs / 3600)) if sd_elapsed_secs > 60 else 0
         bar = dot_bar(sd_rem_pct)
@@ -194,26 +506,379 @@ try:
         tc = remain_color_7d(sd_remain_secs)
         rem_str = fmt_remain(sd_remain_secs)
         time_left_h = sd_remain_secs / 3600
-        proj = sd_used + sd_rate * time_left_h if sd_rate > 0 else sd_used
+        proj = min(1099, sd_used + sd_rate * time_left_h if sd_rate > 0 else sd_used)
         rem_proj = 100 - proj  # 남은예상치 (음수 허용)
-        if rem_proj <= 0:    proj_str = f":{PINK}⛔ {rem_proj:.0f}%{R}"
+        if sd_elapsed_secs < 604800 * PROJECT_MIN_ELAPSED: proj_str = ""  # 창 초반은 표본이 적어 예상치를 내지 않는다
+        elif rem_proj <= 0:  proj_str = f":{PINK}⛔ {rem_proj:.0f}%{R}"
         elif rem_proj <= 10: proj_str = f":{ORANGE}⚠ {rem_proj:.0f}%{R}"
         elif rem_proj <= 20: proj_str = f":{YELLOW}⚡ {rem_proj:.0f}%{R}"
         else:                proj_str = f":{DIM}{rem_proj:.0f}%{R}"
-        print(f"      🕐 {rc}{bar}{R} {rc}{sd_rem_pct:.0f}%{R} ({tc}{rem_str}{R}) {bc}{sd_rate:.2f}%/h{R}{proj_str}")
-        print(f"PROJ:{rem_proj:.2f}")
+        print(f"      🕐 {rc}{bar}{R} {rc}사용{sd_used:.0f}% 잔{sd_rem_pct:.0f}%{R} ({tc}{rem_str if sd_reset else "?"}{R}) {bc}{sd_rate:.2f}%/h{R}{proj_str}")
+        # 정렬 키: 병목 min(5h잔여, 주간유효잔여) 내림차순, 동점은 주간 초기화 빠른 순 (표시값 rem_proj 와 무관)
+        f_rem = fh_rem_pct if fh_pct is not None else 100
+        w_eff = sd_rem_pct + (100 - sd_rem_pct) * max(0, 1 - sd_remain_secs / 10800)  # 초기화 3h 이내 회복분 선형 반영
+        sd_proj_out = f"PROJ:{int(round(min(f_rem, w_eff) * 100)) * 10000000 - int(min(sd_remain_secs, 9999999))}"
     else:
         print(f"      🕐 {DIM}(주간 데이터 없음){R}")
-        print(f"PROJ:9999")
+        sd_proj_out = f"PROJ:{PROJ_NO_INFO}"
+        if fh_pct is not None:  # 세션 값만 있어도 정보 없는 계정보다는 위
+            sd_proj_out = f"PROJ:{int(round(fh_rem_pct * 100)) * 10000000 - 9999999}"
+    # 주간 초기화 줄 (계정별 별도 1줄)
+    if sd_reset:
+        print(f"      📅 {DIM}주간 초기화 {fmt_clock(sd_reset_disp)}{R}")
+    else:
+        print(f"      📅 {DIM}주간 초기화 정보 없음{R}")
+    print(sd_proj_out)
 except Exception as e:
     print(f"AGE:")
     print(f"      → (캐시 손상)")
     print(f"      ")
-    print(f"PROJ:9999")
+    print(f"      ")
+    print(f"PROJ:{PROJ_NO_INFO}")
 PYEOF
     else
-        printf "AGE:\n      → (사용 이력 없음)\n      \nPROJ:9999\n"
+        printf "AGE:\n      → (사용 이력 없음)\n      \n      \nPROJ:$_PROJ_NO_INFO\n"
     fi
+}
+
+# ─── 공용 상자형 메뉴(계정·롤·재개 메뉴가 같은 모양·같은 키 동작을 쓴다) ───
+# 입력(전역): _MENU_HEADER(헤더 줄) · _MENU_N(항목당 줄 수) · _MENU_NORMAL/_MENU_SELL(항목별 _MENU_N 줄, 비선택/선택)
+#             · _MENU_KEYS(항목 키 — 주입 토큰 이름 매칭용). 인자 $1=초기 커서(0부터). 출력: _MENU_SEL(0부터).
+# 키: ↑↓ 순환 · 숫자 1~9 즉시 · Enter 확정 · q 취소("취소됨." rc=0 종료).
+# 주입: CC_MENU_PICK 토큰을 메뉴마다 1개 소비(번호 1부터·enter·q·항목 키). 주입 중에는 /dev/tty 를 읽지 않는다.
+_COLS=$(tput cols 2>/dev/null || echo 120)
+[[ "$_COLS" =~ ^[0-9]+$ ]] || _COLS=120
+_LINE_W=$(( _COLS > 82 ? 80 : _COLS - 2 ))
+_HR=""
+for ((__k=0; __k<_LINE_W; __k++)); do _HR+="─"; done
+_MENU_GUIDE="$(printf '\e[90m(↑↓ 이동, 숫자 즉시선택, Enter 확정, q 취소)\e[0m')"
+declare -a _MENU_HEADER=() _MENU_NORMAL=() _MENU_SELL=() _MENU_KEYS=() _MENU_PADS=()
+_MENU_N=1
+_MENU_SEL=0
+_MENU_LINES=0
+declare -a _MENU_PICKS=() _ROLE_INPUTS=()
+[[ -n "${CC_MENU_PICK:-}" ]] && IFS=',' read -r -a _MENU_PICKS <<< "${CC_MENU_PICK}"
+[[ -n "${CC_ROLE_INPUT:-}" ]] && IFS=',' read -r -a _ROLE_INPUTS <<< "${CC_ROLE_INPUT}"
+_MENU_PICK_I=0
+_ROLE_INPUT_I=0
+
+_menu_pick_next() {
+    # 주입 토큰 1개 → _PICK_TOK, 소진이면 rc=1
+    _PICK_TOK=""
+    (( _MENU_PICK_I < ${#_MENU_PICKS[@]} )) || return 1
+    _PICK_TOK="${_MENU_PICKS[$_MENU_PICK_I]// /}"
+    _MENU_PICK_I=$((_MENU_PICK_I + 1))
+    return 0
+}
+
+_role_input_next() {
+    # 직접 입력 주입 1개 → _INPUT_TOK, 소진이면 rc=1
+    _INPUT_TOK=""
+    (( _ROLE_INPUT_I < ${#_ROLE_INPUTS[@]} )) || return 1
+    _INPUT_TOK="${_ROLE_INPUTS[$_ROLE_INPUT_I]}"
+    _ROLE_INPUT_I=$((_ROLE_INPUT_I + 1))
+    return 0
+}
+
+_box_menu_draw() {
+    local cur=$1 out="" lines=0 h i k base content _spc
+    local nh=${#_MENU_HEADER[@]} total=$(( ${#_MENU_NORMAL[@]} / _MENU_N ))
+    out+=$'\e[0m\e[2K\n'; lines=$(( lines + 1 ))
+    out+=$'\e[0m\e[2K\e[90m╭'"$_HR"$'╮\e[0m\n'; lines=$(( lines + 1 ))
+    for (( h=0; h<nh; h++ )); do
+        printf -v _spc '%*s' "${_MENU_PADS[h]}" ""
+        out+=$'\e[0m\e[2K\e[90m│\e[0m '"${_MENU_HEADER[h]}$_spc"$' \e[90m│\e[0m\n'
+        lines=$(( lines + 1 ))
+    done
+    out+=$'\e[0m\e[2K\e[90m├'"$_HR"$'┤\e[0m\n'; lines=$(( lines + 1 ))
+    for (( i=0; i<total; i++ )); do
+        base=$(( i * _MENU_N ))
+        for (( k=0; k<_MENU_N; k++ )); do
+            printf -v _spc '%*s' "${_MENU_PADS[nh+base+k]}" ""
+            if (( i == cur )); then
+                content="${_MENU_SELL[base+k]}"
+                # \033[0m → \033[0m + 배경 으로 선택 행 배경 유지
+                content="${content//$'\e[0m'/$'\e[0m\e[48;2;64;64;64m'}"
+                out+=$'\e[0m\e[2K\e[90m│\e[0m\e[48;2;64;64;64m '"$content$_spc"$' \e[0m\e[90m│\e[0m\n'
+            else
+                out+=$'\e[0m\e[2K\e[90m│\e[0m '"${_MENU_NORMAL[base+k]}$_spc"$' \e[90m│\e[0m\n'
+            fi
+            lines=$(( lines + 1 ))
+        done
+    done
+    out+=$'\e[0m\e[2K\e[90m╰'"$_HR"$'╯\e[0m\n'; lines=$(( lines + 1 ))
+    _MENU_LINES=$lines
+    printf '%s' "$out"
+}
+
+_box_menu() {
+    local cur="${1:-0}" total key seq prev _n j line
+    total=$(( ${#_MENU_NORMAL[@]} / _MENU_N ))
+    (( total > 0 )) || { echo "❌ 메뉴 항목이 없습니다." >&2; exit 1; }
+    (( cur >= 0 && cur < total )) || cur=0
+    # 모든 라인(헤더+항목)의 패딩 폭을 Python 한 번 호출로 일괄 계산(빈 줄도 1줄로 센다)
+    mapfile -t _MENU_PADS < <(
+        { for line in "${_MENU_HEADER[@]}" "${_MENU_NORMAL[@]}"; do printf '%s\0' "$line"; done; } | python3 -c "
+import sys, re, unicodedata
+ANSI = re.compile(r'\x1b\[[0-9;:]*[mGKHF]')
+def w(c):
+    if unicodedata.east_asian_width(c) in ('W','F'): return 2
+    if unicodedata.category(c) in ('Mn','Cf'): return 0
+    return 1
+target = int(sys.argv[1])
+data = sys.stdin.buffer.read().decode('utf-8', errors='replace')
+for s in data.split('\0')[:-1]:
+    plain = ANSI.sub('', s)
+    width = sum(w(c) for c in plain)
+    print(max(0, target - width))
+" "$(( _LINE_W - 2 ))"
+    )
+    # 화면 clear (커서 홈으로 이동) → 메뉴가 상단부터 표시되도록
+    printf '\e[2J\e[H'
+    _box_menu_draw "$cur"
+
+    if [[ -n "${CC_MENU_PICK:-}" ]]; then
+        if ! _menu_pick_next; then echo "❌ 메뉴 선택 주입이 바닥났습니다(CC_MENU_PICK)." >&2; exit 1; fi
+        case "$_PICK_TOK" in
+            enter|'') _MENU_SEL=$cur ;;
+            q|Q) echo ""; echo "취소됨."; exit 0 ;;
+            *)
+                _MENU_SEL=-1
+                if [[ "$_PICK_TOK" =~ ^[0-9]+$ ]]; then
+                    (( _PICK_TOK >= 1 && _PICK_TOK <= total )) && _MENU_SEL=$(( _PICK_TOK - 1 ))
+                else
+                    for (( j=0; j<${#_MENU_KEYS[@]}; j++ )); do
+                        [[ "${_MENU_KEYS[j]}" == "$_PICK_TOK" ]] && { _MENU_SEL=$j; break; }
+                    done
+                fi
+                if (( _MENU_SEL < 0 )); then echo "❌ 잘못된 메뉴 선택 주입: $_PICK_TOK" >&2; exit 1; fi ;;
+        esac
+        echo "(주입) 선택: $(( _MENU_SEL + 1 ))"
+        return 0
+    fi
+
+    # 키 입력 루프: 변경 시 메뉴 전체를 위로 올리고 재출력
+    while true; do
+        IFS= read -r -s -n1 key </dev/tty
+        if [[ "$key" == $'\x1b' ]]; then
+            IFS= read -r -s -n2 -t 0.1 seq </dev/tty
+            key="${key}${seq}"
+        fi
+
+        prev=$cur
+        case "$key" in
+            $'\x1b[A')  # ↑ (circular: 첫 항목에서 → 마지막으로)
+                cur=$(( (cur - 1 + total) % total )) ;;
+            $'\x1b[B')  # ↓ (circular: 마지막 항목에서 → 첫 번째로)
+                cur=$(( (cur + 1) % total )) ;;
+            1|2|3|4|5|6|7|8|9)  # 숫자 즉시선택 (엔터 없이)
+                _n=$(( key - 1 ))
+                if (( _n < total )); then
+                    _MENU_SEL=$_n
+                    return 0
+                fi ;;
+            ''|$'\n'|$'\r')  # Enter
+                _MENU_SEL=$cur
+                return 0 ;;
+            q|Q)
+                echo ""
+                echo "취소됨."
+                exit 0 ;;
+        esac
+
+        if [[ "$cur" != "$prev" ]]; then
+            # 메뉴 줄 수만큼 위로 이동 후 재출력
+            printf "\e[%dA" "$_MENU_LINES"
+            _box_menu_draw "$cur"
+        fi
+    done
+}
+
+# 항목 줄 쌍(비선택/선택) 추가: $1=번호 $2=첫 줄 내용 $3…=나머지 줄
+_menu_add_item() {
+    local n="$1" first="$2" l; shift 2
+    _MENU_NORMAL+=("$(printf '   %d) %s' "$n" "$first")")
+    _MENU_SELL+=("$(printf '▶  %d) %s' "$n" "$first")")
+    for l in "$@"; do _MENU_NORMAL+=("$l"); _MENU_SELL+=("$l"); done
+}
+
+# 롤 메뉴 초기 커서용: 이 계정 최신 롤 → 계정 무관 최신 → role_defs 기본값
+_last_role() {
+    local r="" prof="$1" _py='import json,sys
+try:
+    rows=json.load(sys.stdin)
+except Exception:
+    rows=[]
+print(rows[0].get("role","") if rows else "")'
+    if [[ -n "$PROJECT" && -n "$prof" ]]; then
+        r=$(python3 -B "$ROLE_LIB" resume-list --project "$PROJECT" --profile "$prof" --json --limit 1 2>/dev/null | python3 -c "$_py" 2>/dev/null) || r=""
+    fi
+    if [[ -n "$PROJECT" && -z "$r" ]]; then
+        r=$(python3 -B "$ROLE_LIB" resume-list --project "$PROJECT" --json --limit 1 2>/dev/null | python3 -c "$_py" 2>/dev/null) || r=""
+    fi
+    if [[ -z "$r" ]]; then
+        r=$(python3 -B "$ROLE_LIB" list --json 2>/dev/null | python3 -c 'import json,sys
+try:
+    print(json.load(sys.stdin).get("default",""))
+except Exception:
+    print("")' 2>/dev/null) || r=""
+    fi
+    printf '%s' "$r"
+}
+
+# 직접 입력: 롤[:영역] → _role_norm 검증. 확정 rc=0(ROLE_ARG 설정), 빈 값 rc=1(메뉴로), 틀리면 사유 후 재입력
+_role_direct_input() {
+    local txt rrc _prompt="롤[:영역] 입력 (예: back:결제, 빈 값=목록으로): "
+    while true; do
+        if [[ -n "${CC_MENU_PICK:-}" || -n "${CC_ROLE_INPUT:-}" ]]; then
+            if ! _role_input_next; then echo "❌ 직접 입력 주입이 바닥났습니다(CC_ROLE_INPUT)." >&2; exit 1; fi
+            txt="$_INPUT_TOK"
+            echo "${_prompt}${txt}  (주입)"
+        else
+            IFS= read -r -p "$_prompt" txt </dev/tty || txt=""
+        fi
+        txt="$(printf '%s' "$txt" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+        [[ -z "$txt" ]] && return 1
+        rrc=0
+        _role_norm "$txt" || rrc=$?
+        if [[ $rrc -eq 0 ]]; then ROLE_ARG="$txt"; return 0; fi
+        echo "❌ 롤로 쓸 수 없습니다: $txt — $(printf '%s\n' "$_ROLE_ERR" | sed -n '1p')" >&2
+    done
+}
+
+# 롤 메뉴(계정 메뉴와 같은 모양): role_defs 순서(menu-items) 6롤 + 직접 입력 → ROLE_ARG·ROLE_VALUE
+_role_menu() {
+    local items last cur=0 i n=0 _id _disp _duty
+    local -a ids=()
+    items=$(cd "$WORK_DIR" && python3 -B "$ROLE_LIB" menu-items --json 2>/dev/null | python3 -c '
+import json, sys
+try:
+    rows = json.load(sys.stdin)
+except Exception:
+    rows = []
+for r in rows:
+    print("\x1f".join(" ".join(str(r.get(k, "")).split()) for k in ("id", "display", "duty")))
+' 2>/dev/null) || items=""
+    [[ -n "$items" ]] || { echo "❌ 롤 목록을 읽지 못했습니다: $ROLE_LIB menu-items" >&2; exit 1; }
+    last=$(_last_role "$SELECTED")
+    _MENU_HEADER=("Claude Code — 롤 선택 [${SELECTED}]" "$_MENU_GUIDE")
+    _MENU_N=2
+    _MENU_NORMAL=(); _MENU_SELL=(); _MENU_KEYS=()
+    while IFS=$'\x1f' read -r _id _disp _duty; do
+        [[ -z "$_id" ]] && continue
+        [[ "$_id" == "$last" ]] && cur=$n
+        n=$(( n + 1 ))
+        ids+=("$_id")
+        _MENU_KEYS+=("$_id")
+        _menu_add_item "$n" "$(printf '%s \e[90m(%s)\e[0m' "$_disp" "$_id")" "$(printf '      \e[90m%s\e[0m' "$_duty")"
+    done <<< "$items"
+    n=$(( n + 1 ))
+    _MENU_KEYS+=("input")
+    _menu_add_item "$n" "직접 입력 $(printf '\e[90m(예: back:결제)\e[0m')" "$(printf '      \e[90m롤[:영역] 을 입력한다 — 틀리면 사유를 보이고 다시 묻는다\e[0m')"
+    while true; do
+        _box_menu "$cur"
+        echo ""
+        if (( _MENU_SEL < ${#ids[@]} )); then
+            ROLE_ARG="${ids[$_MENU_SEL]}"
+            break
+        fi
+        if _role_direct_input; then break; fi
+        cur=$_MENU_SEL
+    done
+    _resolve_role
+}
+
+# 재개 메뉴(계정 메뉴와 같은 모양): ① 가장 최근 대화 이어서 · 롤(·영역)별 최신 세션(미리보기) · ＋ 새 세션(롤 메뉴)
+_resume_menu() {
+    local acc_filter="" rows_json="" cwd_json="" items i=0 _sid _val _l1 _l2 _l3
+    local -a sids=() vals=() q=()
+    # ccc <계정>(--profile 동반)이면 그 계정 기록만, 계정 메뉴에서 고른 경우는 계정 무관(대화 기록은 계정 공유)
+    [[ -n "$FORCED_PROFILE" ]] && acc_filter="$FORCED_PROFILE"
+    if [[ -f "$ROLE_LIB" && -n "$PROJECT" ]]; then
+        q=(resume-list --project "$PROJECT" --per-role --json --limit 9)
+        [[ -n "$acc_filter" ]] && q+=(--profile "$acc_filter")
+        rows_json=$(python3 -B "$ROLE_LIB" "${q[@]}" --preview 2>/dev/null) \
+            || rows_json=$(python3 -B "$ROLE_LIB" "${q[@]}" 2>/dev/null) || rows_json="[]"
+        cwd_json=$(python3 -B "$ROLE_LIB" preview --cwd "$WORK_DIR" --json 2>/dev/null) || cwd_json="{}"
+    fi
+    items=$(python3 -c '
+import datetime, json, re, sys, unicodedata
+W = 60
+def cell(c):
+    if unicodedata.east_asian_width(c) in ("W", "F"): return 2
+    if unicodedata.category(c) in ("Mn", "Cf"): return 0
+    return 1
+def clean(s):
+    s = re.sub(r"\x1b\[[0-9;?]*[ -/]*[@-~]", "", str(s or ""))
+    s = re.sub(r"[\x00-\x1f\x7f]", " ", s)
+    return " ".join(s.split())
+def clip(s, w):
+    s = clean(s)
+    if sum(cell(c) for c in s) <= w: return s
+    out, n = [], 0
+    for c in s:
+        if n + cell(c) > w - 1: break
+        out.append(c); n += cell(c)
+    return "".join(out) + "…"
+def load(t, d):
+    try:
+        v = json.loads(t)
+        return v if isinstance(v, type(d)) else d
+    except Exception:
+        return d
+D, R = "\033[90m", "\033[0m"
+def pv(p):
+    u, a = clean(p.get("last_user", "")), clean(p.get("last_assistant", ""))
+    if not u and not a:
+        return ("      %s(내용 없음)%s" % (D, R), "      ")
+    return ("      %s👤 %s%s" % (D, clip(u or "-", W), R), "      %s🤖 %s%s" % (D, clip(a or "-", W), R))
+def ts(t):
+    try: return datetime.datetime.fromisoformat(t).strftime("%m-%d %H:%M")
+    except Exception: return clean(t)
+rows, cw = load(sys.argv[1] or "[]", []), load(sys.argv[2] or "{}", {})
+out = []
+t = clean(cw.get("last_ts", ""))
+rsids = set(clean(r.get("sid")) for r in rows if isinstance(r, dict) and clean(r.get("sid")))
+csid = clean(cw.get("sid"))
+if not (csid and csid in rsids):
+    lab = "가장 최근 대화 (롤 기록 없음)" if (csid and rsids) else "가장 최근 대화 이어서"
+    out.append(("-", "", lab + (" %s· %s%s" % (D, t, R) if t else "")) + pv(cw))
+for r in rows:
+    if not isinstance(r, dict) or not clean(r.get("sid")): continue
+    head = "[%s %s] %s %s· %s · 기록 계정 %s%s" % (clean(r.get("display")), clean(r.get("value")),
+            clip(r.get("topic") or "(주제 없음)", 22), D, ts(r.get("updated", "")), clean(r.get("profile")) or "?", R)
+    out.append((clean(r.get("sid")), clean(r.get("value")), head) + pv(r))
+out.append(("+", "", "＋ 새 세션 — 롤 선택", "      %s롤 메뉴에서 롤을 고르거나 직접 입력%s" % (D, R), "      "))
+for o in out:
+    print("\x1f".join(o))
+' "$rows_json" "$cwd_json")
+    if [[ -n "$acc_filter" && $(printf '%s\n' "$items" | awk -F$'\x1f' '$1!="-" && $1!="+" && $1!=""' | wc -l) -eq 0 ]]; then
+        echo "ℹ️  [$acc_filter] 계정의 롤 세션 기록 없음 — 가장 최근 대화 이어서 또는 새 세션을 고르세요"
+    fi
+    _MENU_HEADER=("Claude Code — 재개할 대화 선택 [${SELECTED}] (프로젝트: ${PROJECT:-?})" "$_MENU_GUIDE")
+    _MENU_N=3
+    _MENU_NORMAL=(); _MENU_SELL=(); _MENU_KEYS=()
+    while IFS=$'\x1f' read -r _sid _val _l1 _l2 _l3; do
+        [[ -z "$_sid" ]] && continue
+        i=$(( i + 1 ))
+        sids+=("$_sid"); vals+=("$_val")
+        case "$_sid" in
+            -) _MENU_KEYS+=("continue") ;;
+            +) _MENU_KEYS+=("new") ;;
+            *) _MENU_KEYS+=("$_val") ;;
+        esac
+        _menu_add_item "$i" "$_l1" "$_l2" "$_l3"
+    done <<< "$items"
+    _box_menu 0
+    echo ""
+    case "${sids[$_MENU_SEL]}" in
+        -)  CONTINUE_FLAG="--continue" ;;
+        +)  _role_menu ;;
+        *)  RESUME_SID="${sids[$_MENU_SEL]}"
+            ROLE_ARG="${vals[$_MENU_SEL]}"
+            echo "▶ 재개: [${ROLE_ARG}] ${RESUME_SID:0:8}…"
+            _resolve_role ;;
+    esac
 }
 
 # 계정 선택 (--profile 강제 / 1개면 자동 / 다수면 메뉴)
@@ -235,22 +900,20 @@ else
     declare -a _RAW_PROJS=()
     for i in "${!_RAW_PROFILES[@]}"; do
         local_p="${_RAW_PROFILES[i]}"
-        local_cache="$PROFILES_ROOT/$local_p/.account_email_cache"
-        local_email=""
-        if [[ -f "$local_cache" ]]; then
-            local_email=$(python3 -c "import json,sys; d=json.load(open('$local_cache')); print(d.get('email',''))" 2>/dev/null \
-                          || grep -oP '"email":"\K[^"]+' "$local_cache" 2>/dev/null || true)
-        fi
+        local_email="$(_profile_email "$local_p")"
         _RAW_EMAILS+=("$local_email")
-        # _usage_line 출력 분리: 첫 줄=AGE, 마지막 줄=PROJ, 가운데=usage 2줄
+        # _usage_line 출력 분리: 첫 줄=AGE, 마지막 줄=PROJ, 가운데=usage 3줄
         _raw_usage="$(_usage_line "$local_p")"
-        _age_line=$(printf '%s' "$_raw_usage" | head -1)
+        _age_line=$(printf '%s' "$_raw_usage" | sed -n '1p')
         _proj_line=$(printf '%s' "$_raw_usage" | tail -1)
         _usage_body=$(printf '%s' "$_raw_usage" | sed -n '2,$p' | sed '$d')
+        # 본문을 정확히 3줄(⏱/🕐/📅)로 정규화 — 부족하면 공백 줄 보충, 초과하면 앞 3줄
+        # head -3 은 3줄을 읽고 먼저 끝나 printf 가 SIGPIPE(141)를 받으면 pipefail+set -e 로 cc 가 죽는다(부하 시 간헐). sed 는 끝까지 읽는다.
+        _usage_body=$(printf '%s\n      \n      \n      \n' "$_usage_body" | sed -n '1,3p')
         _age_color="${_age_line#AGE:}"
         _age_plain=$(printf '%s' "$_age_color" | sed 's/\x1b\[[0-9;:]*[mGKHF]//g')
         _proj_val="${_proj_line#PROJ:}"
-        [[ -z "$_proj_val" || ! "$_proj_val" =~ ^[0-9.]+$ ]] && _proj_val="9999"
+        [[ -z "$_proj_val" || ! "$_proj_val" =~ ^-?[0-9.]+$ ]] && _proj_val="$_PROJ_NO_INFO"
         _RAW_AGES+=("$_age_plain")
         _RAW_AGES_COLOR+=("$_age_color")
         _RAW_USAGES+=("$_usage_body")
@@ -259,11 +922,13 @@ else
         _RAW_PROJS+=("$_proj_val")
     done
 
-    # 주간 남은예상 내림차순 정렬 (잔량 많은 계정이 1번)
+    # 추천순 내림차순 정렬 (병목 min(5h잔여, 주간유효잔여)가 큰 계정이 1번, 동점은 주간 초기화 빠른 순)
+    # PROJ 값은 정렬 전용 점수이며 화면 표시값(남은예상치)과 별개. 사용량 정보 없는 계정은 맨 아래이며
+    # 점수가 같으면(-s) 기존 순서를 유지한다.
     _sorted_idx=$(
         for i in "${!_RAW_PROFILES[@]}"; do
             printf '%s\t%d\n' "${_RAW_PROJS[i]}" "$i"
-        done | sort -k1,1 -rn | awk '{print $2}'
+        done | sort -s -k1,1 -rn | awk '{print $2}'
     )
 
     PROFILES=()
@@ -281,28 +946,17 @@ else
         _AGES_COLOR+=("${_RAW_AGES_COLOR[idx]}")
     done <<< "$_sorted_idx"
 
-    _COLS=$(tput cols 2>/dev/null || echo 120)
-    _BG="\e[48;2;64;64;64m"
-    _LINE_W=$(( _COLS > 82 ? 80 : _COLS - 2 ))
-    _HR=""
-    for ((__k=0; __k<_LINE_W; __k++)); do _HR+="─"; done
-
-    # ─── 사전 캐시: 모든 항목 라인 + 패딩 공백 개수를 Python 한 번 호출로 일괄 계산 ───
-    # 입력: 각 라인을 \0로 구분해 stdin으로 전달
-    # 출력: 각 라인의 패딩 공백 수(\n 구분)
-    declare -a _ITEM_LINES_NORMAL=()  # 비선택용 (3줄/계정)
-    declare -a _ITEM_LINES_SEL=()     # 선택용 (3줄/계정, \033[0m → \033[0m+_BG 치환됨)
-    declare -a _ITEM_PADS=()           # 라인별 패딩 공백 수
-    declare -a _LINE_OWNER=()          # 라인 → 프로파일 인덱스 매핑
-
-    # 헤더 2줄 + 항목 3줄×N
-    declare -a _HEADER_LINES=(
-        "Claude Code — 계정 선택${CONTINUE_FLAG:+ (재개)}"
-        "$(printf '\e[90m(↑↓ 이동, 숫자 즉시선택, Enter 확정, q 취소)\e[0m')"
+    # 헤더 2줄 + 항목 4줄×N (공용 _box_menu 입력 배열)
+    _MENU_HEADER=(
+        "Claude Code — 계정 선택${CONTINUE_FLAG:+ (재개)}${RESUME_SID:+ (재개${ROLE_VALUE:+ · 롤 $ROLE_VALUE})}${NEW_SID:+ (롤 $ROLE_VALUE)}"
+        "$_MENU_GUIDE"
     )
-    declare -a _HEADER_PADS=()
+    _MENU_N=4
+    _MENU_NORMAL=()
+    _MENU_SELL=()
+    _MENU_KEYS=()
 
-    # 각 프로파일 3줄(계정명/⏱/🕐) × 비선택용 + 선택용 빌드
+    # 각 프로파일 4줄(계정명/⏱/🕐/📅) × 비선택용 + 선택용 빌드
     for i in "${!PROFILES[@]}"; do
         local_p="${PROFILES[i]}"
         local_n=$(( i + 1 ))
@@ -319,146 +973,91 @@ else
             _line_normal=$(printf '   %d) %-12s \e[90m%s\e[0m' "$local_n" "$local_p" "$local_age")
             _line_sel=$(printf '▶  %d) %-12s \e[90m%s\e[0m' "$local_n" "$local_p" "$local_age_color")
         fi
-        _ITEM_LINES_NORMAL+=("$_line_normal")
-        _ITEM_LINES_SEL+=("$_line_sel")
+        _MENU_NORMAL+=("$_line_normal")
+        _MENU_SELL+=("$_line_sel")
+        _MENU_KEYS+=("$local_p")
 
-        # ⏱/🕐 2줄 - 비선택/선택 동일 (사용 색상 그대로)
+        # ⏱/🕐/📅 3줄 - 비선택/선택 동일 (사용 색상 그대로)
         while IFS= read -r _uline; do
-            _ITEM_LINES_NORMAL+=("$_uline")
-            _ITEM_LINES_SEL+=("$_uline")
+            _MENU_NORMAL+=("$_uline")
+            _MENU_SELL+=("$_uline")
         done <<< "$local_usage"
     done
 
-    # 모든 라인(헤더+항목)에 대해 Python 한 번 호출로 패딩 폭 일괄 계산
-    _all_lines_for_pad() {
-        for line in "${_HEADER_LINES[@]}"; do printf '%s\0' "$line"; done
-        for line in "${_ITEM_LINES_NORMAL[@]}"; do printf '%s\0' "$line"; done
-    }
-    mapfile -t _ALL_PADS < <(
-        _all_lines_for_pad | python3 -c "
-import sys, re, unicodedata
-ANSI = re.compile(r'\x1b\[[0-9;:]*[mGKHF]')
-def w(c):
-    if unicodedata.east_asian_width(c) in ('W','F'): return 2
-    if unicodedata.category(c) in ('Mn','Cf'): return 0
-    return 1
-target = int(sys.argv[1])
-data = sys.stdin.buffer.read().decode('utf-8', errors='replace')
-for s in data.split('\0'):
-    if not s: continue
-    plain = ANSI.sub('', s)
-    width = sum(w(c) for c in plain)
-    print(max(0, target - width))
-" "$(( _LINE_W - 2 ))"
-    )
-    # 헤더 패딩 분리
-    _HEADER_PADS=("${_ALL_PADS[@]:0:${#_HEADER_LINES[@]}}")
-    _ITEM_PADS=("${_ALL_PADS[@]:${#_HEADER_LINES[@]}}")
-
-    _draw_menu() {
-        local cur=$1
-        local out=""
-        local lines=0
-        out+=$'\e[0m\e[2K\n'; lines=$(( lines + 1 ))
-        out+=$'\e[0m\e[2K\e[90m╭'"$_HR"$'╮\e[0m\n'; lines=$(( lines + 1 ))
-        # 헤더 2줄
-        local h
-        for h in 0 1; do
-            out+=$'\e[0m\e[2K\e[90m│\e[0m '"${_HEADER_LINES[h]}"
-            printf -v _spc '%*s' "${_HEADER_PADS[h]}" ""
-            out+="$_spc"$' \e[90m│\e[0m\n'
-            lines=$(( lines + 1 ))
+    # 같은 계정 안내 — 어느 쪽이 정상인지 코드가 알 수 없으므로 단정하지 않고 헤더에 한 줄로 한 번만 낸다(이메일 모름 프로필은 비교 제외)
+    _same_note=""
+    declare -A _grp_seen=()
+    for i in "${!PROFILES[@]}"; do
+        _em="${_EMAILS[i]}"
+        [[ -z "$_em" || -n "${_grp_seen[${_em,,}]:-}" ]] && continue
+        _grp_seen[${_em,,}]=1
+        _members=""; _cnt=0
+        for j in "${!PROFILES[@]}"; do
+            [[ "${_EMAILS[j],,}" == "${_em,,}" ]] && { _members+="${_members:+·}${PROFILES[j]}"; _cnt=$(( _cnt + 1 )); }
         done
-        out+=$'\e[0m\e[2K\e[90m├'"$_HR"$'┤\e[0m\n'; lines=$(( lines + 1 ))
-
-        # 항목 라인 (3줄/계정)
-        local total=${#PROFILES[@]}
-        for i in "${!PROFILES[@]}"; do
-            local base=$(( i * 3 ))
-            local k content pad
-            for k in 0 1 2; do
-                pad="${_ITEM_PADS[base+k]}"
-                printf -v _spc '%*s' "$pad" ""
-                if [[ "$i" == "$cur" ]]; then
-                    content="${_ITEM_LINES_SEL[base+k]}"
-                    # \033[0m → \033[0m + _BG 로 배경 유지
-                    content="${content//$'\e[0m'/$'\e[0m\e[48;2;64;64;64m'}"
-                    out+=$'\e[0m\e[2K\e[90m│\e[0m\e[48;2;64;64;64m '"$content$_spc"$' \e[0m\e[90m│\e[0m\n'
-                else
-                    content="${_ITEM_LINES_NORMAL[base+k]}"
-                    out+=$'\e[0m\e[2K\e[90m│\e[0m '"$content$_spc"$' \e[90m│\e[0m\n'
-                fi
-                lines=$(( lines + 1 ))
-            done
-        done
-
-        out+=$'\e[0m\e[2K\e[90m╰'"$_HR"$'╯\e[0m\n'; lines=$(( lines + 1 ))
-        _MENU_LINES=$lines
-        printf '%s' "$out"
-    }
+        (( _cnt >= 2 )) && _same_note+="${_same_note:+ / }${_members} 가 같은 계정(${_em})"
+    done
+    [[ -n "$_same_note" ]] && _MENU_HEADER+=("$(printf '\e[93mℹ %s — 바꾸려면 해당 프로필로 들어가 /login\e[0m' "$_same_note")")
 
     cur=0
-    total=${#PROFILES[@]}
+    # --profile-default: 메뉴 초기 커서(ccc 가 재개 세션의 기록 계정을 넘긴다)
+    if [[ -n "$DEFAULT_PROFILE" ]]; then
+        for i in "${!PROFILES[@]}"; do
+            [[ "${PROFILES[i]}" == "$DEFAULT_PROFILE" ]] && cur=$i && break
+        done
+    fi
 
-    # 화면 clear (커서 홈으로 이동) → 메뉴가 상단부터 표시되도록
-    printf '\e[2J\e[H'
-
-    # 초기 메뉴 출력
-    _draw_menu "$cur"
-
-    # 키 입력 루프: 변경 시 메뉴 전체를 위로 올리고 재출력
-    while true; do
-        IFS= read -r -s -n1 key </dev/tty
-        if [[ "$key" == $'\x1b' ]]; then
-            IFS= read -r -s -n2 -t 0.1 seq </dev/tty
-            key="${key}${seq}"
-        fi
-
-        prev=$cur
-        case "$key" in
-            $'\x1b[A')  # ↑ (circular: 첫 항목에서 → 마지막으로)
-                cur=$(( (cur - 1 + total) % total )) ;;
-            $'\x1b[B')  # ↓ (circular: 마지막 항목에서 → 첫 번째로)
-                cur=$(( (cur + 1) % total )) ;;
-            1|2|3|4|5|6|7|8|9)  # 숫자 즉시선택 (엔터 없이)
-                _n=$(( key - 1 ))
-                if (( _n < total )); then
-                    SELECTED="${PROFILES[$_n]}"
-                    break
-                fi ;;
-            ''|$'\n'|$'\r')  # Enter
-                SELECTED="${PROFILES[$cur]}"
-                break ;;
-            q|Q)
-                echo ""
-                echo "취소됨."
-                exit 0 ;;
-        esac
-
-        if [[ "$cur" != "$prev" ]]; then
-            # 메뉴 줄 수만큼 위로 이동 후 재출력
-            printf "\e[%dA" "$_MENU_LINES"
-            _draw_menu "$cur"
-        fi
-    done
+    _box_menu "$cur"
+    SELECTED="${PROFILES[$_MENU_SEL]}"
     echo ""
 fi
 
+# 계정 다음 메뉴(대화형만): ccc 의 --resume-pick 이면 재개 메뉴, 아니면 롤 메뉴
+if (( _PICK_MODE == 1 )); then
+    PROJECT=""
+    if [[ -f "$ROLE_LIB" ]]; then
+        PROJECT=$(python3 -B "$ROLE_LIB" project-slug --cwd "$WORK_DIR" 2>/dev/null || true)
+    fi
+    if [[ -n "$RESUME_PICK" ]]; then
+        _resume_menu
+    else
+        _role_menu
+    fi
+    _build_session_args
+fi
+
+while true; do
+    _arc=0
+    _apply_role "$SELECTED" || _arc=$?
+    [[ $_arc -eq 9 ]] || break
+    # 에이전트명 입력을 취소하면 롤 메뉴로 돌아간다
+    ROLE_ARG=""; ROLE_VALUE=""
+    _role_menu
+    _build_session_args
+done
+
+# 시험 모드(주입 경로): 메뉴를 지난 결과를 cas 대신 출력
+if [[ "${CC_ROLE_CHECK_ONLY:-}" == "1" ]]; then
+    echo "CC_CHECK profile=${SELECTED} role=${ROLE_SET_VALUE} flag=${SESSION_ARGS[*]:-} sid=${NEW_SID:-${RESUME_SID:-}} default=${DEFAULT_PROFILE} dir=${WORK_DIR}"
+    exit 0
+fi
+
 echo ""
-echo "🚀 [$SELECTED] 계정으로 Claude Code ${CONTINUE_FLAG:+재개}${CONTINUE_FLAG:-진입} 중..."
+_MODE_TXT="진입"
+[[ -n "$CONTINUE_FLAG" || -n "$RESUME_SID" ]] && _MODE_TXT="재개"
+echo "🚀 [$SELECTED] 계정으로 Claude Code ${_MODE_TXT} 중...${ROLE_SET_VALUE:+ (롤: $ROLE_SET_VALUE)}"
 
 # cas의 정보성 메시지 필터 (정보/profile= 디버그 숨김, 에러/경고는 통과)
 _CAS_FILTER='grep -v -E "^\[claude-as\] (정보|profile=)"'
 
 # tmux 진입 + 탭 타이틀 처리는 cas가 단독 책임 (cas 자체의 a.0/a.6 분기)
 # cc는 메뉴 + 인자 파싱 + cas 호출만 담당
-# --remote-control: 세션 시작과 동시에 Remote Control(휴대폰/claude.ai 연결) 자동 활성화
-#   (--remote-control [name] 은 선택 인자를 받으므로 다른 인자를 삼키지 않도록 맨 뒤에 둔다)
-cd "$WORK_DIR"
+# Remote Control 은 자동 활성화하지 않는다(2026-11-03 사용자 요청 — 필요 없음). 세션 안에서 직접 켤 수는 있다.
 # --model: --continue 재개 시 대화 저장 당시 모델(예: 구버전 Opus)에 묶이지 않도록 매번 명시한다.
-#   사용자 설정(~/.claude/settings.json 의 model, /model 로 저장)이 있으면 그 값, 없으면 "default"(계정 최신 기본 모델).
+#   사용자 설정(${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json 의 model, /model 로 저장)이 있으면 그 값, 없으면 "default"(계정 최신 기본 모델).
 #   별칭(default/opus/sonnet/haiku/fable)은 새 모델 출시 시 자동으로 최신 버전을 가리킨다.
-_MODEL_ARG=$(python3 -c 'import json,os;print(json.load(open(os.path.expanduser("~/.claude/settings.json"))).get("model") or "default")' 2>/dev/null)
+_MODEL_ARG=$(python3 -c 'import json,os;print(json.load(open(os.path.expanduser("${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json"))).get("model") or "default")' 2>/dev/null)
 [ -z "$_MODEL_ARG" ] && _MODEL_ARG="default"
-cas "$SELECTED" $CONTINUE_FLAG --model "$_MODEL_ARG" --dangerously-skip-permissions --remote-control 2> >(eval "$_CAS_FILTER" >&2)
+cd "$WORK_DIR"
+cas "$SELECTED" "${SESSION_ARGS[@]}" --model "$_MODEL_ARG" --dangerously-skip-permissions 2> >(eval "$_CAS_FILTER" >&2)
 exit $?

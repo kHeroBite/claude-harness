@@ -66,12 +66,12 @@ stderr_출력_규칙 (Claude Code hook error 방지):
   - 각 항목의 target_file, proposed_rule 참조
 
 2_기존_Hook_확인:
-  - ls ~/.claude/hooks/ 로 현재 hook 목록 확인
+  - ls ${HARNESS_HOME:-$HOME/.harness}/current/hooks/ 로 현재 hook 목록 확인
   - 기존 hook에 조건 추가로 해결 가능한지 판단
   - 가능하면 기존 hook 수정 (신규 hook 최소화)
 
 3_Hook_스크립트_작성:
-  - 경로: ~/.claude/hooks/{descriptive_name}.sh
+  - 경로: ${HARNESS_HOME:-$HOME/.harness}/current/hooks/{descriptive_name}.sh
   - 실행 권한: chmod +x 필수
   - 🚨 CRLF 제거 필수: sed -i 's/\r$//' (L-020)
   - 🚨 log_hook_error 필수 (L-074): 모든 차단/경고/주요 이벤트 경로에 반드시 추가
@@ -91,18 +91,18 @@ log_hook_error_필수_규칙 (L-074):
     - 오류: HOOK_CRASH_{GUARD명}  예: HOOK_CRASH_PREBUILD
 
   필수_템플릿 (차단 경로):
-    source "${HARNESS_HOOK_DIR}/lib/write_error.sh" 2>/dev/null
+    source "${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/write_error.sh" 2>/dev/null
     log_hook_error "HOOK_BLOCK_{NAME}" "도구명" "차단 사유" "$SESSION_ID"
     echo '{"decision":"block","reason":"❌ [사유]"}'
     exit 2
 
   필수_템플릿 (경고 경로):
     echo "⚠️ [경고 메시지]" >&2
-    source "${HARNESS_HOOK_DIR}/lib/write_error.sh" 2>/dev/null
+    source "${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/write_error.sh" 2>/dev/null
     log_hook_error "HOOK_WARN_{NAME}" "도구명" "경고 내용" "$SESSION_ID"
 
 4_settings.json_등록:
-  - ~/.claude/settings.json의 hooks 섹션에 추가
+  - ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json의 hooks 섹션에 추가
   - matcher 패턴 정확히 설정
   - timeout: 5 (기본)
   - 중복_등록_금지: 동일 hook이 이미 등록되어 있으면 추가하지 않음 (CLAUDE.md Hooks 공유 규칙 참조)
@@ -114,15 +114,15 @@ log_hook_error_필수_규칙 (L-074):
 
 5.5_bash_문법검증_필수 (모든 hook 수정 후):
   - hook 생성/수정 후 반드시 bash -n 문법 검증 실행:
-      bash -n ~/.claude/hooks/{수정한파일}.sh
-      bash -n "${HARNESS_HOOK_DIR}/lib/{수정한파일}.sh"  # lib/ 하위 파일 포함
+      bash -n ${HARNESS_HOME:-$HOME/.harness}/current/hooks/{수정한파일}.sh
+      bash -n ${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/{수정한파일}.sh  # lib/ 하위 파일 포함
   - 검증 실패 시: 즉시 수정 후 재검증 (검증 없이 커밋 금지)
   - 검증 통과 시에만 NTFS 동기화 및 커밋 진행
   - 이 단계를 건너뛸 수 없음 — hook_lint와 함께 필수 게이트
 
 6_hook_lint_필수실행 (L-074 강제화):
-  - bash "${HARNESS_HOOK_DIR}/lib/hook_lint.sh" [수정한 hook 파일 경로]
-  - 또는 전체 검사: bash "${HARNESS_HOOK_DIR}/lib/hook_lint.sh" ~/.claude/hooks/
+  - bash ${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/hook_lint.sh [수정한 hook 파일 경로]
+  - 또는 전체 검사: bash ${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/hook_lint.sh ${HARNESS_HOME:-$HOME/.harness}/current/hooks/
   - 통과 시: "✅ 검사 통과" 출력 → 다음 단계 진행
   - 실패 시: 위반 파일:줄번호 출력 → 즉시 수정 후 재검증
   - 이 단계를 건너뛸 수 없음 — hook 배포 전 필수 게이트
@@ -151,7 +151,7 @@ PreToolUse:
   Agent: agent_lifecycle.sh — 에이전트 spawn 전 생명주기 관리
   TeamCreate: team_create_guard.sh — 팀 생성 가드
 PostToolUse:
-  Skill: phase_guard.sh — ok/oinfra 스킬 호출 시 state 전환 관리
+  Skill: phase_guard.sh — ok 등 파이프라인 스킬 호출 시 state 전환 관리
   Bash: build_diagnosis.sh — dotnet build 실패 시 에러 자동 진단
   Bash: postbuild_restart.sh — dotnet build 성공 후 자동 재시작
   Agent: agent_lifecycle.sh — 에이전트 완료 후 생명주기 관리

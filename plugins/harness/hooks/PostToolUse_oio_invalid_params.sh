@@ -1,8 +1,4 @@
 #!/bin/bash
-# >>> harness preamble
-_HP="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)}"
-[ -f "$_HP/hooks/harness_preamble.sh" ] && . "$_HP/hooks/harness_preamble.sh" 2>/dev/null || { [ -f "$_HP/harness_preamble.sh" ] && . "$_HP/harness_preamble.sh" 2>/dev/null; } || true
-# <<< harness preamble
 # PostToolUse_oio_invalid_params.sh — oio 도구 "Invalid tool parameters" 감지 시 파이프라인 강제 중단
 # PostToolUse hook: matcher=mcp__oio__*
 # 동작: oio 도구 응답에 "Invalid tool parameters" 포함 + 파이프라인 활성 상태 시

@@ -16,11 +16,11 @@ invocation:
 
 ## 실행 순서
 
-1. **Skill('otest_build')** — 빌드 (프로젝트별 oinfra_{project} 빌드 섹션)
+1. **Skill('otest_build')** — 빌드 (프로젝트별 INFRA.md 빌드 절)
    - 증거: evidence/build_ok (exit_code=0, build_log_hash)
    - 실패 → odev 역라우팅 권고 반환
 
-2. **Skill('otest_run')** — 배포+헬스체크 (프로젝트별 oinfra_{project} 배포 섹션)
+2. **Skill('otest_run')** — 배포+헬스체크 (프로젝트별 INFRA.md 배포 절)
    - 증거: evidence/deploy_ok, evidence/run_ok
    - 실패 → odev 역라우팅 권고 반환
 

@@ -1,11 +1,7 @@
 #!/bin/bash
-# >>> harness preamble
-_HP="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)}"
-[ -f "$_HP/hooks/harness_preamble.sh" ] && . "$_HP/hooks/harness_preamble.sh" 2>/dev/null || { [ -f "$_HP/harness_preamble.sh" ] && . "$_HP/harness_preamble.sh" 2>/dev/null; } || true
-# <<< harness preamble
 # mcp_disconnect_guard.sh — MCP 도구 실패 시 끊김 감지 + 상태 파일 기록 + 사용자 알림
 # PostToolUse hook: matcher=mcp__oio__*
-# 동작: oio MCP 도구가 연결 끊김 에러 반환 시 ~/.claude/.mcp_disconnect 기록
+# 동작: oio MCP 도구가 연결 끊김 에러 반환 시 ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.mcp_disconnect 기록
 
 set -uo pipefail
 

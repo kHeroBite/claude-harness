@@ -1,15 +1,11 @@
 #!/bin/bash
-# >>> harness preamble
-_HP="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)}"
-[ -f "$_HP/hooks/harness_preamble.sh" ] && . "$_HP/hooks/harness_preamble.sh" 2>/dev/null || { [ -f "$_HP/harness_preamble.sh" ] && . "$_HP/harness_preamble.sh" 2>/dev/null; } || true
-# <<< harness preamble
 # 팀에이전트가 SendMessage 없이 턴을 끝내는 것을 판정하는 공용 라이브러리 (판정 단일 출처)
 #
 # 배경: 2026-08-17 팀에이전트 보고 유실 3건(verify-1 / diag-1 / odev-2).
 #   세 에이전트 모두 보고 내용을 "화면 텍스트"로만 출력하고 SendMessage 도구를
 #   호출하지 않은 채 턴을 종료했다. 화면 텍스트는 team-lead에게 전달되지 않으므로
 #   메인은 보고를 영영 받지 못했다.
-#   증적: .claude/evidence/c3_report_hook_20260817.md
+#   증적: /mnt/c/DATA/Project/Mars/.claude/evidence/c3_report_hook_20260817.md
 #
 # 설계 원칙:
 #   1. L-457 단일 출처 — 판정 로직은 이 파일에만 둔다.
@@ -23,7 +19,7 @@ _HP="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null
 #
 # 긴급 정지 스위치 (의도적 설계 — orphan_scan.sh 와 동일 양식):
 #   이 파일을 삭제/이동하면 호출부가 fail-open 되어 아무 것도 차단하지 않는다.
-#     touch ~/.claude/hooks/DISABLE_REPORT_GUARD          # ① 가장 빠름 (settings 무수정)
+#     touch ${HARNESS_HOME:-$HOME/.harness}/current/hooks/DISABLE_REPORT_GUARD          # ① 가장 빠름 (settings 무수정)
 #     mv report_guard.sh report_guard.sh.disabled         # ② 판정 불능 → 전량 통과
 #     mv report_guard.sh.disabled report_guard.sh         # ② 복구
 #   ①② 모두 settings.json 을 건드리지 않는다 (2026-05-02 활성 세션 캐시 사고 회피).

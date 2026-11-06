@@ -94,6 +94,12 @@ UUID_결정:
           conv_id={저장값|부재} ≠ 현재 {현재값} — 전 단계를 새로 수행한다."
        ⚠️ 판단이 서지 않으면 ★무시(전 단계 수행)★ 쪽으로 기운다. 중복 수행은 비용일 뿐이지만
           잘못된 스킵은 "하지 않은 일을 완료로 보고"하는 침묵 실패다.
+       ⚠️ conv_id 일치만으로 통과시키지 않는다 (L-1354 — 같은 대화ID 가 두 사이클에 쓰인 실측).
+          아래 중 하나라도 해당하면 conv_id 가 같아도 ★잔류물★이다.
+          - 저장된 cycle 필드가 현재 사이클 번호와 다르거나, cycle 필드가 없다
+          - 파일 mtime 이 현재 사이클 시작 시각(ok_started·conv_id 파일 mtime·리드 지시 시각) 이전이다
+          - commit_hash 가 git log 상 현재 사이클 이전 커밋을 가리킨다
+          저장 시에는 conv_id 와 함께 "cycle": <현재 사이클 번호> 를 반드시 넣는다.
     5. substeps_completed 확인 → 완료된 서브스텝 스킵 (4번 게이트를 통과한 경우에만)
        - "lesson" 포함 → odone_lesson 스킵
        - "cleanup" 포함 → odone_cleanup 스킵
@@ -123,6 +129,15 @@ UUID_결정:
 otest 전체 통과 완료 필수 (Phase 0~4). 파이프라인 순서 상세: ok 참조.
 **적용 계층**: o3~o5만. o1/o2는 odone 미실행 (ofinish Step 1.5 경량 교훈으로 대체).
 **참고**: ofinish Step 1.5(경량 교훈)/Step 7.5(경량 커밋)는 o1/o2 전용. o3~o5에서는 odone이 교훈+커밋을 담당.
+
+## QA 단계 확인 (QA 선언 프로젝트 한정)
+
+원문 지시: "앞으로도 qa서버까지는 테스트를 진행하도록 하라. 다만 운영db와 연계되어있으므로 조심하고 최소한의 테스트만 진행하고 테스트전으로 완벽하게 되돌릴수있는 테스트만 진행하여야한다."(사용자 지시, 2026-10-10)
+
+- 적용 조건은 프로젝트에 `.claude/qa_tier.json` 선언이 있고 현재 tier 가 해당될 때이다. 선언이 없으면 건너뛴다.
+- 커밋 전에 `${SESSION_DIR}/evidence/qa_test_done` 마커(PASS|PARTIAL|SKIPPED)와 전후 대조(compare) 결과를 확인하고, 그 요약을 커밋 메시지와 HISTORY 에 남긴다. 요약에는 마커 판정, 전후 state 일치 여부, 제외한 원복 불가 항목 수를 넣는다.
+- 시험 데이터 잔여 0 을 확인한다. 시험 표식이 붙은 행·알림·파일이 남아 있으면 커밋하지 않고 리드에게 보고한다.
+- 마커가 없거나 전후가 불일치하면 DONE 전이는 done_gate 가 최종 차단한다. 면제(SKIPPED)는 사용자에게 묻지 않고 판단해 감사 기록을 남긴다 — 앱·서버 소스 변경이 없거나 QA 시험이 해당되지 않으면 reason= 에 근거를 적는다(사용자 지시 2026-10-27 15:53). 운영 배포 승인은 별도다.
 
 ## 서브스킬 실행 순서 (v4.3 — 3단계 구조)
 
@@ -349,11 +364,31 @@ odone_미완주_방지:
   - 공용 리소스 동기화 검증 결과 (해당 시)
 ```
 
+### ntfy 페이로드 작성 (커밋 경로 무관 — 필수, 사이클182 항목6)
+
+```yaml
+배경: |
+  페이로드 생성이 opush 안에만 있어, 리드 지시로 odone_git·opush 를 거치지 않고
+  직접 git commit·push 한 사이클(180·181)에서 ntfy_payload.json 이 만들어지지 않았다(2회 재현).
+  ⇒ 커밋을 어떤 경로로 했든 odone 이 직접 쓴다.
+시점: 커밋·push 완료 직후, 결과 파일 저장과 함께 (완료 통보 전)
+적용: odone_git/opush 경유 여부와 무관하게 항상 (직접 git commit·push 한 경우 포함)
+경로: ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/session-env/${UUID}/ntfy_payload.json   # opush·ofinish 와 같은 경로
+도구: mcp__oio__file_write(path=<위 경로>, content=<JSON>, overwrite=true)   # echo > 리다이렉트 금지
+내용: {"title":"✅","message":"{커밋 메시지 제목}","tags":["white_check_mark"]}
+  topic: 확실히 아는 경우에만 넣는다 (INFRA.md 헤더 ntfy_topic 실값). 모르면 필드를 생략한다.
+         ofinish Step 7 의 ntfy_send.sh 가 NTFY_TOPIC → INFRA.md 헤더 ntfy_topic 순으로 해석하고, 끝내 없으면 발송하지 않는다.
+  금지: 토픽을 지어내기, "{ntfy_topic}" 같은 자리표시자를 실값처럼 넣기
+opush_가_이미_썼으면: 같은 경로를 덮어써도 된다 (내용 동일 규격). 경로가 다른 옛 파일은 무시된다.
+검증: mcp__oio__file_read 로 다시 읽어 유효 JSON 인지 확인 (python3 -m json.tool <경로>)
+보고: 완료 통보 message 에 페이로드 경로를 1줄로 넣는다 (아래 완료 통보 참조)
+```
+
 ### 완료 통보 (절대 생략 금지)
 
 ```yaml
-시점: 결과 파일 저장 직후
-방법: SendMessage(to:"{리더명}", message:"odone 완료 — $HOME/.claude/session-env/${UUID}/logs/odone_{대화ID}.md\n{요약 3줄}", summary:"odone 마무리 완료")
+시점: 결과 파일 저장 + ntfy 페이로드 작성 직후
+방법: SendMessage(to:"{리더명}", message:"odone 완료 — $HOME/.claude/session-env/${UUID}/logs/odone_{대화ID}.md\nntfy 페이로드: ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/session-env/${UUID}/ntfy_payload.json\n{요약 3줄}", summary:"odone 마무리 완료")
 마지막_줄: "📊 spawn_stats: team=N sub=N task=N"
 
 보고_수치_실측_원칙 (L-407 — 절대 규칙):

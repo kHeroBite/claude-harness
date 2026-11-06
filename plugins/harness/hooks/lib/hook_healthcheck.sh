@@ -1,13 +1,9 @@
 #!/bin/bash
-# >>> harness preamble
-_HP="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)}"
-[ -f "$_HP/hooks/harness_preamble.sh" ] && . "$_HP/hooks/harness_preamble.sh" 2>/dev/null || { [ -f "$_HP/harness_preamble.sh" ] && . "$_HP/harness_preamble.sh" 2>/dev/null; } || true
-# <<< harness preamble
 # hook_healthcheck.sh — Hook 파일 건전성 + 공유 자원 동일성 자동 점검
-# 수동 유틸리티 — 필요 시 bash ~/.claude/hooks/hook_healthcheck.sh 직접 실행
+# 수동 유틸리티 — 필요 시 bash ${HARNESS_HOME:-$HOME/.harness}/current/hooks/hook_healthcheck.sh 직접 실행
 # 항상 exit 0 (차단하지 않음)
 
-HOOK_DIR="$HOME/.claude/hooks"
+HOOK_DIR="${HARNESS_HOME:-$HOME/.harness}/current/hooks"
 TOTAL=0
 FIXED=0
 ERRORS=0
@@ -48,20 +44,8 @@ fi
 # ═══════════════════════════════════════════════════════════
 # 4. CLAUDE.md 하드링크 동일성 검증
 # ═══════════════════════════════════════════════════════════
-# 여러 프로젝트가 CLAUDE.md 를 하드링크로 공유하는 경우의 상위 디렉토리.
-# 환경변수 HARNESS_PROJECT_BASE 로 지정한다. 미설정 시 현재 프로젝트의 부모를 쓴다.
-PROJECT_BASE="${HARNESS_PROJECT_BASE:-$(dirname "${CLAUDE_PROJECT_DIR:-$PWD}")}"
-# 하드링크로 CLAUDE.md 를 공유하는 프로젝트 디렉토리명을 나열한다.
-# 환경변수 HARNESS_LINKED_PROJECTS 로 재정의 가능 (공백 구분).
-# 미설정 시 PROJECT_BASE 하위에서 .claude/ 를 가진 디렉토리를 자동 탐지한다.
-if [[ -n "${HARNESS_LINKED_PROJECTS:-}" ]]; then
-  read -r -a PROJECTS <<< "$HARNESS_LINKED_PROJECTS"
-else
-  PROJECTS=()
-  for _d in "$PROJECT_BASE"/*/; do
-    [[ -d "${_d}.claude" ]] && PROJECTS+=("$(basename "$_d")")
-  done
-fi
+PROJECT_BASE="/mnt/c/DATA/Project"
+PROJECTS=("Mars" "AI" "MaiX")
 CLAUDE_INODES=""
 CLAUDE_MISMATCH=false
 
@@ -80,11 +64,11 @@ UNIQUE_INODES=$(echo "$CLAUDE_INODES" | tr ' ' '\n' | sort -u | grep -v '^$' | w
 if [[ "$UNIQUE_INODES" -gt 1 ]]; then
   CLAUDE_MISMATCH=true
   echo "🚨 CLAUDE.md 하드링크 불일치! inode:${CLAUDE_INODES}"
-  echo "  → 원본 기준으로 재연결 필요: rm + ln \${원본프로젝트}/CLAUDE.md"
+  echo "  → AI 원본 기준으로 재연결 필요: rm + ln ${HARNESS_HOME:-$HOME/.harness}/current/CLAUDE.md"
 fi
 
 if [[ "$CLAUDE_MISMATCH" == false ]] && [[ -n "$CLAUDE_INODES" ]]; then
-  echo "✅ CLAUDE.md 하드링크: ${#PROJECTS[@]}개 프로젝트 동일 (inode:$(echo $CLAUDE_INODES | awk '{print $1}'))"
+  echo "✅ CLAUDE.md 하드링크: 3개 프로젝트 동일 (inode:$(echo $CLAUDE_INODES | awk '{print $1}'))"
 fi
 
 # ═══════════════════════════════════════════════════════════

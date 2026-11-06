@@ -1,8 +1,4 @@
 #!/bin/bash
-# >>> harness preamble
-_HP="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)}"
-[ -f "$_HP/hooks/harness_preamble.sh" ] && . "$_HP/hooks/harness_preamble.sh" 2>/dev/null || { [ -f "$_HP/harness_preamble.sh" ] && . "$_HP/harness_preamble.sh" 2>/dev/null; } || true
-# <<< harness preamble
 # 팀에이전트가 SendMessage 없이 턴을 끝내면 차단하는 SubagentStop hook (얇은 호출부)
 #
 # ★ 이벤트가 Stop 이 아니라 SubagentStop 인 이유 (바이너리 2.1.233 실측):
@@ -14,7 +10,7 @@ _HP="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null
 # 이 파일은 stdin 파싱 → 호출 → 출력만 담당한다.
 #
 # 긴급 정지 스위치 (3중 — ①② 는 settings.json 무수정):
-#     touch ~/.claude/hooks/DISABLE_REPORT_GUARD                  # ① 즉시 무력화
+#     touch ${HARNESS_HOME:-$HOME/.harness}/current/hooks/DISABLE_REPORT_GUARD                  # ① 즉시 무력화
 #     mv lib/report_guard.sh lib/report_guard.sh.disabled         # ② 판정 불능 → 전량 통과
 #     settings.json 의 SubagentStop 블록 삭제 (백업본 복원)        # ③ 완전 제거
 #
@@ -23,7 +19,7 @@ _HP="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null
 
 set -u
 
-HOOKS_DIR="${HOME}/.claude/hooks"
+HOOKS_DIR="${HARNESS_HOME:-$HOME/.harness}/current/hooks"
 LIB="${HOOKS_DIR}/lib/report_guard.sh"
 
 # E0 — 긴급 정지 파일

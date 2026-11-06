@@ -30,20 +30,20 @@ invocation:
 ### Phase 1: 설치 (임시)
 
 ```yaml
-설치_경로: ~/.claude/skills/{소스명}/   # 임시 — Phase 5에서 제거
+설치_경로: ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/skills/{소스명}/   # 임시 — Phase 5에서 제거
 방법: git clone (--depth 1 권장)
 setup: 실행하지 않음 (빌드/바이너리 불필요 — SKILL.md 분석만 필요)
 ```
 
 ```bash
 # gstack
-git clone --depth 1 https://github.com/garrytan/gstack.git ~/.claude/skills/gstack
+git clone --depth 1 https://github.com/garrytan/gstack.git ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/skills/gstack
 
 # gsd
-git clone --depth 1 https://github.com/gsd-build/gsd-2.git ~/.claude/skills/gsd
+git clone --depth 1 https://github.com/gsd-build/gsd-2.git ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/skills/gsd
 ```
 
-이미 클론되어 있으면 스킵. `ls ~/.claude/skills/{소스명}` 확인.
+이미 클론되어 있으면 스킵. `ls ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/skills/{소스명}` 확인.
 
 ### Phase 2: 스킬 인벤토리 수집
 
@@ -139,7 +139,7 @@ Phase 4 완료 후 필수:
 ### Phase 5: 정리 (제거)
 
 ```bash
-rm -rf ~/.claude/skills/{소스명}
+rm -rf ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/skills/{소스명}
 ```
 
 **사전 확인**: 이식 완료 여부를 사용자에게 확인 후 제거.

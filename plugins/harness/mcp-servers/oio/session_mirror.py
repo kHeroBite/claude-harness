@@ -337,6 +337,7 @@ def _atomic_copy(src: str, dst: str) -> None:
     os.close(fd)
     try:
         shutil.copyfile(src, tmp)
+        shutil.copymode(src, tmp)  # mkstemp 기본 600 방지 — 원본 실행 권한 보존
         os.replace(tmp, dst)
     except Exception:
         try:

@@ -1,8 +1,4 @@
 #!/bin/bash
-# >>> harness preamble
-_HP="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)}"
-[ -f "$_HP/hooks/harness_preamble.sh" ] && . "$_HP/hooks/harness_preamble.sh" 2>/dev/null || { [ -f "$_HP/harness_preamble.sh" ] && . "$_HP/harness_preamble.sh" 2>/dev/null; } || true
-# <<< harness preamble
 # ofinish_recurse_guard.sh — PreToolUse:Skill hook
 # 목적: FINISH 상태에서 Skill('ofinish') 재귀 호출 차단
 # 트리거: PreToolUse:Skill (ofinish* 호출 시)
@@ -18,7 +14,7 @@ case "$SKILL_NAME" in
 esac
 
 # UUID 결정
-source "${HARNESS_HOOK_DIR}/lib/session_id.sh"
+source "${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/session_id.sh"
 resolve_uuid "$INPUT" || exit 0
 [[ -z "$UUID" ]] && exit 0
 
@@ -39,10 +35,10 @@ CURRENT_STATE=$(state_read "$STATE_FILE" 2>/dev/null | awk '{print $1}')
 # FINISH 상태 + ofinish_done 마커 존재 시에만 재귀 차단
 OFINISH_DONE="${SESSION_DIR}/evidence/ofinish_done"
 if [[ "$CURRENT_STATE" == "FINISH" && -f "$OFINISH_DONE" ]]; then
-  # oralph 루프 진행 중(status=RALPH)이면 재귀 차단 면제 — 정상 반복 동작
-  source "${HARNESS_HOOK_DIR}/lib/state_machine.sh"
+  # oroof 루프 진행 중(status=ROOF)이면 재귀 차단 면제 — 정상 반복 동작
+  source "${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/state_machine.sh"
   STATUS_FILE="${SESSION_DIR}/status"
-  if status_has "$STATUS_FILE" "RALPH" 2>/dev/null; then
+  if status_has "$STATUS_FILE" "ROOF" 2>/dev/null; then  # ROOF-COMPAT(deprecation window 1주기 — 구 RALPH/oralph_active 인식 제거 예정): status_has 가 ROOF/RALPH 별칭 처리
     exit 0
   fi
   echo "{\"decision\":\"block\",\"reason\":\"🚫 ofinish 재귀 차단: ofinish_done 마커 존재 — 이미 완료된 파이프라인입니다. 새 작업은 /ok로 시작하세요.\"}"

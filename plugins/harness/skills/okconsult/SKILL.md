@@ -36,7 +36,7 @@ o4부터 oplan_consult 실행 가능하므로 forced_tier=o4로 진입하여 opl
 Skill('oplan') 호출. forced_tier=o4 — tier 결정 스킵, o4 depth로 즉시 실행.
 hint_plan=oplan_consult — oplan_deep 대신 oplan_consult(Claude×Codex 이종 AI) 우선 사용.
 사용자 요구사항: {원문}.
-Skill('oinfra_{project}') 호출.
+프로젝트 인프라는 INFRA.md 참조(경로는 프롬프트의 [INFRA_INJECT] 줄).
 PIPELINE_UUID={UUID}. 대화ID: {CONV_ID}
 ```
 

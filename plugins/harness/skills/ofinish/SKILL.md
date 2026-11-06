@@ -69,6 +69,12 @@ shutdown_책임_통합 (L-193/L-214):
 목적: ofinish 실행 중임을 표시. write_guard.sh hook이 FINISH 상태에서 rm -rf 허용.
 주의: echo "FINISH ${UUID}" > state 직접 bash 쓰기 금지 — write_guard.sh F1이 차단.
       반드시 mcp__oio__session_state 도구 사용. force=False(기본)으로 DONE→FINISH 검증 포함.
+문서_갱신_게이트 (PreToolUse_docs_update_gate.sh — 판정 규칙·사유 파일 형식은 odone_docs "문서 갱신 게이트" 절):
+  - 이 호출에서 hook 이 tier(classification)를 docs_gate_tier 마커에 기록한다(모든 tier). O1/O2 는 Step 8 판정용 기록만 하고 여기서는 검사하지 않는다.
+  - O3~O5 는 이 호출에서 검사한다. 코드 변경이 있는데 HISTORY.md 가 미변경이면 block, DATABASE/PROJECT 누락은 warn(진행).
+  - block 시 state 는 DONE 그대로다. 복구는 ① odone_docs 재실행 → 누락 문서 갱신·커밋 → 이 호출 재시도, ② 생략이 정당하면
+    session-env/${UUID}/docs_update_waiver 에 "HISTORY: 사유(10자+)" 를 쓰고 재시도. force=True 나 다른 도구로 state 를 쓰는 우회는 금지(L-597).
+  - warn·WAIVED 내용은 Step 5 종료 배너에 1줄로 노출한다.
 ```
 
 ### Step 1: 팀 정리 — Skill('oinit') 위임
@@ -260,10 +266,16 @@ step3_5_next_action_autoloop:
     - 작성 조건: (a) 슬래시 명령이 명확 (b) 작업 설명이 1줄 이상 (c) 자동 진행해도 안전하다고 메인이 판단
     - 모호하거나 사용자 확인이 필요하면 작성하지 않음 (기존 동작 — IDLE 복귀)
 
+  auto_ON_세션_정합 (oto 자율모드 — 계획 §2-8, 완주 가드 F-OTO-2·F-OTO-9 와 동일 규칙):
+    - auto=ON(oto) 세션의 next_action.json 은 "handoff_kind":"blocked_only"(goal 의 blocked·blocked_by 항목 id 만 담은 blocked_ids) 또는 "carryover"(open 잔여 id 를 담은 carry_ids) 둘뿐이다. 그 밖의 인계는 write_guard·완주 가드가 차단한다.
+    - auto=ON 세션의 next_action(blocked_only·carryover)은 ofinish 가 소비하지 않는다. carryover 는 다음 /oto 진입부(0_잔업_이어받기)가 소비하고, oto 는 ROOF 경로라 next_action 이 Phase 2 이후에 생긴다.
+    - open FAIL·UNDET 는 oto 검증 루프(FINISH→DEV 재진입)가 먼저 처리하고, 남으면 carryover 로 이월해 곧바로 다음 사이클을 착수한다. 체인 상한(cycle_cap)·진전 없음(no_progress)·EARLY_TERM 에 닿았을 때만 oto_incomplete.json({fail_ids, reason, iteration, max_iterations, detail})으로 '미완료'를 정직하게 보고한다.
+    - auto=OFF 세션은 아래 기존 동작 그대로다.
+
   파일: ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/session-env/${UUID}/next_action.json
   스키마:
     {
-      "slash_command": "/o3" | "/o2" | "/o1" | "/o4" | "/o5" | "/ok" | "/oralph" | ...,
+      "slash_command": "/o3" | "/o2" | "/o1" | "/o4" | "/o5" | "/ok" | "/oroof" | ...,
       "task_description": "한 줄 작업 설명 — 슬래시 명령 뒤에 붙는 인자가 됨",
       "reason": "왜 follow-up이 필요한지 한 줄",
       "created_at": "ISO timestamp"
@@ -274,16 +286,14 @@ step3_5_next_action_autoloop:
        # 조건: goal.json 존재 AND locked==true 일 때만 강제. 그 외 → 1번으로 진행.
        _GOAL="${SESSION_DIR}/goal.json"
        if [ -f "$_GOAL" ] && [ "$(jq -r '.locked // false' "$_GOAL" 2>/dev/null)" = "true" ]; then
-         # goal.acceptance 중 auto 실행 가능 항목 sandbox 검증
-         _FAIL=0
-         while IFS= read -r _ITEM; do
-           _SCRIPT=$(echo "$_ITEM" | jq -r '.auto_script // empty' 2>/dev/null)
-           if [ -n "$_SCRIPT" ]; then
-             eval "$_SCRIPT" 2>/dev/null || _FAIL=$((_FAIL + 1))
-           fi
-         done < <(jq -c '.acceptance[]' "$_GOAL" 2>/dev/null)
-         if [ "$_FAIL" -gt 0 ]; then
-           echo "⛔ goal.acceptance 미달 (${_FAIL}개 FAIL) — autoloop 진입 차단, next_action.json 보존됨"
+         # goal.acceptance 판정은 공용 CLI 한 곳에서만 한다 (세션 경로 재매핑·UNDET 처리 포함)
+         # CLI 가 GOAL_SESSION_DIR(goal.json 디렉터리)·GOAL_UUID 를 auto_script 에 넘긴다
+         # ofinish 는 odone 이후이므로 --before-stage 없이 valid_after:"odone" 항목까지 전부 판정한다 (otest_verify 는 --before-stage odone)
+         bash "${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/goal_autoscript_run.sh" --goal "$_GOAL"; _GRC=$?
+         # rc 가 0 이 아니면 전부 미통과 (1=미달, 3=판정불가·비정상, 127=lib 부재, 그 외=비정상)
+         # rc=0 은 전 항목 PASS, 또는 open 0건에 전부 blocked(ALLBLOCKED)일 때다.
+         if [ "$_GRC" -ne 0 ]; then
+           echo "⛔ goal.acceptance 미통과(rc=$_GRC) — PASS 로 간주하지 않음, autoloop 진입 차단, next_action.json 보존됨"
            → Step 4 진행 (autoloop 미진입)
          fi
        fi
@@ -320,7 +330,7 @@ step3_5_next_action_autoloop:
        REASON=$(jq -r '.reason' next_action.json)
 
     5. 슬래시 명령 유효성 검증 (whitelist):
-       유효: /ox /o1 /o2 /o3 /o4 /o5 /ok /oto /oralph /oresume /oconsult /odebate /odeep /onormal /osimple /okconsult /okdebate /okdeep
+       유효: /ox /o1 /o2 /o3 /o4 /o5 /ok /oto /oroof /oresume /oconsult /odebate /odeep /onormal /osimple /okconsult /okdebate /okdeep
        무효 (예: /oinit, /ofinish 등 메타): → next_action.json을 evidence/rejected_autoloop.json으로 이동 + Step 4
        # /oto (자율모드): 미등재 시 rejected_autoloop으로 거부되어 자율 완주가 끊긴다.
        #   대체로 /ok를 쓰면 autoloop은 돌지만 Step 8에서 auto 플래그가 삭제되어
@@ -359,7 +369,8 @@ step3_5_next_action_autoloop:
 step4_임시파일_삭제:
   도구: mcp__oio__bash_exec
   # → 삭제 목록 전체: [references/CLEANUP_FILES.md](references/CLEANUP_FILES.md) "Step 4 임시파일 삭제 목록"
-  요약: CLEANUP_FILES.md 참조 — logs/plans 7일 보존, 상태/플래그 파일+agents/evidence/panes/compact만 삭제
+  요약: Step 4-0a harness_cleanup.py 승격+자기 세션 정리, 4-0b 죽은 세션 자동 회수(승인 표식 있을 때만, 없으면 no-op), 4-1 기존 삭제 목록(상태/플래그 파일+agents/evidence/panes/compact/work) — 상세 CLEANUP_FILES.md
+  순서: 4-0a → 4-0b → 4-1 을 순차 실행한다. 4-0a·4-0b 는 --fail-open 이며 rc·timeout 과 무관하게 4-1 로 진행한다.
 
 ```
 
@@ -389,7 +400,7 @@ step5_종료_배너:
 step6_pipeline_마커:
   주의: 각 도구를 개별 호출 (bash 체인 금지)
   순서:
-    1. checkpoint 기록: mcp__oio__bash_exec(command='bash ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/lib/checkpoint_write.sh "${UUID}" "FINISH_DONE" "FINISH" "" "" ""')
+    1. checkpoint 기록: mcp__oio__bash_exec(command='bash ${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/checkpoint_write.sh "${UUID}" "FINISH_DONE" "FINISH" "" "" ""')
     2. evidence 마커: mcp__oio__file_write(path="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/session-env/${UUID}/evidence/ofinish_done", content=타임스탬프)
   # state → IDLE은 Step 8(최후 단계)에서 수행. 여기서 변경하면 ntfy/커밋이 IDLE 상태로 실행되어 hook 충돌 위험.
 
@@ -400,23 +411,23 @@ step6_pipeline_마커:
 ```yaml
 step7_ntfy_발송:
   도구: mcp__oio__bash_exec (Step 6 완료 후 단독 실행 — 파이프라인 최종 단계)
-  설명: odone_git이 준비한 ntfy 페이로드 파일을 읽어 발송. 모든 팀 정리/통계/배너 완료 후 발송하여 정확한 완료 시점 알림.
+  설명: |
+    발송은 공용 스크립트 hooks/lib/ntfy_send.sh 한 곳에서만 한다(curl 직접 호출 금지).
+    odone 이 쓴 ntfy_payload.json 을 쓰고, 없으면 odone 로그의 "## ntfy 페이로드" 절 → git HEAD 제목으로 다시 만든다.
+    토픽은 NTFY_TOPIC → 페이로드 topic → 프로젝트 루트 INFRA.md 헤더 ntfy_topic 순으로 찾고, 없으면 지어내지 않는다.
+    모든 팀 정리/통계/배너 완료 후 발송하여 정확한 완료 시점을 알린다.
   명령: |
-    source ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/lib/session_id.sh
-    resolve_uuid ""
-    PAYLOAD="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/session-env/${UUID}/ntfy_payload.json"
-    if [ -f "$PAYLOAD" ]; then
-      PAYLOAD_CONTENT=$(cat "$PAYLOAD" 2>/dev/null)
-      /mnt/c/Windows/System32/curl.exe -s -X POST https://ntfy.sh \
-        -d "$PAYLOAD_CONTENT" -H "Content-Type: application/json"
-      echo "✅ ntfy 발송 완료"
-      rm -f "$PAYLOAD"
-    else
-      echo "⚠️ ntfy 페이로드 파일 없음 — 발송 스킵"
-    fi
-  실패_시: "ntfy 발송 실패" 출력 + 스킵 (파이프라인 중단 사유 아님)
+    # {UUID}·{프로젝트_경로} 는 메인이 실제 값으로 치환한다(bash_exec 는 dash — source 금지, bash 로 직접 실행)
+    bash "${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/ntfy_send.sh" --session-dir "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/session-env/${UUID}" --project-dir "{프로젝트_경로}"; echo "NTFY_RC=$?"
+  결과_처리:
+    rc=0: "✅ ntfy 발송 완료 topic=..." 그대로 보고 (페이로드 파일은 스크립트가 삭제)
+    rc=3 (NTFY_NO_TOPIC): 배너에 "⚠️ ntfy 토픽 미정 — 발송 불가(사용자 지정 필요)" 를 그대로 표기한다. 조용히 스킵 금지.
+    rc=1 (NTFY_SEND_FAIL): "⚠️ ntfy 발송 실패" 표기 + 페이로드 보존 (파이프라인 중단 사유 아님)
+    rc=2: 사용법 오류(세션 디렉터리 부재·jq 부재) — 출력 그대로 표기
+  시험: bash "${HARNESS_HOME:-$HOME/.harness}/current/hooks/tests/test_ntfy_send.sh" (dry-run 만, 실제 발송 없음)
 ```
 
+<!-- L-324: Step 7.5 정의 위치(o1/o2 경량 커밋) -->
 ### Step 7.5: o1/o2 경량 커밋 (tier=o1/o2에서만 실행)
 
 ```yaml
@@ -425,78 +436,120 @@ Step_7.5 (o1/o2 경량 커밋 — tier=o1/o2에서만 실행):
   조건: tier가 O1 또는 O2일 때만 실행 (O3+는 odone_git이 담당)
   짝: Step 1.5(o1/o2 경량 교훈)와 짝을 이루는 커밋 단계
   방법: mcp__oio__bash_exec로 직접 수행 (odone_git 미호출)
+  HISTORY_1줄_기록 (git add 직전 — Step 8 문서 갱신 게이트가 이 기록을 검증한다):
+    대상: 프로젝트 git 루트의 HISTORY.md (git rev-parse --show-toplevel 기준)
+    부재_시: 생략하고 "HISTORY.md 없음 — 1줄 기록 생략" 을 출력·logs/docs_gate.log 에 1줄 남긴다(게이트도 해당 검사를 생략한다).
+    위치: 파일의 첫 `---` 구분선 바로 다음 (최신 이력이 위로 오게)
+    방법: mcp__oio__file_edit 로 삽입 (Write 덮어쓰기 금지)
+    형식: |
+      ## [YYYY-MM-DD] {작업 요약} (o1|o2, {conv_id})
+
+      **수정**: {변경 파일 목록}
+
+      ---
+    의도적_생략: 기록이 정말 불필요하면 session-env/${UUID}/docs_update_waiver 에 "HISTORY: 사유(10자+)" 를 쓴다.
   명령: |
-    cd {프로젝트_경로}
-    git add -u  # 수정된 스킬/설정 파일 (tracked 파일만 — 새 파일 추가 시 파일명 직접 지정)
-    git commit -m "$(cat <<'EOF'
-    🔧 {작업 요약} by {모델버전}
+    WT=$(python3 <hooks>/lib/wt_lib.py ensure --repo {프로젝트_경로} --sid <UUID> | python3 -c 'import sys,json; print(json.load(sys.stdin)["worktree"])')   # ensure 출력 JSON 의 worktree 키. 원본에서 add/commit 하지 않는다. <UUID> 는 36자 full UUID(메인=🆔 [UUID] 또는 compact 복원 `- UUID:`, 팀원=PIPELINE_UUID)
+    : "${WT:?worktree 확보 실패}"   # WT 가 비면 중단. 위 WT=… 와 이후 명령은 같은 셸 호출 안에서 실행한다(&& 로 이어 쓰면 다른 셸에서 실행돼 WT 가 빈다)
+    # 변경이 이미 원본에 있으면 add 전에 adopt 로 옮긴다: python3 <hooks>/lib/wt_lib.py adopt --sid <UUID> --paths <파일...> (경로 지정 필수, 디렉터리·일괄 거부 rc=2, 원본 불변, 선행 ensure 필요. push 후 되돌림·ff 는 사전조건(원본이 기본 브랜치·채택 외 추적 변경 없음·gated 면 --apply-permit)이 확실할 때만이며 결과 JSON adopt 의 kept(ff 불가: 사유)=원본에 새 판 유지·ff 만 건너뜀→git status 로 원본 확인 후 사유 해소하고 push 재실행(타 변경 삭제 금지), mismatch=원본 변경 보존·보고, cleared·restored 는 정보)
+    git -C "$WT" add {이번 작업에서 수정한 파일 + HISTORY.md 를 경로로 명시}  # git add -u/-A/. 금지 (L-457, 타 세션 변경 흡수 방지)
+    git -C "$WT" commit -m "$(cat <<'EOF'
+    🔧 {작업 요약} by {모델계열}
     EOF
     )"
-    git push
-  커밋_메시지: 한국어+이모지 + 마지막에 "by {모델버전}" 태그 필수
+    python3 <hooks>/lib/wt_lib.py push --sid <UUID> --repo "$WT"   # 유일한 push 경로. --sid 필수(메인=hook 이 알린 세션 UUID, 팀원=PIPELINE_UUID; 메인 셸에는 세션 ID 환경변수가 없다). 게이트 대상 저장소는 --apply-permit 또는 WT_APPLY_PERMIT=1
+  push_rc_대응: 0 성공(결과 JSON 보고) / 2 추적 변경 남음(커밋 후 재실행) / 3 rebase 충돌(즉시 중단·conflicts 보고, 자동 해결·강제 push 금지) / 4 정본 원격 판정 실패(push 안 함·보고) / 5 잠금 대기 초과(1회 재실행 후 보고) / 6 push 거절(보고; "원격이 앞섬 — worktree 에서 push 하라" 면 --sid 로 worktree 에서 재실행) / 7 원본에서 push 했는데 앞선 세션 worktree 존재(결과 JSON ahead_worktrees 참조, --sid 누락·재실행, 성공 간주 금지; 원본에서 push 할 때 sid 의 worktree 기록이 전혀 없으면 세션명과 무관하게 앞선 worktree 를 모두 내 것으로 보고 거부되므로 push 전에 ensure 를 먼저 하고 `--repo <세션 worktree>` 지정 또는 `--sid` 재실행, 기록이 있을 때만 타 세션 worktree 는 warnings 에만 실림) / 8 원본 현재 브랜치가 기본 브랜치 아님(push 안 함·worktree 경유로 전환)
+  push_금지: git 명령으로 직접 올리기, 강제 push, 원격/브랜치 하드코딩
+  전환기_호환: wt_lib.py 가 없는 구 배포본에서만 기존 방식으로 폴백하고 그 사실을 보고한다.
+  커밋_메시지: 한국어+이모지 + 마지막에 "by {모델계열}" 태그 필수
   o3+_동작: 이 Step 스킵 (o3+는 odone_git이 커밋 담당)
 ```
 
-### Step 8: oralph gate → state → IDLE + 재귀 카운터 정리 (최후 단계 — 절대 이전으로 이동 금지)
+### Step 8: oroof gate → state → IDLE + 재귀 카운터 정리 (최후 단계 — 절대 이전으로 이동 금지)
+
+게이트_생략_감사 (Step 8 진입 직후 1회, 실패해도 진행): `python3 -B "${HARNESS_HOME:-$HOME/.harness}/current/scripts/gate_skip_audit.py" --session "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/session-env/${UUID}"` 를 실행하고 rc=1 이면 출력(상태 전이 판정 hook 의 시간 초과 생략·탈출·늦은 차단)을 최종 보고에 그대로 적는다. 이미 지나간 전이를 되돌리지 못하는 재검사·기록 수단이다.
 
 ```yaml
-step8_oralph_gate:
-  주의: ntfy 발송(Step 7) + o1/o2 커밋(Step 7.5) 완료 후 가장 먼저 oralph 활성 여부 확인
-  # [§4.4 RALPH 마이그레이션] status_has RALPH 우선 검사 → 미양성 시 oralph_active 파일 폴백
-  # oralph_active 파일 폴백은 deprecation window 1주기 한시 운용 (다음 release window 후 제거 예정)
+step8_oroof_gate:
+  주의: ntfy 발송(Step 7) + o1/o2 커밋(Step 7.5) 완료 후 가장 먼저 oroof 활성 여부 확인
+  # [ROOF-COMPAT] status_has ROOF 를 우선 검사하고 구 RALPH 토큰도 함께 인식한다 → 둘 다 음성이면 oroof_active(.json) 파일, 이어서 구 oralph_active(.json) 파일 순으로 폴백
+  # 구 RALPH 토큰·oralph_active 폴백은 deprecation window 1주기 한시 운용 (다음 release window 후 제거 예정)
   절차: |
     STATUS_FILE="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/session-env/${UUID}/status"
-    ORALPH_FLAG="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/session-env/${UUID}/oralph_active"
-    # [사이클39 L-77x] 파일명 양쪽 허용 — oralph_active 우선, 없으면 oralph_active.json 폴백.
+    OROOF_FLAG="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/session-env/${UUID}/oroof_active"
+    # [사이클39 L-77x] 파일명 양쪽 허용 — oroof_active 우선, 없으면 oroof_active.json 폴백.
     # 배경: 사이클38 실사고 — oto가 oralph_active.json 을 만들었는데 여기서는 확장자 없는
     #       이름만 봐서 2순위 폴백이 원리적으로 매칭 불가 → 검증 루프가 통째로 스킵됐다.
     #       기존 세션 호환을 위해 정본을 바꾸지 않고 양쪽을 모두 인정한다.
-    if [ ! -f "${ORALPH_FLAG}" ] && [ -f "${ORALPH_FLAG}.json" ]; then
-      ORALPH_FLAG="${ORALPH_FLAG}.json"
-      echo "⚠️ [oralph gate] oralph_active.json 감지 — 파일명 폴백 적용 (정본은 확장자 없는 oralph_active)"
+    if [ ! -f "${OROOF_FLAG}" ] && [ -f "${OROOF_FLAG}.json" ]; then
+      OROOF_FLAG="${OROOF_FLAG}.json"
+      echo "⚠️ [oroof gate] oroof_active.json 감지 — 파일명 폴백 적용 (정본은 확장자 없는 oroof_active)"
+    fi
+    # [ROOF-COMPAT] 구 이름 oralph_active(.json) 도 인식 — 신 이름 파일이 없을 때만 채택
+    OLD_FLAG="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/session-env/${UUID}/oralph_active"
+    if [ ! -f "${OROOF_FLAG}" ]; then
+      if [ -f "${OLD_FLAG}" ]; then
+        OROOF_FLAG="${OLD_FLAG}"
+        echo "⚠️ [oroof gate] 구 oralph_active 감지 — ROOF-COMPAT 폴백 적용"
+      elif [ -f "${OLD_FLAG}.json" ]; then
+        OROOF_FLAG="${OLD_FLAG}.json"
+        echo "⚠️ [oroof gate] 구 oralph_active.json 감지 — ROOF-COMPAT 폴백 적용"
+      fi
     fi
 
-    # 1순위: status_has RALPH 검사 (신규 status 파일 기반)
+    # 1순위: status_has ROOF 검사 (신규 status 파일 기반) — 미양성 시 구 RALPH 토큰도 검사 (ROOF-COMPAT)
     # ★[사이클39] bash -c 래핑 필수 — bash_exec 의 셸은 /bin/sh(dash) 다.★
     #   dash 에는 source 가 없어 `source ...; status_has ...` 를 그대로 쓰면
     #   rc=127 로 조용히 죽고 status_has 가 항상 음성이 된다.
-    #   ⇒ status 에 RALPH 가 ★실재해도★ RALPH_ACTIVE=false 로 떨어져 검증 루프가 스킵된다.
+    #   ⇒ status 에 RALPH(현 ROOF) 가 ★실재해도★ ROOF_ACTIVE=false 로 떨어져 검증 루프가 스킵된다.
     #   (2026-08-26 실측 재현: status=[RALPH] 인데 RALPH_ACTIVE=false)
     #   dash 에서는 source 외에 [[ ]] · 배열 · ${PIPESTATUS} · 중괄호확장도 쓸 수 없다.
-    RALPH_ACTIVE=false
-    ORALPH_DATA="{}"
-    if bash -c 'source "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/lib/state_machine.sh" 2>/dev/null; status_has "'"${STATUS_FILE}"'" RALPH' 2>/dev/null; then
-      RALPH_ACTIVE=true
-      # status 파일에서 RALPH 활성 — oralph_active 파일로 criteria/iter/max 보조 조회
-      ORALPH_DATA=$(cat "${ORALPH_FLAG}" 2>/dev/null || echo "{}")
-    # 2순위 폴백: oralph_active 파일 (deprecation window — 1주기 한시 운용)
-    elif [ -f "${ORALPH_FLAG}" ]; then
-      RALPH_ACTIVE=true
-      ORALPH_DATA=$(cat "${ORALPH_FLAG}" 2>/dev/null || echo "{}")
-      echo "⚠️ [oralph gate] status=RALPH 미감지, oralph_active 파일로 폴백 (deprecation 경로)"
+    ROOF_ACTIVE=false
+    OROOF_DATA="{}"
+    if bash -c 'source "${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/state_machine.sh" 2>/dev/null; status_has "'"${STATUS_FILE}"'" ROOF || status_has "'"${STATUS_FILE}"'" RALPH' 2>/dev/null; then
+      ROOF_ACTIVE=true
+      # status 파일에서 ROOF(또는 구 RALPH) 활성 — oroof_active 파일로 criteria/iter/max 보조 조회
+      OROOF_DATA=$(cat "${OROOF_FLAG}" 2>/dev/null || echo "{}")
+    # 2순위 폴백: oroof_active 파일 또는 구 oralph_active 파일 (deprecation window — 1주기 한시 운용)
+    elif [ -f "${OROOF_FLAG}" ]; then
+      ROOF_ACTIVE=true
+      OROOF_DATA=$(cat "${OROOF_FLAG}" 2>/dev/null || echo "{}")
+      echo "⚠️ [oroof gate] status=ROOF 미감지, oroof_active(구 oralph_active 포함) 파일로 폴백 (deprecation 경로)"
     fi
 
-    if [ "${RALPH_ACTIVE}" = "true" ]; then
-      CRITERIA=$(echo "${ORALPH_DATA}" | jq -r '.criteria // "검증 기준 없음"' 2>/dev/null)
-      ITER=$(echo "${ORALPH_DATA}" | jq -r '.current_iteration // 0' 2>/dev/null)
-      MAX=$(echo "${ORALPH_DATA}" | jq -r '.max_iterations // 5' 2>/dev/null)
-      echo "⏳ [oralph] ofinish 완료 — 검증 루프 진입"
+    if [ "${ROOF_ACTIVE}" = "true" ]; then
+      CRITERIA=$(echo "${OROOF_DATA}" | jq -r '.criteria // "검증 기준 없음"' 2>/dev/null)
+      ITER=$(echo "${OROOF_DATA}" | jq -r '.current_iteration // 0' 2>/dev/null)
+      MAX=$(echo "${OROOF_DATA}" | jq -r '.max_iterations // 5' 2>/dev/null)
+      echo "⏳ [oroof] ofinish 완료 — 검증 루프 진입"
       echo "   검증 기준: ${CRITERIA}"
       echo "   Iteration: $((ITER + 1)) / ${MAX}"
-      echo "→ oralph Phase 2 (내장 검증 루프) 즉시 수행"
+      echo "→ oroof Phase 2 (내장 검증 루프) 즉시 수행"
       # 재귀 카운터만 정리 (IDLE 전환 금지)
       mcp__oio__file_delete(path="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/session-env/${UUID}/ofinish_recurse_count")
       return  # IDLE 전환 스킵
     fi
-    # oralph 없으면 아래 일반 종료 실행
+    # oroof 없으면 아래 일반 종료 실행
 
-  oralph_활성_시_금지:
+  oroof_활성_시_금지:
     - state → IDLE 전환 절대 금지 (FINISH 상태 유지 필수 — FINISH→DEV 재실행 경로 유지)
-    - oralph_active 파일 삭제 금지 (Phase 2 검증 완료 후 oralph가 직접 삭제)
-    - RALPH status 토큰 삭제 금지 (oralph가 직접 status_remove RALPH 책임)
+    - oroof_active 파일 삭제 금지 (Phase 2 검증 완료 후 oroof가 직접 삭제. 구 oralph_active 도 동일)
+    - ROOF status 토큰 삭제 금지 (oroof가 직접 status_remove ROOF 책임. 구 RALPH 토큰도 동일 — ROOF-COMPAT)
+
+step8_peer_finish_notify (동일 프로젝트 타 세션 종료 통지 — 일반 IDLE 전환 분기 직전, ROOF 분기에서는 미발송):
+  적용_조건: status_has ROOF(또는 구 RALPH) 음성 AND oroof_active(또는 구 oralph_active) 없음 (ROOF 중 FINISH 유지 시 오발송 방지). 메인이 수행.
+  순서:
+    1. session-env/${UUID}/peer_notified.json 읽기 (없으면 시작 통지 미수행 → 대상 파일이 없거나 비면 생략)
+    2. ListAgents 재조회 (시작 후 새로 생긴 세션 포함). 후처리 hook 이 갱신한 자기 세션 session-env/${UUID}/peer_targets.json 을 대상으로 쓴다.
+       파일이 없거나 오래됐으면 재조회한 ListAgents 출력에 ok 스킬과 같은 규칙(정본=활성 로컬 전원, 그 외=같은 프로젝트만, RC·offline·팀원·자기 제외)을 적용해 직접 산출한다.
+       규칙으로 판별이 안 되는 세션(tmux 밖 등)은 한계 조항대로 처리하고 logs/peer_notify.log 에 1줄 기록한다 (무조건 전체 발송 폴백 금지).
+    3. 대상별 SendMessage: "[작업종료][프로젝트:<프로젝트명>] <세션명> 작업 종료 — 변경 파일 N개(상위 10개 나열), 커밋: <해시>"
+       타 세션 UUID/team_name/state 포함 금지.
+    4. session-env/${UUID}/peer_finish_done 마커 기록
+  실패_허용: 실패는 logs/peer_notify.log 에 한 줄 기록 후 계속 진행 (IDLE 전환 차단 금지)
 
 step8_pre_cleanup (L-431 — 잔류 team_name 기반 다음 파이프라인 차단 재발방지 핵심):
-  적용_조건: 일반_종료 진입 직전 (status_has RALPH 음성 AND oralph_active 없음)
+  적용_조건: 일반_종료 진입 직전 (status_has ROOF·구 RALPH 음성 AND oroof_active·구 oralph_active 없음)
   목적: |
     Phase A 가설 (d) 해결 — ofinish가 명시적으로 session-env 하위 team_name 파일 정리 책임을 가져
     이전 _reset_idle 위임 모델의 /resume 시나리오 빈 team_name 잔존 버그 차단.
@@ -527,8 +580,10 @@ step8_pre_cleanup (L-431 — 잔류 team_name 기반 다음 파이프라인 차�
                 # goal_id는 사전에 mcp__oio__file_read로 goal.json의 "goal_id" 필드 파싱 (G-XXXXXXXX 형식)
                 # file_copy는 write_guard.sh F-GOAL-1 내부 case(file_edit|file_write|file_delete|
                 # file_move|file_rename)에 없어 locked=true여도 차단되지 않는다 (비파괴이므로 허용된 경로).
-             2. unlock: copy 성공이 확인된 경우에만 진행 —
+             2. unlock: copy 성공이 확인된 경우에만, ★state=FINISH 인 동안★ 진행 (IDLE 전환 뒤에는 F-GOAL-1 이 막는다) —
                 mcp__oio__file_edit로 원본 goal.json의 "locked" 필드를 true→false로 변경
+                # 이 단계가 빠져 잠긴 옛 계약이 남아도, 다음 사이클 PLAN 에서 메인·oplan 팀원이 새 goal_id 계약을 file_write 하면
+                # write_guard F-GOAL-1 의 "완료 보관된 옛 계약 교체" 예외가 통과시킨다(사본 내용 동일 + 사본이 그 파이프라인 시작 이전 — 사이클196 P5).
                 (계약 재협상이 아니라 삭제를 위한 보관 목적 한정)
              3. delete: mcp__oio__file_delete(path="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/session-env/${UUID}/goal.json")
                 # locked=false로 바뀌었으므로 F-GOAL-1에 걸리지 않고 통과
@@ -553,6 +608,8 @@ step8_pre_cleanup (L-431 — 잔류 team_name 기반 다음 파이프라인 차�
     goal.json 정리는 "acceptance 평가 결과(이행 완료 여부)를 참조하는 조건부 이동"이라
     순수 물리차단(hook)으로는 구현 불가 — hook은 무조건 차단/허용만 판단하고 파일 내용 기반
     조건부 copy→unlock→delete 순서 로직을 수행할 수 없다. 따라서 ofinish 절차 단계(2순위 Script)로 강제한다.
+    3d. 타 세션 통지 마커 정리 (자기 UUID 경로만, 종료 통지 단계(step8_peer_finish_notify) 이후 수행):
+       mcp__oio__file_delete 로 session-env/${UUID}/ 하위 peer_notified.json, peer_check_done, peer_finish_done 삭제 (없으면 건너뜀)
   실패_허용: 각 단계 실패 시 경고만 출력 후 계속 진행 (state IDLE 전환 차단 금지)
   금지:
     - pre_cleanup 누락 후 state IDLE 전환 (재발방지 무력화)
@@ -562,20 +619,29 @@ step8_pre_cleanup (L-431 — 잔류 team_name 기반 다음 파이프라인 차�
     - unlock(2단계) 전에 copy(1단계) 성공 확인 생략 (copy 실패 시 원본을 unlock하면 증적 없이 보호만 풀림)
 
 step8_pipeline_종료:
-  적용_조건: status_has RALPH 음성 AND oralph_active 파일 없을 때만 (일반 파이프라인 종료)
+  적용_조건: status_has ROOF·구 RALPH 음성 AND oroof_active·구 oralph_active 파일 없을 때만 (일반 파이프라인 종료)
   주의: ntfy 발송(Step 7) + o1/o2 커밋(Step 7.5) + step8_pre_cleanup 완료 후 마지막으로 실행
+  문서_갱신_게이트 (O1/O2 — 순서 2 의 IDLE 호출에서 판정, 검토 필수-1):
+    - tier 원천: hook 은 Step 0.5 FINISH 진입 때 기록한 session-env/${UUID}/docs_gate_tier 만 읽는다(classification 은 쓰지 않는다).
+      pre_cleanup_3 이 classification 을 먼저 지워도 판정이 살아 있는 이유다. 따라서 docs_gate_tier 는 pre_cleanup 에서 지우지 않는다(IDLE 전이 전 삭제 금지).
+    - 코드 변경이 있는데 HISTORY.md 가 미변경이면 IDLE 호출이 block 되고 state 는 FINISH 로 남는다.
+      복구: Step 7.5 HISTORY 1줄 기록 → 커밋 후 IDLE 재시도, 또는 docs_update_waiver 에 "HISTORY: 사유(10자+)" 를 쓰고 재시도. 우회 금지(L-597).
+    - docs_gate_tier 정리: IDLE 판정 직후 hook 이 직접 지운다. 순서 4b 는 IDLE 전환 이후의 안전망이다.
+      잔존해도 hook 이 state=FINISH 와 마커 mtime ≥ 사이클 시작 시각을 함께 확인하므로 다음 사이클에 영향이 없다.
   순서:
     1. status_clear (★bash -c 래핑 필수 — bash_exec 셸은 dash 라 source 없이는 rc=127★):
-       bash -c 'source "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/lib/state_machine.sh"; status_clear "'"${STATUS_FILE}"'"'
-       # RALPH 외 잔류 토큰(PAUSE/ABORT) 정리 — RALPH는 oralph 책임이므로 이 시점엔 이미 비워짐
+       bash -c 'source "${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/state_machine.sh"; status_clear "'"${STATUS_FILE}"'"'
+       # ROOF 외 잔류 토큰(PAUSE/ABORT) 정리 — ROOF(구 RALPH)는 oroof 책임이므로 이 시점엔 이미 비워짐
        # ⚠️ 미래핑 시 rc=127 로 조용히 실패하고 PAUSE/ABORT 가 그대로 잔류한다 (2026-08-26 실측)
     2. state → IDLE: mcp__oio__session_state(uuid="${UUID}", key="state", value="IDLE")  ← bash echo 대신 MCP 도구 단독 호출 (필수)
     3. ok_loaded 저장: mcp__oio__session_state(uuid="${UUID}", key="ok_loaded", value="true")  # ok/SKILL.md 세션당_1회_제한 명세
     4. 재귀 카운터 정리: mcp__oio__file_delete(path="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/session-env/${UUID}/ofinish_recurse_count")
+    4b. 문서 게이트 tier 마커 안전망 정리 (hook 이 IDLE 판정 직후 직접 지우므로 대개 이미 없다. IDLE 전이 전에 지우지 말 것 — 앞에서 지우면 O1/O2 판정이 사문화된다):
+       mcp__oio__file_delete(path="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/session-env/${UUID}/docs_gate_tier")  # 없으면 건너뜀
   금지:
     - echo "IDLE" > state를 bash 체인 내에서 실행 (경합으로 FINISH 잔류 위험)
     - Step 6/7/7.5 이전에 IDLE 전환 (ntfy/커밋이 IDLE 상태로 실행되어 hook 충돌)
-    - oralph 활성 중(RALPH 양성) status_clear 호출 (RALPH 토큰 임의 삭제 금지)
+    - oroof 활성 중(ROOF 또는 구 RALPH 양성) status_clear 호출 (ROOF/RALPH 토큰 임의 삭제 금지)
     - state OK 분기 잔존 (Phase B — stage에서 OK 제거됨, FINISH→IDLE 직선 전이만 허용)
   # ofinish_done 마커는 Step 6에서 미리 생성됨
   # ABORT/PAUSE는 oinit/context_usage_check 별도 책임 — status_clear가 이를 정리하는 부수 효과는 허용
@@ -611,55 +677,56 @@ Step 3: 잔여 Phase Batch 안전망 (백업 — 주 루프는 ok_pipeline 4.5�
     → "다음 Phase 없음" → Step 4로 진행 (최종 마무리)
 
 Step 4: 임시 파일 삭제
-  CLEANUP_FILES.md 참조 — logs/plans 7일 보존
+  CLEANUP_FILES.md 참조 — 4-0a harness_cleanup.py 승격+자기 세션 정리 → 4-0b 죽은 세션 자동 회수(승인 표식 있을 때만) → 4-1 기존 삭제 목록
 
 Step 5: 종료 배너
   커밋 해시 + 변경 파일 수 + IDLE
 
 Step 6: checkpoint 기록 + ofinish_done 마커 생성
   주의: 각 도구를 개별 호출 (bash 체인 금지)
-  1. checkpoint_기록_FINISH_DONE: mcp__oio__bash_exec(command='bash ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/lib/checkpoint_write.sh "${UUID}" "FINISH_DONE" "FINISH" "" "" ""')
+  1. checkpoint_기록_FINISH_DONE: mcp__oio__bash_exec(command='bash ${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/checkpoint_write.sh "${UUID}" "FINISH_DONE" "FINISH" "" "" ""')
   2. mcp__oio__file_write(path="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/session-env/${UUID}/evidence/ofinish_done", content=타임스탬프)
   # ofinish_done 마커는 Stop hook(ofinish_guard.sh)이 검증 — 미생성 시 경고
   # state → IDLE은 Step 8에서 수행 (ntfy/커밋 완료 후)
 
 Step 7: ntfy 발송
-  ntfy_payload.json 읽기 → curl 발송 → 파일 삭제
+  bash hooks/lib/ntfy_send.sh --session-dir … --project-dir … (페이로드 없으면 재구성, 토픽 없으면 rc=3 배너 표기)
   없으면 스킵
 
 Step 7.5: o1/o2 경량 커밋 (tier=O1/O2만)
   Step 1.5(경량 교훈)와 짝을 이루는 커밋 단계
-  mcp__oio__bash_exec로 git add -u + commit + push 직접 수행 (odone_git 미호출)
+  git add 직전 프로젝트 git 루트 HISTORY.md 첫 `---` 다음에 1줄 이력 기록 (없으면 생략·로그 — 상세는 Step 7.5 정의)
+  mcp__oio__bash_exec로 세션 worktree 에서 경로 지정 git add + commit 직접 수행 후 wt_lib push 로 push (odone_git 미호출)
   O3+는 이 Step 스킵 (odone_git이 담당)
 
-Step 8: oralph gate → pre_cleanup → state → IDLE + 재귀 카운터 정리 (최후 단계 — 절대 이전으로 이동 금지)
-  # [oralph gate] IDLE 전환 전에 oralph 활성 여부 확인 (status_has RALPH 우선 → oralph_active 파일 폴백)
-  # [§4.4 RALPH 마이그레이션] oralph_active 파일 폴백은 deprecation window 1주기 한시 운용
+Step 8: oroof gate → pre_cleanup → state → IDLE + 재귀 카운터 정리 (최후 단계 — 절대 이전으로 이동 금지)
+  # [oroof gate] IDLE 전환 전에 oroof 활성 여부 확인 (status_has ROOF 우선 → oroof_active 파일 폴백)
+  # [ROOF-COMPAT] 구 RALPH status 토큰과 구 oralph_active(.json) 파일도 함께 인식한다. 구 이름 폴백은 deprecation window 1주기 한시 운용
   # [pre_cleanup] L-431 재발방지 — team_name/classification 명시 삭제 (state IDLE 전환 직전). teams/{name}/ 디렉토리는 미삭제 (v2.1.178+ 자동 정리)
-  oralph_gate_확인:
+  oroof_gate_확인:
     STATUS_FILE="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/session-env/${UUID}/status"
-    ORALPH_FLAG="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/session-env/${UUID}/oralph_active"
-    # [사이클39] 파일명 양쪽 허용 — ${ORALPH_FLAG} 부재 시 ${ORALPH_FLAG}.json 을 폴백으로 채택
+    OROOF_FLAG="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/session-env/${UUID}/oroof_active"
+    # [사이클39] 파일명 양쪽 허용 — ${OROOF_FLAG} 부재 시 ${OROOF_FLAG}.json 을 폴백으로 채택
     #   (사이클38 실사고: oto가 .json 으로 써서 폴백이 원리적으로 매칭 불가 → 루프 통째 스킵)
-    # 1순위: status_has RALPH (신규 status 파일 기반)
-    # 2순위 폴백: oralph_active 또는 oralph_active.json 파일 존재 (deprecation window — 1주기 한시)
-    RALPH_ACTIVE = status_has RALPH 양성 OR (oralph_active 또는 oralph_active.json) 파일 존재
-    RALPH_ACTIVE=true_시:
+    # 1순위: status_has ROOF (또는 구 RALPH) (신규 status 파일 기반)
+    # 2순위 폴백: oroof_active·oroof_active.json, 또는 구 oralph_active·oralph_active.json 파일 존재 (deprecation window — 1주기 한시)
+    ROOF_ACTIVE = status_has ROOF(또는 구 RALPH) 양성 OR (oroof_active·oroof_active.json·구 oralph_active·구 oralph_active.json) 파일 존재
+    ROOF_ACTIVE=true_시:
       - IDLE 전환 절대 금지 — state = FINISH 유지
       - ofinish_recurse_count 삭제만 수행
       - 출력:
-          ⏳ [oralph] ofinish 완료 — 검증 루프 진입
-          검증 기준: {oralph_active 파일의 criteria 필드 또는 "검증 기준 없음"}
+          ⏳ [oroof] ofinish 완료 — 검증 루프 진입
+          검증 기준: {oroof_active 파일의 criteria 필드 또는 "검증 기준 없음"}
           Iteration: {current_iteration + 1} / {max_iterations}
-          → 지금 즉시 oralph Phase 2 검증을 수행하라
-      - 이후: oralph Phase 2 (내장 검증 루프)를 즉시 수행하라 — ralph-loop 외부 호출 금지 (v4.0)
-    RALPH_ACTIVE=false_시 (둘 다 음성):
+          → 지금 즉시 oroof Phase 2 검증을 수행하라
+      - 이후: oroof Phase 2 (내장 검증 루프)를 즉시 수행하라 — ralph-loop 외부 호출 금지 (v4.0)
+    ROOF_ACTIVE=false_시 (둘 다 음성):
       - 아래 일반 IDLE 전환 실행
 
-  일반_종료 (status_has RALPH 음성 AND oralph_active 없을 때만):
+  일반_종료 (status_has ROOF·구 RALPH 음성 AND oroof_active·구 oralph_active 없을 때만):
   # [Step 8 pre_cleanup — L-431 재발방지 핵심] state IDLE 전환 직전 오프닝 정리
   pre_cleanup_0. ★agents/ + inboxes 양쪽 base 정리 (F-ROSTER-1 — 2026-09-13 신설)★
-    mcp__oio__bash_exec(command='bash -c "source ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/lib/agent_roster_cleanup.sh; cleanup_agent_roster \"${UUID}\" \"${TEAM_NAME}\""')
+    mcp__oio__bash_exec(command='bash -c "export ROSTER_EMIT_TASKSTOP=1; source ${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/agent_roster_cleanup.sh; cleanup_agent_roster \"${UUID}\" \"${TEAM_NAME}\""')
     # 배경: 사이클123 은 "roster 는 in-memory 라 못 지운다"(Issue #27639)로 결론냈으나 절반만 맞았다.
     #   사이클125 실측 — pane 0 / 프로세스 0 / config.json isActive 전부 false 인데도
     #   ★$HOME 쪽 agents/ 에 21건 잔존★(사이클123 것까지 섞여 세션 재시작으로도 안 지워졌다).
@@ -668,8 +735,16 @@ Step 8: oralph gate → pre_cleanup → state → IDLE + 재귀 카운터 정리
     #   (agents/ 파일 존재는 생존의 증거가 아니다 — 10시간 잔존 실측 이력).
     # ⚠️ teams/<name>/ 디렉토리와 config.json 은 건드리지 않는다(삭제 시 Agent 전면 차단).
     #   inboxes/*.json 개별 파일만 정리하며 team-lead 메일함은 보존한다.
-    # 한계: FleetView 목록 표시 자체는 도구 in-memory 영역이라 이 조치로 사라지지 않는다.
-    #   보장하는 것은 ★디스크가 진실을 반영하는 것★ — 다음 세션의 오판을 막는다.
+    # 목록 정리 (2026-10-16 실측 정정): FleetView/roster 가 "세션 재시작으로만 비워진다"는 서술은 틀렸다.
+    #   · 정상 종료 팀원은 shutdown_approved 로 목록에서 자동 제거된다.
+    #   · 비정상 종료(프로세스만 사라진) 팀원은 메인이 TaskStop 으로 정리할 수 있다 (아래 pre_cleanup_0b).
+    #   디스크 정리는 이 헬퍼가, 목록 표시 정리는 TaskStop 이 맡는다.
+  pre_cleanup_0b. ★프로세스 없는 팀원 TaskStop 정리 (2026-10-16 신설 — 메인만 호출 가능, hook 불가)★
+    입력: 1차는 위 헬퍼가 항상 기록하는 `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/session-env/${UUID}/logs/taskstop_pending.txt` (한 줄에 팀원 이름 1개) 이다. `ROSTER_EMIT_TASKSTOP=1` 일 때만 출력되는 `TASKSTOP_PENDING n: …` 줄은 보조다.
+    절차: 파일이 있으면 각 이름에 대해 TaskStop(task_id=<이름>) 호출 → ListAgents 로 소멸 확인(또는 TaskStop 오류 메시지의 Running teammates 목록에 없음을 확인).
+    판정: 대상은 `--agent-id <name>@<팀>` 프로세스가 ★없는★ 팀원으로 한정한다. 살아서 작업 중인 팀원에게 호출하면 그 작업이 중단되므로 절대 금지다.
+    무해 케이스: "No task found with ID: ... Running teammates: ..." 오류는 이미 정상 종료/제거된 이름이라는 뜻이며 무해하다 (실측 2026-10-16).
+    실패 허용: 파일 부재·TaskStop 오류가 Step 8 진행을 막지 않는다. 처리 후 taskstop_pending.txt 는 자기 세션 logs 에서 삭제한다.
   pre_cleanup_1. mcp__oio__file_delete(path="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/session-env/${UUID}/team_name")  # 빈 team_name 잔존 차단
   pre_cleanup_1b. mcp__oio__session_state(uuid="${UUID}", key="team_name", value="")  # 백엔드 캐시 동기화 (file_delete 보강 — team_create_guard 오인 차단)
   # pre_cleanup_2 제거 (v2.1.178+): teams/{name}/ 디렉토리는 ofinish가 건드리지 않음 — 세션 종료 시 Claude Code 자동 정리. 잔류 pane은 Step 1(oinit) tmux kill-pane 처리.
@@ -678,14 +753,17 @@ Step 8: oralph gate → pre_cleanup → state → IDLE + 재귀 카운터 정리
   pre_cleanup_3c. goal.json 존재 시 copy→unlock→delete 3단계로 goal_{goal_id}_completed.json 보관 (L-548 — 삭제 아님, copy는 locked=true 상태에서도 F-GOAL-1 미차단. 단계별 실패 분기: 상세는 step8_pre_cleanup 정의 참조)
   # ─── 일반_종료 ───
   0. status_clear (★bash -c 래핑 필수 — dash 에는 source 가 없다★):
-     bash -c 'source "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/lib/state_machine.sh"; status_clear "'"${STATUS_FILE}"'"'
-     # 잔류 토큰(PAUSE/ABORT 등) 정리 — RALPH는 이 시점 이미 비워짐 (oralph 책임)
+     bash -c 'source "${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/state_machine.sh"; status_clear "'"${STATUS_FILE}"'"'
+     # 잔류 토큰(PAUSE/ABORT 등) 정리 — ROOF(구 RALPH)는 이 시점 이미 비워짐 (oroof 책임)
   1. mcp__oio__session_state(uuid="${UUID}", key="state", value="IDLE")  ← 단독 호출 필수
+     # O1/O2 는 이 호출에서 문서 갱신 게이트가 판정한다(tier 원천은 docs_gate_tier 만 — pre_cleanup_3 이후여도 유효). block 시 FINISH 유지 → Step 7.5 HISTORY 1줄 또는 사유 파일 후 재시도.
   2. mcp__oio__session_state(uuid="${UUID}", key="ok_loaded", value="true")  # ok_loaded 저장 (ok/SKILL.md 세션당_1회_제한 명세)
   3. mcp__oio__file_delete(path="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/session-env/${UUID}/ofinish_recurse_count")
+  3b. mcp__oio__file_delete(path="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/session-env/${UUID}/docs_gate_tier")  # 문서 게이트 tier 마커 안전망(hook 이 IDLE 판정 직후 직접 삭제) — IDLE 전이 전에 지우지 말 것, 없으면 건너뜀
   4. auto 플래그 정리 (oto 자율모드 — autoloop 계속 시에는 보존):
      조건: Step 3.5에서 autoloop 통지를 출력했으면 삭제 금지 (다음 사이클이 자율모드를 이어받아야 함).
-           autoloop 미발동(next_action.json 부재/거부/3회 초과/ABORT·PAUSE)이면 삭제.
+           미소비 carryover(next_action.json 의 handoff_kind:"carryover")가 존재하면 삭제 금지(보존).
+           autoloop 미발동(next_action.json 부재/거부/3회 초과/ABORT·PAUSE)이고 미소비 carryover 도 없으면 삭제.
      삭제: mcp__oio__file_delete(path="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/session-env/${UUID}/auto")
      이유: 여기서 무조건 삭제하면 autoloop 2번째 사이클부터 일반 모드로 강등되어
            /oto의 "끝까지 무정지 완주"가 깨진다. 반대로 최종 종료 시 미삭제하면

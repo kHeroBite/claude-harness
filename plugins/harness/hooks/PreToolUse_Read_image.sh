@@ -1,8 +1,4 @@
 #!/bin/bash
-# >>> harness preamble
-_HP="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)}"
-[ -f "$_HP/hooks/harness_preamble.sh" ] && . "$_HP/hooks/harness_preamble.sh" 2>/dev/null || { [ -f "$_HP/harness_preamble.sh" ] && . "$_HP/harness_preamble.sh" 2>/dev/null; } || true
-# <<< harness preamble
 # PreToolUse_Read_image.sh — Read 도구 이미지 크기 차단 (재발방지)
 # PreToolUse hook: Read 도구로 이미지 파일 열 때 1MB 이상이면 block
 # 배경: 1.9MB PNG → base64 ~2.6MB → Claude API 400 "Could not process image"

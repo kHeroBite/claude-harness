@@ -1,8 +1,4 @@
 #!/bin/bash
-# >>> harness preamble
-_HP="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)}"
-[ -f "$_HP/hooks/harness_preamble.sh" ] && . "$_HP/hooks/harness_preamble.sh" 2>/dev/null || { [ -f "$_HP/harness_preamble.sh" ] && . "$_HP/harness_preamble.sh" 2>/dev/null; } || true
-# <<< harness preamble
 # 메인 에이전트가 사용자 결정을 텍스트로만 요청하고 턴을 끝내면 차단하는 Stop hook
 #
 # 배경: 사용자 요구 "질문사항이나 사용자의 선택이 필요한 내용은 항상 별도 모달창으로
@@ -10,16 +6,16 @@ _HP="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null
 #   "어떻게 할까요?"로 종료 — AskUserQuestion 을 호출했어야 했다.
 #
 # ★ 기존 hooks/Stop.sh 는 절대 수정하지 않는다 (Surgical Changes 원칙).
-#   Stop.sh 는 STALE-OK 롤백 전용이며 여러 프로젝트가
+#   Stop.sh 는 STALE-OK 롤백 전용이며 Mars/Jarvis/MaiX/know 4개 프로젝트가
 #   symlink 로 공유한다. 본 파일은 신규 파일로 settings.json Stop 배열의
-#   2번째 항목으로만 등록한다 (등록한 프로젝트 전용, 타 프로젝트 무영향).
+#   2번째 항목으로만 등록한다 (Mars 전용, 타 프로젝트 무영향).
 #
 # 판정 로직은 이 파일에 전부 있다 (신규 판정 — report_guard.sh 와는 판정 대상이 다름).
 # 재사용: report_guard.sh 의 is_turn_boundary() 알고리즘(턴 경계 식별) + 트랜스크립트
 #   꼬리 읽기(deque maxlen=3000) 패턴. 호출부 구조는 SubagentStop_report_guard.sh 동형.
 #
 # 긴급 정지 스위치 (3중 — ①② 는 settings.json 무수정):
-#     touch ~/.claude/hooks/DISABLE_ASKQ_GUARD                # ① 즉시 무력화 (최우선)
+#     touch ${HARNESS_HOME:-$HOME/.harness}/current/hooks/DISABLE_ASKQ_GUARD                # ① 즉시 무력화 (최우선)
 #     mv Stop_askq_guard.sh Stop_askq_guard.sh.disabled       # ② 파일 부재 → 호출부 없음
 #     settings.json Stop 블록에서 제거 (최후)                  # ③ 완전 제거
 #
@@ -70,7 +66,7 @@ _HP="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null
 
 set -u
 
-HOOKS_DIR="${HOME}/.claude/hooks"
+HOOKS_DIR="${HARNESS_HOME:-$HOME/.harness}/current/hooks"
 
 # E0 — 긴급 정지 파일
 [[ -f "${HOOKS_DIR}/DISABLE_ASKQ_GUARD" ]] && exit 0
@@ -121,6 +117,7 @@ EVIDENCE_DIR="${SESSION_DIR}/evidence"
 #         ★H-2 로 2회 차단된 뒤 H-4 위반이 그대로 통과★ 했다(역도 성립).
 #         이것이 3회차 방치의 직접 원인이다.
 #   조치: 카운터를 축별로 분리하고, 탈출구는 H-2 축에만 적용한다(아래 사유 참조).
+# L-493: H-2/H-4 카운터 축별 분리(1352행 이후 축별 카운터·H-4 탈출구 제거와 짝)
 COUNT_FILE_H2="${EVIDENCE_DIR}/askq_block_count_h2"
 COUNT_FILE_H4="${EVIDENCE_DIR}/askq_block_count_h4"
 COUNT_FILE_LEGACY="${EVIDENCE_DIR}/askq_block_count"   # 구 파일 — 1회성 정리 대상
@@ -302,8 +299,149 @@ for r in rows[last_idx + 1:]:
 #   턴을 끝내는 것은 계약 위반이다. 에이전트가 원출 불가능한 외부 사실
 #   (자격증명·미공개 URL·사용자만 아는 값)만 예외인데, 그 판단은 모델이 해야 하므로
 #   E6 탈출구(연속 2회 후 3회차 통과)로 빠져나갈 수 있게 남겨둔다.
+# [c214-R6] ★가드가 요구한 화면 승인 질문★ 판정 — BLOCKAUTO 보다 먼저 본다.
+#   배경: F-CRUD-1(DECLARATION_CONFLICT)·done_gate(QA 면제)·운영 배포 가드는 ★가드 자체가★
+#   사용자 화면 승인(AskUserQuestion)을 요구한다. 아래 판정이 없으면 그 정당한 승인 질문이
+#   매번 H-2 로 2회 차단되고 탈출구 소비로만 지나갔다(사이클214 2회 실측).
+#   통과 조건(전부 만족해야 한다 — 하나라도 어긋나면 종전 BLOCKAUTO):
+#     ① 이번 턴 AskUserQuestion 의 ★모든★ 질문 header 가 GATE_HEADERS 표 안이다(혼합 금지).
+#        승인:CRUD_GATE 는 질문 본문에 askq_approval.py 고정 문구까지 있어야 한다.
+#     ② 각 질문마다, 그 AskUserQuestion 직전 200행 안의 ★tool_result★ 에 대응 가드 차단 문구가 있다.
+#        어시스턴트 text·사용자 문장은 근거가 아니다. header 와 근거 가드가 서로 대응해야 한다.
+#     ③ 그 tool_result 를 낳은 tool_use 의 입력에 가드 문구 자체가 들어 있거나(echo/grep/cat 로
+#        찍은 가짜 근거), 명령이 echo·printf 단독이면 근거로 인정하지 않는다.
+#   한계: 같은 문구가 담긴 로그 파일을 문구 없이 읽어 오는 식의 위조는 막지 못한다.
+#   이 통과는 "턴 종료 허용"일 뿐이다 — 각 가드의 승인 소비(30분·1회, 10분·1회·원문 일치)는 무변경.
+#   auto=OFF 경로는 종전 그대로 PASS 다.
+GATE_HEADERS = {
+    "승인:CRUD_GATE": {"need_q": "F-CRUD-1 판정을 30분 동안 1회 건너뜁니다",
+                       "ev": ("[F-CRUD-1]", "DECLARATION_CONFLICT"),
+                       "forge": ("F-CRUD-1", "DECLARATION_CONFLICT")},
+    "승인:QA_SKIP": {"need_q": "",
+                     "ev": ("[done_gate] DONE 진입 차단", "단계 시험 완료 마커 미충족"),
+                     "forge": ("done_gate", "DONE 진입 차단", "시험 완료 마커 미충족")},
+    "승인:PROD_DEPLOY": {"need_q": "",
+                         "ev": ("[운영 배포 가드]",),
+                         "forge": ("운영 배포 가드",)},
+    "승인:WEEKLY_LIMIT": {"need_q": "주간 사용 한도 잔여",
+                          "ev": ("[주간한도 게이트]",),
+                          "forge": ("주간한도 게이트",)},
+}
+GATE_WINDOW = 200
+
+
+def _gate_text(v):
+    if isinstance(v, str):
+        return v
+    if isinstance(v, list):
+        return "\n".join(_gate_text(x) for x in v)
+    if isinstance(v, dict):
+        t = v.get("text")
+        if isinstance(t, str):
+            return t
+        return _gate_text(v.get("content"))
+    return ""
+
+
+def _gate_tool_uses(row):
+    if row.get("type") != "assistant":
+        return []
+    c = content_of(row)
+    if not isinstance(c, list):
+        return []
+    return [it for it in c if isinstance(it, dict) and it.get("type") == "tool_use"]
+
+
+def _gate_forged(tu, forge):
+    """근거 tool_result 를 낳은 tool_use 가 가짜 근거 생성형인가."""
+    if not isinstance(tu, dict):
+        return True   # 짝이 되는 도구 호출이 없으면 근거로 인정하지 않는다
+    try:
+        blob = json.dumps(tu.get("input"), ensure_ascii=False)
+    except Exception:
+        return True
+    if any(p in blob for p in forge):
+        return True
+    if tu.get("name") in ("Bash", "mcp__oio__bash_exec"):
+        inp = tu.get("input") if isinstance(tu.get("input"), dict) else {}
+        cmd = (inp.get("command") or inp.get("cmd") or "").strip()
+        if re.match(r"^(echo|printf)\b", cmd) and not re.search(r"[;&|`]|\$\(", cmd):
+            return True
+    return False
+
+
+def _gate_has_evidence(ask_idx, spec):
+    lo = max(0, ask_idx - GATE_WINDOW)
+    for j in range(ask_idx - 1, lo - 1, -1):
+        r = rows[j]
+        if r.get("type") != "user":
+            continue
+        c = content_of(r)
+        if not isinstance(c, list):
+            continue
+        for it in c:
+            if not (isinstance(it, dict) and it.get("type") == "tool_result"):
+                continue
+            txt = _gate_text(it.get("content"))
+            if not all(p in txt for p in spec["ev"]):
+                continue
+            # 짝 tool_use: 같은 tool_use_id 우선, 없으면 직전 assistant 의 마지막 tool_use
+            tid = it.get("tool_use_id")
+            pair = None
+            for k in range(j - 1, max(lo, j - 50) - 1, -1):
+                tus = _gate_tool_uses(rows[k])
+                if not tus:
+                    continue
+                hit = [t for t in tus if tid and t.get("id") == tid]
+                if hit:
+                    pair = hit[0]
+                    break
+                if pair is None:
+                    pair = tus[-1]
+                    if not tid:
+                        break
+            if not _gate_forged(pair, spec["forge"]):
+                return True
+    return False
+
+
+def _gate_approval_ok():
+    asks = []
+    for i in range(last_idx + 1, len(rows)):
+        for tu in _gate_tool_uses(rows[i]):
+            if tu.get("name") == "AskUserQuestion":
+                asks.append((i, tu))
+    if not asks:
+        return None
+    hdrs = []
+    for i, tu in asks:
+        inp = tu.get("input") if isinstance(tu.get("input"), dict) else {}
+        qs = inp.get("questions")
+        if not isinstance(qs, list) or not qs:
+            return None
+        for q in qs:
+            if not isinstance(q, dict):
+                return None
+            h = str(q.get("header") or "").strip()
+            spec = GATE_HEADERS.get(h)
+            if spec is None:
+                return None   # 표 밖 header 하나라도 있으면 혼합 → 종전 차단
+            if spec["need_q"] and spec["need_q"] not in str(q.get("question") or ""):
+                return None
+            if not _gate_has_evidence(i, spec):
+                return None
+            hdrs.append(h)
+    return hdrs
+
+
 if "AskUserQuestion" in tools:
     if AUTO_ON:
+        try:
+            _gh = _gate_approval_ok()
+        except Exception:
+            _gh = None
+        if _gh:
+            out("PASSGATE " + ",".join(sorted(set(_gh))))
         out("BLOCKAUTO")
     out("PASS")
 
@@ -1264,6 +1402,7 @@ tail_snip = tail_snip[-400:]
 #     ★근거는 산출물과 같은 수명을 갖는 곳(코드 주석·LESSONS)에 두어라.★
 # ═════════════════════════════════════════════════════════════════════════
 # ─────────────────────────────────────────────────────────────────────────
+# L-509: 활용형 어미(원하시나요 등)는 문자클래스([시하]) 대신 명시 나열 — 아래 PAT
 PAT = re.compile(
     r'(어떻게\s*(하시겠|할까요|진행할까요)'
     r'|어느\s*것(부터|을)?\s*(진행|선택)'
@@ -1359,6 +1498,12 @@ _reset_counts() {
 
 # 규격 외 문자열은 전부 통과 (BLOCK 정확 접두 일치만 차단)
 case "$VERDICT" in
+    PASSGATE\ *)      # [c214-R6] 가드가 요구한 화면 승인 질문 — 통과. H-2 카운터는 건드리지 않는다(리셋·증가 모두 없음).
+        if [[ -n "$UUID" ]]; then
+            printf '%s askq_gate_pass auto=ON headers=%s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" \
+                "${VERDICT#PASSGATE }" >> "${EVIDENCE_DIR}/askq_gate_pass.log" 2>/dev/null
+        fi
+        exit 0 ;;
     BLOCKAUTO) : ;;   # [c41-odev4] 역방향 — auto=ON + AskUserQuestion
     BLOCK\ *)  : ;;
     PASS)      _reset_counts; exit 0 ;;   # 정상 종료 — 연속 카운터 리셋
@@ -1412,7 +1557,7 @@ if [[ -n "$UUID" ]]; then
     printf '%s' "$((CUR_COUNT_H4 + 1))" > "$COUNT_FILE_H4" 2>/dev/null
 fi
 
-REASON="🚫 [H-4] 사용자 결정을 텍스트로 요청하고 턴을 끝내려 했습니다. 감지 문구: \\\"${MATCHED}\\\" 선택지를 화면 텍스트로 나열하면 사용자가 어디에 답해야 하는지 알 수 없습니다. 지금 AskUserQuestion 도구로 같은 선택지를 모달로 제시하세요. 결정 요청이 아니었다면 해당 문장을 평서문으로 바꾸고 종료하면 됩니다."
+REASON="🚫 [H-4] 결정을 텍스트로 묻고 턴을 끝내려 했습니다. 감지 문구: \\\"${MATCHED}\\\" 스스로 가장 보수적인 선택지를 골라 근거 1줄과 함께 계속 진행하세요. 에이전트가 알아낼 수 없는 외부 사실(자격증명·미공개 URL·사용자만 아는 값)만 AskUserQuestion 으로 묻습니다. 결정 요청이 아니었다면 해당 문장을 평서문으로 바꾸고 종료하면 됩니다."
 
 printf '{"decision":"block","reason":"%s"}\n' "$REASON"
 exit 2

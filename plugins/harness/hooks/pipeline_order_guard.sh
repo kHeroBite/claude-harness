@@ -1,8 +1,4 @@
 #!/bin/bash
-# >>> harness preamble
-_HP="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)}"
-[ -f "$_HP/hooks/harness_preamble.sh" ] && . "$_HP/hooks/harness_preamble.sh" 2>/dev/null || { [ -f "$_HP/harness_preamble.sh" ] && . "$_HP/harness_preamble.sh" 2>/dev/null; } || true
-# <<< harness preamble
 # pipeline_order_guard.sh — 파이프라인 순서 강제 + 좀비/고아 pane 정리 (PreToolUse:Agent)
 # 팀에이전트 spawn 시 프롬프트에서 단계 키워드를 파싱하여 순서 위반 차단
 # 진입 기반: 상태 = "현재 실행 중인 단계". 메인이 spawn 직전 상태 설정 → guard가 일치 검증.
@@ -20,7 +16,7 @@ TEAM_NAME=$(echo "$INPUT" | jq -r '.tool_input.team_name // empty' 2>/dev/null |
 [[ -z "$TEAM_NAME" ]] && exit 0
 
 # --- UUID 결정 ---
-source "${HARNESS_HOOK_DIR}/lib/session_id.sh"
+source "${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/session_id.sh"
 if ! resolve_uuid "$INPUT" 2>/dev/null; then
   UUID="${SESSION_ID}"
 fi
@@ -106,7 +102,7 @@ case "$STATE" in
 esac
 
 if [[ "$ALLOWED" == false ]]; then
-  source "${HARNESS_HOOK_DIR}/lib/write_error.sh"
+  source "${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/write_error.sh"
   log_hook_error "HOOK_BLOCK_PIPELINE_ORDER" "Agent" "파이프라인 순서 위반: 현재=${STATE}, spawn시도=${SPAWN_PHASE} (진입 기반: STATE==SPAWN_PHASE 필수)" "$SESSION_ID"
   REASON="❌ 파이프라인 순서 위반! 현재 상태=${STATE}에서 ${SPAWN_PHASE} spawn 불가. 진입 기반: spawn 직전에 mcp__oio__session_state(uuid=\"\${UUID}\", key=\"state\", value=\"${SPAWN_PHASE}\") 실행 필수."
   echo "{\"decision\":\"block\",\"reason\":\"${REASON}\"}" | tee /dev/stderr

@@ -20,4 +20,4 @@ Skill('otest_ux')
 ```
 
 모든 UX 테스트 로직(삼각검증, 스크린샷 분석, REST API, 로그 분석)은 otest_ux 본체가 보유.
-프로젝트별 설정은 `oinfra_{project}`의 `test_env` 섹션에서 로드.
+프로젝트별 설정은 INFRA.md "테스트 역량" 절(없으면 목차의 "테스트 설정"·"테스트 환경" 등 시험 환경 절)의 `test_env` 블록에서 읽는다.

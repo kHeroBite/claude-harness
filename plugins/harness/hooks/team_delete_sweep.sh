@@ -1,8 +1,4 @@
 #!/bin/bash
-# >>> harness preamble
-_HP="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)}"
-[ -f "$_HP/hooks/harness_preamble.sh" ] && . "$_HP/hooks/harness_preamble.sh" 2>/dev/null || { [ -f "$_HP/harness_preamble.sh" ] && . "$_HP/harness_preamble.sh" 2>/dev/null; } || true
-# <<< harness preamble
 # team_delete_sweep.sh — PostToolUse:TeamDelete 자동 스윕 hook (L-191)
 # TeamDelete 성공 후 BEFORE diff 기반 잔류 bash pane 자동 정리 (kill PID 방식)
 # bash pane만 kill (활성 claude pane은 절대 건드리지 않음)
@@ -19,7 +15,7 @@ else
 fi
 
 # UUID 결정
-source ${HARNESS_HOOK_DIR}/lib/session_id.sh 2>/dev/null || true
+source ${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/session_id.sh 2>/dev/null || true
 resolve_uuid "$INPUT" 2>/dev/null || UUID="${CLAUDE_SESSION_ID}"
 [[ -z "$UUID" ]] && exit 0
 

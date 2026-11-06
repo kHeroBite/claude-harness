@@ -1,11 +1,7 @@
 #!/bin/bash
-# >>> harness preamble
-_HP="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)}"
-[ -f "$_HP/hooks/harness_preamble.sh" ] && . "$_HP/hooks/harness_preamble.sh" 2>/dev/null || { [ -f "$_HP/harness_preamble.sh" ] && . "$_HP/harness_preamble.sh" 2>/dev/null; } || true
-# <<< harness preamble
 # guard_common.sh — Hook Guard 공통 유틸리티
 # 용도: write_guard.sh 분리 시 4개 파일 공통 로직 단일화
-# 사용: source "${HARNESS_HOOK_DIR}/lib/guard_common.sh"
+# 사용: source "${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/guard_common.sh"
 #
 # 제공 함수:
 #   gc_read_input()       — stdin JSON 읽기 + tool_name 추출
@@ -32,7 +28,7 @@ gc_read_input() {
 # 사용: gc_load_uuid → $UUID, $MY_UUID 설정. 실패 시 exit 0.
 gc_load_uuid() {
   local _INPUT="${1:-$GC_INPUT}"
-  source "${HARNESS_HOOK_DIR}/lib/session_id.sh"
+  source "${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/session_id.sh"
   if ! resolve_uuid "$_INPUT" 2>/dev/null; then
     exit 0
   fi
@@ -64,7 +60,7 @@ gc_is_team_agent() {
 gc_get_state() {
   local _UUID="${1:-${UUID:-}}"
   local _STATE_FILE="${_GC_SESSION_ENV}/${_UUID}/state"
-  source "${HARNESS_HOOK_DIR}/lib/session_id.sh" 2>/dev/null || true
+  source "${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/session_id.sh" 2>/dev/null || true
   GC_STATE=$(state_read "$_STATE_FILE" 2>/dev/null | awk '{print $1}') || GC_STATE=""
   GC_STATE="${GC_STATE:-IDLE}"
   export GC_STATE

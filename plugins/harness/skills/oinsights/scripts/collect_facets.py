@@ -4,7 +4,9 @@ from collections import Counter
 
 facets_dir = os.path.expanduser("~/.claude/usage-data/facets/")
 files = glob.glob(facets_dir + "*.json")
-output_path = sys.argv[1] if len(sys.argv) > 1 else "$HOME/.claude/session-env/oinsights_facets_summary.json"
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _oi_paths import default_output
+output_path = default_output("oinsights_facets_summary.json", sys.argv[1] if len(sys.argv) > 1 else None)
 
 if not files:
     print("⚠️ facets 데이터 없음 — /insights를 먼저 실행하면 더 풍부한 분석 가능")

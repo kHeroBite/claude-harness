@@ -1,5 +1,198 @@
 #!/bin/bash
-# ccc — Claude Code 재개 (cc --continue 래퍼)
-# 버전: 3.0 (cc 위임)
-# 변경: 2.0(독립 구현) → 3.0(cc --continue 래퍼)
-exec cc "$@" --continue
+# ccc — Claude Code 재개: 가장 최근 대화 또는 롤(·영역)별 최신 세션을 골라 같은 세션 ID 로 이어 간다
+# 버전: 5.0 (계정 메뉴 → 재개 메뉴, 메뉴는 cc 의 공용 상자형 메뉴)
+# 변경: 2.0(독립 구현) → 3.0(cc --continue 래퍼) → 4.0(롤·영역별 최신 목록, 계정↔롤 양방향, --resume <sid>)
+#       → 5.0(평문 번호 목록 제거. 인자 없는 ccc 는 cc --resume-pick 으로 넘겨 계정 메뉴 → 재개 메뉴)
+# 사용:
+#   ccc                 계정 메뉴 → 재개 메뉴(① 가장 최근 대화 이어서 · 롤(·영역)별 최신 세션과 최근 대화 미리보기 · ＋ 새 세션)
+#                       tty 가 아니면 메뉴 없이 기존 동작(가장 최근 대화 --continue). 대화형 판정은 cc 한 곳에서 한다.
+#   ccc <롤[:영역]>      그 롤의 최신 세션 재개(계정 메뉴 기본값 = 기록 계정), 기록 없으면 새 세션을 그 롤로 시작
+#   ccc <계정> <롤>      (순서 무관) 계정 메뉴 없이 재개, 기록 없으면 그 계정·롤로 새 세션
+#   ccc <계정>           계정 메뉴 없이 그 계정 기록 기준 재개 메뉴(tty 가 아니면 그 계정으로 --continue)
+#   ccc [작업디렉터리] …  디렉터리 인자는 기존처럼 작업 위치
+# 대화 기록(${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects)은 계정이 공유하므로 어느 계정으로도 같은 세션을 재개할 수 있다.
+# 시험: CC_ROLE_CHECK_ONLY=1(cc 가 실행 대신 인자 출력) · CC_MENU_PICK=토큰,…(cc 메뉴 선택 주입)
+set -uo pipefail
+
+_SELF_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+if [[ -n "${CC_BIN:-}" ]]; then
+    :
+elif [[ -x "$_SELF_DIR/cc" ]]; then
+    CC_BIN="$_SELF_DIR/cc"
+else
+    CC_BIN="cc"
+fi
+ROLE_LIB="${ROLE_LIB:-${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/role_lib.py}"
+export ROLE_LIB
+PROFILES_ROOT="${CLAUDE_PROFILES_ROOT:-$HOME/.claude-profiles}"
+
+mapfile -t PROFILES < <(
+  find "$PROFILES_ROOT" -maxdepth 2 -name '.credentials.json' \
+    -printf '%h\n' 2>/dev/null \
+  | xargs -I{} basename {} \
+  | sort
+)
+
+_is_profile() {
+    local p
+    for p in "${PROFILES[@]}"; do [[ "$p" == "$1" ]] && return 0; done
+    return 1
+}
+
+_reject() {
+    echo "❌ $1" >&2
+    [[ -n "${2:-}" ]] && printf '%s\n' "$2" >&2
+    echo "사용: ccc · ccc <롤[:영역]> · ccc <계정> <롤> · ccc <계정>" >&2
+    if [[ -f "$ROLE_LIB" ]]; then
+        echo "롤 목록:" >&2
+        python3 -B "$ROLE_LIB" list 2>/dev/null | grep -v '^  \[그룹\]' >&2 || true
+    fi
+    echo "프로파일 목록: ${PROFILES[*]:-(없음)}" >&2
+    exit 1
+}
+
+# ─── 인자 해석(순서 무관) ───
+WORK_DIR=""
+ROLE=""
+ACCOUNT=""
+declare -a _POS=()
+_args=("$@")
+_i=0
+while (( _i < ${#_args[@]} )); do
+    case "${_args[$_i]}" in
+        --role) _i=$((_i + 1)); ROLE="${_args[$_i]:-}" ;;
+        --profile) _i=$((_i + 1)); ACCOUNT="${_args[$_i]:-}" ;;
+        --continue) ;;  # 옛 습관 호환: 인자 없는 ccc 와 같다
+        *) _POS+=("${_args[$_i]}") ;;
+    esac
+    _i=$((_i + 1))
+done
+declare -a _REST=()
+for _a in "${_POS[@]}"; do
+    if [[ -z "$WORK_DIR" && -d "$_a" ]]; then WORK_DIR="$_a"; else _REST+=("$_a"); fi
+done
+WORK_DIR="$(cd "${WORK_DIR:-$(pwd)}" && pwd)"
+
+_ROLE_OUT=""
+_ROLE_ERR=""
+_role_norm() {
+    local out rc
+    _ROLE_OUT=""; _ROLE_ERR=""
+    [[ -f "$ROLE_LIB" ]] || { _ROLE_ERR="롤 정의 도구 없음: $ROLE_LIB"; return 3; }
+    out=$(cd "$WORK_DIR" && python3 -B "$ROLE_LIB" norm "$1" 2>&1) && rc=0 || rc=$?
+    if [[ $rc -eq 0 ]]; then _ROLE_OUT="$out"; return 0; fi
+    _ROLE_ERR="$out"
+    printf '%s' "$out" | grep -q '^AREA_' && return 2
+    return 3
+}
+
+for _a in "${_REST[@]}"; do
+    _rrc=0
+    _role_norm "$_a" || _rrc=$?
+    if [[ $_rrc -eq 2 ]]; then _reject "영역이 정의와 맞지 않습니다: $_a" "$_ROLE_ERR"; fi
+    if [[ $_rrc -eq 0 ]] && _is_profile "$_a"; then
+        _reject "'$_a' 는 롤 별칭이자 프로파일 이름이라 모호합니다. --role $_a 또는 --profile $_a 로 지정하세요."
+    elif [[ $_rrc -eq 0 ]]; then
+        [[ -n "$ROLE" ]] && _reject "롤이 두 번 지정됐습니다: $ROLE, $_a"
+        ROLE="$_a"
+    elif _is_profile "$_a"; then
+        [[ -n "$ACCOUNT" ]] && _reject "계정이 두 번 지정됐습니다: $ACCOUNT, $_a"
+        ACCOUNT="$_a"
+    else
+        _why=""; [[ -f "$ROLE_LIB" ]] || _why="롤 라이브러리 없음: $ROLE_LIB"
+        _reject "알 수 없는 인자: $_a (디렉터리·롤·프로파일 어느 것도 아님)" "$_why"
+    fi
+done
+ROLE_VALUE=""
+if [[ -n "$ROLE" ]]; then
+    _rrc=0
+    _role_norm "$ROLE" || _rrc=$?
+    [[ $_rrc -ne 0 ]] && _reject "알 수 없는 롤: $ROLE" "$_ROLE_ERR"
+    ROLE_VALUE="$_ROLE_OUT"
+fi
+if [[ -n "$ACCOUNT" ]] && ! _is_profile "$ACCOUNT"; then
+    _reject "알 수 없는 프로파일: $ACCOUNT"
+fi
+
+# ─── 재개 후보(롤·영역마다 최신 1개) ───
+PROJECT=""
+if [[ -f "$ROLE_LIB" ]]; then
+    PROJECT=$(python3 -B "$ROLE_LIB" project-slug --cwd "$WORK_DIR" 2>/dev/null || true)
+fi
+# 출력 행: sid<TAB>value<TAB>display<TAB>profile<TAB>topic<TAB>시각(MM-DD HH:MM)
+_candidates() {
+    # $1=롤 값(빈 값 가능) $2=계정(빈 값 가능) $3=limit
+    [[ -f "$ROLE_LIB" && -n "$PROJECT" ]] || return 0
+    local -a q=(resume-list --project "$PROJECT" --per-role --json --limit "${3:-9}")
+    [[ -n "$1" ]] && q+=(--role "$1")
+    [[ -n "$2" ]] && q+=(--profile "$2")
+    python3 -B "$ROLE_LIB" "${q[@]}" 2>/dev/null | python3 -c '
+import json, sys, datetime
+try:
+    rows = json.load(sys.stdin)
+except Exception:
+    rows = []
+def clean(s):
+    return " ".join(str(s or "").split())
+for r in rows:
+    t = r.get("updated", "")
+    try:
+        t = datetime.datetime.fromisoformat(t).strftime("%m-%d %H:%M")
+    except Exception:
+        pass
+    print("\t".join(clean(x) for x in (r.get("sid"), r.get("value"), r.get("display"), r.get("profile"), r.get("topic"), t)))
+'
+}
+
+_row_field() {
+    # $1=행 $2=필드 번호(1부터)
+    printf '%s' "$1" | cut -f"$2"
+}
+
+_resume() {
+    # $1=행 $2=계정 강제(빈 값이면 기록 계정을 메뉴 기본값으로)
+    local sid val prof
+    sid=$(_row_field "$1" 1); val=$(_row_field "$1" 2); prof=$(_row_field "$1" 4)
+    echo "▶ 재개: [$val] ${sid:0:8}… (기록 계정 ${prof:-?})"
+    local -a a=("$WORK_DIR" --resume "$sid" --role "$val")
+    if [[ -n "$2" ]]; then
+        a+=(--profile "$2")
+    elif [[ -n "$prof" ]] && _is_profile "$prof"; then
+        a+=(--profile-default "$prof")
+    fi
+    exec "$CC_BIN" "${a[@]}"
+}
+
+_new_session() {
+    # $1=롤 값 $2=계정(빈 값 가능)
+    local -a a=("$WORK_DIR" --role "$1")
+    [[ -n "$2" ]] && a+=(--profile "$2")
+    exec "$CC_BIN" "${a[@]}"
+}
+
+_resume_pick() {
+    # 계정 메뉴(계정 지정 시 생략) → 재개 메뉴. 대화형 판정·--continue 폴백은 cc(_PICK_MODE)가 한다.
+    local -a a=("$WORK_DIR" --resume-pick)
+    [[ -n "${1:-}" ]] && a+=(--profile "$1")
+    exec "$CC_BIN" "${a[@]}"
+}
+
+# ─── 분기 ───
+# 1) 롤 지정(계정 유무 무관): 그 롤의 최신 세션
+if [[ -n "$ROLE_VALUE" ]]; then
+    row=""
+    if [[ -n "$ACCOUNT" ]]; then
+        row=$(_candidates "$ROLE_VALUE" "$ACCOUNT" 1 | head -1)
+    fi
+    # 계정 기록이 없으면 계정 무관 최신(대화 기록은 계정 공유)
+    [[ -z "$row" ]] && row=$(_candidates "$ROLE_VALUE" "" 1 | head -1)
+    if [[ -n "$row" ]]; then
+        _resume "$row" "$ACCOUNT"
+    fi
+    echo "ℹ️  이 프로젝트(${PROJECT:-?})에 ${ROLE_VALUE} 세션 기록 없음 → 새 세션을 ${ROLE_VALUE} 로 시작"
+    _new_session "$ROLE_VALUE" "$ACCOUNT"
+fi
+
+# 2) 계정만 지정: 계정 메뉴 없이 그 계정 기준 재개 메뉴(비대화형이면 그 계정으로 --continue)
+# 3) 인자 없음: 계정 메뉴 → 재개 메뉴(비대화형이면 기존 동작 --continue)
+_resume_pick "$ACCOUNT"

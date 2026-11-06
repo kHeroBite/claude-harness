@@ -1,13 +1,42 @@
 {
+  "description": "harness_bundle_build.py 가 settings hooks 에서 생성한 파일이다. 직접 고치지 않는다.",
   "hooks": {
     "UserPromptSubmit": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": [
-              "${CLAUDE_PLUGIN_ROOT}/hooks/UserPromptSubmit.sh"
-            ],
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 3.75 open ${CLAUDE_PLUGIN_ROOT}/hooks/UserPromptSubmit.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/PostToolUse_agent_snapshot.sh",
+            "timeout": 10,
+            "async": true
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 2.5 open ${CLAUDE_PLUGIN_ROOT}/hooks/UserPromptSubmit_ctx_notify.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 2.5 open ${CLAUDE_PLUGIN_ROOT}/hooks/main_ask_state.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 2.5 open ${CLAUDE_PLUGIN_ROOT}/hooks/UserPromptSubmit_role.sh",
             "timeout": 5
           }
         ]
@@ -15,13 +44,21 @@
     ],
     "PreToolUse": [
       {
+        "matcher": "Bash|mcp__oio__bash_exec|Write|Edit|MultiEdit|mcp__oio__file_write|mcp__oio__file_edit|mcp__oio__file_copy|mcp__oio__file_move|mcp__oio__file_rename|mcp__oio__file_symlink|mcp__oio__file_delete|mcp__oio__dir_move|mcp__oio__dir_rename|mcp__oio__dir_delete",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 7.5 open ${CLAUDE_PLUGIN_ROOT}/hooks/PreToolUse_prod_deploy_guard.sh",
+            "timeout": 10
+          }
+        ]
+      },
+      {
         "matcher": "Read|mcp__oio__file_read",
         "hooks": [
           {
             "type": "command",
-            "command": [
-              "${CLAUDE_PLUGIN_ROOT}/hooks/PreToolUse_Read_image.sh"
-            ],
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 2.5 open ${CLAUDE_PLUGIN_ROOT}/hooks/PreToolUse_Read_image.sh",
             "timeout": 5
           }
         ]
@@ -31,23 +68,17 @@
         "hooks": [
           {
             "type": "command",
-            "command": [
-              "${CLAUDE_PLUGIN_ROOT}/hooks/sendmessage_guard.sh"
-            ],
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 2.5 open ${CLAUDE_PLUGIN_ROOT}/hooks/sendmessage_guard.sh",
             "timeout": 5
           },
           {
             "type": "command",
-            "command": [
-              "${CLAUDE_PLUGIN_ROOT}/hooks/ui_test_guard.sh"
-            ],
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 2.5 open ${CLAUDE_PLUGIN_ROOT}/hooks/ui_test_guard.sh",
             "timeout": 5
           },
           {
             "type": "command",
-            "command": [
-              "${CLAUDE_PLUGIN_ROOT}/hooks/PreToolUse_SendMessage_otest.sh"
-            ],
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 2.5 open ${CLAUDE_PLUGIN_ROOT}/hooks/PreToolUse_SendMessage_otest.sh",
             "timeout": 5
           }
         ]
@@ -57,51 +88,37 @@
         "hooks": [
           {
             "type": "command",
-            "command": [
-              "${CLAUDE_PLUGIN_ROOT}/hooks/rollback_checkpoint.sh"
-            ],
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 2.5 open ${CLAUDE_PLUGIN_ROOT}/hooks/rollback_checkpoint.sh",
             "timeout": 5
           },
           {
             "type": "command",
-            "command": [
-              "${CLAUDE_PLUGIN_ROOT}/hooks/oinfra_main_guard.sh"
-            ],
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 2.5 open ${CLAUDE_PLUGIN_ROOT}/hooks/oi_route_guard.sh",
             "timeout": 5
           },
           {
             "type": "command",
-            "command": [
-              "${CLAUDE_PLUGIN_ROOT}/hooks/oi_route_guard.sh"
-            ],
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 2.5 open ${CLAUDE_PLUGIN_ROOT}/hooks/ofinish_recurse_guard.sh",
             "timeout": 5
           },
           {
             "type": "command",
-            "command": [
-              "${CLAUDE_PLUGIN_ROOT}/hooks/ofinish_recurse_guard.sh"
-            ],
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 2.5 open ${CLAUDE_PLUGIN_ROOT}/hooks/PreToolUse_Skill_ogrill_main_guard.sh",
             "timeout": 5
           },
           {
             "type": "command",
-            "command": [
-              "${CLAUDE_PLUGIN_ROOT}/hooks/PreToolUse_Skill_ogrill_main_guard.sh"
-            ],
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 2.5 open ${CLAUDE_PLUGIN_ROOT}/hooks/errgate/PreToolUse_Skill_ofinish_errgate.sh",
             "timeout": 5
           },
           {
             "type": "command",
-            "command": [
-              "${CLAUDE_PLUGIN_ROOT}/hooks/PreToolUse_Skill_ointaug_gate.sh"
-            ],
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 2.5 open ${CLAUDE_PLUGIN_ROOT}/hooks/PreToolUse_Skill_ointaug_gate.sh",
             "timeout": 5
           },
           {
             "type": "command",
-            "command": [
-              "${CLAUDE_PLUGIN_ROOT}/hooks/PreToolUse_session_path_guard.sh"
-            ],
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 2.5 open ${CLAUDE_PLUGIN_ROOT}/hooks/PreToolUse_session_path_guard.sh",
             "timeout": 5
           }
         ]
@@ -111,9 +128,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": [
-              "${CLAUDE_PLUGIN_ROOT}/hooks/mysql_korean_guard.sh"
-            ],
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 3.75 open ${CLAUDE_PLUGIN_ROOT}/hooks/mysql_korean_guard.sh",
             "timeout": 5
           }
         ]
@@ -123,24 +138,20 @@
         "hooks": [
           {
             "type": "command",
-            "command": [
-              "${CLAUDE_PLUGIN_ROOT}/hooks/write_guard.sh"
-            ],
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 7.5 closed ${CLAUDE_PLUGIN_ROOT}/hooks/write_guard.sh",
+            "timeout": 23,
+            "onFailure": "block"
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 3.75 open ${CLAUDE_PLUGIN_ROOT}/hooks/inline_sql_guard.sh",
             "timeout": 5
           },
           {
             "type": "command",
-            "command": [
-              "${CLAUDE_PLUGIN_ROOT}/hooks/inline_sql_guard.sh"
-            ],
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": [
-              "${CLAUDE_PLUGIN_ROOT}/hooks/phase_batches_immutable_guard.sh"
-            ],
-            "timeout": 5
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 7.5 closed ${CLAUDE_PLUGIN_ROOT}/hooks/phase_batches_immutable_guard.sh",
+            "timeout": 23,
+            "onFailure": "block"
           }
         ]
       },
@@ -149,9 +160,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": [
-              "${CLAUDE_PLUGIN_ROOT}/hooks/write_guard.sh"
-            ],
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 2.5 open ${CLAUDE_PLUGIN_ROOT}/hooks/write_guard.sh",
             "timeout": 5
           }
         ]
@@ -161,24 +170,14 @@
         "hooks": [
           {
             "type": "command",
-            "command": [
-              "${CLAUDE_PLUGIN_ROOT}/hooks/shutdown_guard.sh"
-            ],
-            "timeout": 15
-          },
-          {
-            "type": "command",
-            "command": [
-              "${CLAUDE_PLUGIN_ROOT}/hooks/session_guard.sh"
-            ],
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 3.75 open ${CLAUDE_PLUGIN_ROOT}/hooks/session_guard.sh",
             "timeout": 5
           },
           {
             "type": "command",
-            "command": [
-              "${CLAUDE_PLUGIN_ROOT}/hooks/write_guard.sh"
-            ],
-            "timeout": 5
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 7.5 closed ${CLAUDE_PLUGIN_ROOT}/hooks/write_guard.sh",
+            "timeout": 23,
+            "onFailure": "block"
           }
         ]
       },
@@ -187,9 +186,22 @@
         "hooks": [
           {
             "type": "command",
-            "command": [
-              "${CLAUDE_PLUGIN_ROOT}/hooks/PreToolUse_Bash_git_quotepath_warn.sh"
-            ],
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 13 open ${CLAUDE_PLUGIN_ROOT}/hooks/shutdown_guard.sh",
+            "timeout": 15
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 2.5 open ${CLAUDE_PLUGIN_ROOT}/hooks/PreToolUse_Bash_git_quotepath_warn.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 2.5 open ${CLAUDE_PLUGIN_ROOT}/hooks/PreToolUse_oio_bash_emulator_headless_guard.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 2.5 open ${CLAUDE_PLUGIN_ROOT}/hooks/PreToolUse_http_server_bind_guard.sh",
             "timeout": 5
           }
         ]
@@ -199,17 +211,15 @@
         "hooks": [
           {
             "type": "command",
-            "command": [
-              "${CLAUDE_PLUGIN_ROOT}/hooks/write_guard.sh"
-            ],
-            "timeout": 5
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 7.5 closed_ro ${CLAUDE_PLUGIN_ROOT}/hooks/write_guard.sh",
+            "timeout": 23,
+            "onFailure": "block"
           },
           {
             "type": "command",
-            "command": [
-              "${CLAUDE_PLUGIN_ROOT}/hooks/phase_batches_immutable_guard.sh"
-            ],
-            "timeout": 5
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 7.5 closed ${CLAUDE_PLUGIN_ROOT}/hooks/phase_batches_immutable_guard.sh",
+            "timeout": 23,
+            "onFailure": "block"
           }
         ]
       },
@@ -218,10 +228,38 @@
         "hooks": [
           {
             "type": "command",
-            "command": [
-              "${CLAUDE_PLUGIN_ROOT}/hooks/PreToolUse_goal_autoscript_guard.sh"
-            ],
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 28 open ${CLAUDE_PLUGIN_ROOT}/hooks/PreToolUse_goal_autoscript_guard.sh",
             "timeout": 30
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__oio__file_write|mcp__oio__file_edit|mcp__oio__file_delete|mcp__oio__file_copy|mcp__oio__file_move|mcp__oio__file_rename|mcp__oio__file_symlink|mcp__oio__dir_delete|mcp__oio__dir_move|mcp__oio__dir_rename|mcp__oio__bash_exec|Bash|Write|Edit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 7.5 closed ${CLAUDE_PLUGIN_ROOT}/hooks/PreToolUse_gas_cache_guard.sh",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__oio__file_write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 2.5 open ${CLAUDE_PLUGIN_ROOT}/hooks/result_json_guard.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__oio__file_write|mcp__oio__file_edit|mcp__oio__file_copy|mcp__oio__file_move|mcp__oio__file_rename|Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 2.5 open ${CLAUDE_PLUGIN_ROOT}/hooks/PreToolUse_ac_records_guard.sh",
+            "timeout": 5
           }
         ]
       },
@@ -230,9 +268,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": [
-              "${CLAUDE_PLUGIN_ROOT}/hooks/lock_order_audit.sh"
-            ],
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 58 open ${CLAUDE_PLUGIN_ROOT}/hooks/lock_order_audit.sh",
             "timeout": 60
           }
         ]
@@ -242,9 +278,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": [
-              "${CLAUDE_PLUGIN_ROOT}/hooks/PreToolUse_main_direct_edit_guard.sh"
-            ]
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 590 open ${CLAUDE_PLUGIN_ROOT}/hooks/PreToolUse_main_direct_edit_guard.sh"
           }
         ]
       },
@@ -253,65 +287,77 @@
         "hooks": [
           {
             "type": "command",
-            "command": [
-              "${CLAUDE_PLUGIN_ROOT}/hooks/autoloop_bypass_guard.sh"
-            ],
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 2.5 open ${CLAUDE_PLUGIN_ROOT}/hooks/autoloop_bypass_guard.sh",
             "timeout": 5
           },
           {
             "type": "command",
-            "command": [
-              "${CLAUDE_PLUGIN_ROOT}/hooks/PreToolUse_Agent_team_param_guard.sh"
-            ],
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 2.5 open ${CLAUDE_PLUGIN_ROOT}/hooks/PreToolUse_Agent_team_param_guard.sh",
             "timeout": 5
           },
           {
             "type": "command",
-            "command": [
-              "${CLAUDE_PLUGIN_ROOT}/hooks/full_task_team_guard.sh"
-            ],
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 2.5 open ${CLAUDE_PLUGIN_ROOT}/hooks/full_task_team_guard.sh",
             "timeout": 5
           },
           {
             "type": "command",
-            "command": [
-              "${CLAUDE_PLUGIN_ROOT}/hooks/pipeline_order_guard.sh"
-            ],
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 2.5 open ${CLAUDE_PLUGIN_ROOT}/hooks/pipeline_order_guard.sh",
             "timeout": 5
           },
           {
             "type": "command",
-            "command": [
-              "${CLAUDE_PLUGIN_ROOT}/hooks/otest_done_guard.sh"
-            ],
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 2.5 open ${CLAUDE_PLUGIN_ROOT}/hooks/otest_done_guard.sh",
             "timeout": 5
           },
           {
             "type": "command",
-            "command": [
-              "${CLAUDE_PLUGIN_ROOT}/hooks/otest_user_evidence_guard.sh"
-            ],
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 2.5 open ${CLAUDE_PLUGIN_ROOT}/hooks/otest_user_evidence_guard.sh",
             "timeout": 5
           },
           {
             "type": "command",
-            "command": [
-              "${CLAUDE_PLUGIN_ROOT}/hooks/ui_test_done_guard.sh"
-            ],
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 2.5 open ${CLAUDE_PLUGIN_ROOT}/hooks/ui_test_done_guard.sh",
             "timeout": 5
           },
           {
             "type": "command",
-            "command": [
-              "${CLAUDE_PLUGIN_ROOT}/hooks/agent_lifecycle.sh"
-            ],
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 2.5 open ${CLAUDE_PLUGIN_ROOT}/hooks/agent_lifecycle.sh",
             "timeout": 5
           },
           {
             "type": "command",
-            "command": [
-              "${CLAUDE_PLUGIN_ROOT}/hooks/team_agent_env_guard.sh"
-            ],
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 2.5 open ${CLAUDE_PLUGIN_ROOT}/hooks/team_agent_env_guard.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 2.5 open ${CLAUDE_PLUGIN_ROOT}/hooks/PreToolUse_Agent_sendmessage_toolsearch_inject.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 7.5 closed ${CLAUDE_PLUGIN_ROOT}/hooks/PreToolUse_Agent_cap.sh",
+            "timeout": 15
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 2.5 open ${CLAUDE_PLUGIN_ROOT}/hooks/PreToolUse_Agent_parallel_spawn_guard.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 2.5 open ${CLAUDE_PLUGIN_ROOT}/hooks/PreToolUse_Agent_ambiguous_width_guard.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 2.5 open ${CLAUDE_PLUGIN_ROOT}/hooks/PreToolUse_Agent_peer_gate.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 2.5 open ${CLAUDE_PLUGIN_ROOT}/hooks/PreToolUse_Agent_load_stagger.sh",
             "timeout": 5
           }
         ]
@@ -321,9 +367,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": [
-              "${CLAUDE_PLUGIN_ROOT}/hooks/team_create_guard.sh"
-            ],
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 3.75 open ${CLAUDE_PLUGIN_ROOT}/hooks/team_create_guard.sh",
             "timeout": 5
           }
         ]
@@ -333,38 +377,164 @@
         "hooks": [
           {
             "type": "command",
-            "command": [
-              "${CLAUDE_PLUGIN_ROOT}/hooks/PreToolUse_oto_entry_guard.sh"
-            ],
-            "timeout": 15
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 13 open ${CLAUDE_PLUGIN_ROOT}/hooks/PreToolUse_oto_entry_guard.sh",
+            "timeout": 20
           },
           {
             "type": "command",
-            "command": [
-              "${CLAUDE_PLUGIN_ROOT}/hooks/PreToolUse_oto_completion_guard.sh"
-            ],
-            "timeout": 15
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 13 open ${CLAUDE_PLUGIN_ROOT}/hooks/PreToolUse_oto_completion_guard.sh",
+            "timeout": 20
           },
           {
             "type": "command",
-            "command": [
-              "${CLAUDE_PLUGIN_ROOT}/hooks/PreToolUse_done_gate.sh"
-            ],
-            "timeout": 15
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 13 open ${CLAUDE_PLUGIN_ROOT}/hooks/PreToolUse_done_gate.sh",
+            "timeout": 20
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 7.5 open ${CLAUDE_PLUGIN_ROOT}/hooks/PreToolUse_pipeline_entry_reset.sh",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 7.5 open ${CLAUDE_PLUGIN_ROOT}/hooks/PreToolUse_peer_finish_warn.sh",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 2.5 open ${CLAUDE_PLUGIN_ROOT}/hooks/PreToolUse_dev_ac_gate.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 2.5 open ${CLAUDE_PLUGIN_ROOT}/hooks/PreToolUse_plan_ref_gate.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 9 open ${CLAUDE_PLUGIN_ROOT}/hooks/PreToolUse_docs_update_gate.sh",
+            "timeout": 12
+          }
+        ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/pane_state_dot.sh run",
+            "timeout": 5,
+            "async": true
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 7.5 open ${CLAUDE_PLUGIN_ROOT}/hooks/PreToolUse_teammate_idle_guard.sh",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 7.5 open ${CLAUDE_PLUGIN_ROOT}/hooks/PreToolUse_weekly_limit_gate.sh",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 7.5 closed_mut ${CLAUDE_PLUGIN_ROOT}/hooks/PreToolUse_stop_marker_gate.sh",
+            "timeout": 23,
+            "onFailure": "block"
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 7.5 open ${CLAUDE_PLUGIN_ROOT}/hooks/PreToolUse_ointaug_turn_gate.sh",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Bash|mcp__oio__bash_exec|mcp__mysql__execute|mcp__mysql__query",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 7.5 closed ${CLAUDE_PLUGIN_ROOT}/hooks/PreToolUse_snapshot_gate.sh",
+            "timeout": 23,
+            "onFailure": "block"
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__oio__bash_exec|Monitor",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 2.5 open ${CLAUDE_PLUGIN_ROOT}/hooks/PreToolUse_oio_bash_duration_guard.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "SendMessage|Agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 2.5 open ${CLAUDE_PLUGIN_ROOT}/hooks/PreToolUse_multi_task_assign_guard.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 2.5 open ${CLAUDE_PLUGIN_ROOT}/hooks/PreToolUse_permission_denied_relay.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 2.5 open ${CLAUDE_PLUGIN_ROOT}/hooks/main_ask_state.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|MultiEdit|mcp__oio__file_write|mcp__oio__file_edit|mcp__oio__file_delete|mcp__oio__file_move|mcp__oio__file_copy|mcp__oio__file_rename|mcp__oio__bash_exec",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 2.5 open ${CLAUDE_PLUGIN_ROOT}/hooks/PreToolUse_wt_guard.sh",
+            "timeout": 5
           }
         ]
       }
     ],
     "PostToolUse": [
       {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 2.5 open ${CLAUDE_PLUGIN_ROOT}/hooks/UserPromptSubmit_ctx_notify.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
         "matcher": "Edit|Write|mcp__oio__file_edit|mcp__oio__file_write",
         "hooks": [
           {
             "type": "command",
-            "command": [
-              "${CLAUDE_PLUGIN_ROOT}/hooks/PostToolUse_docker_compose_scripts_mount.sh"
-            ],
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 3.75 open ${CLAUDE_PLUGIN_ROOT}/hooks/PostToolUse_docker_compose_scripts_mount.sh",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 7.5 open ${CLAUDE_PLUGIN_ROOT}/hooks/PostToolUse_formname_typo_warn.sh",
+            "timeout": 10,
+            "async": true
           }
         ]
       },
@@ -373,16 +543,12 @@
         "hooks": [
           {
             "type": "command",
-            "command": [
-              "${CLAUDE_PLUGIN_ROOT}/hooks/phase_guard.sh"
-            ],
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 3.75 open ${CLAUDE_PLUGIN_ROOT}/hooks/phase_guard.sh",
             "timeout": 5
           },
           {
             "type": "command",
-            "command": [
-              "${CLAUDE_PLUGIN_ROOT}/hooks/PostToolUse_Skill_ointaug_format.sh"
-            ]
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 590 open ${CLAUDE_PLUGIN_ROOT}/hooks/PostToolUse_Skill_ointaug_format.sh"
           }
         ]
       },
@@ -391,36 +557,38 @@
         "hooks": [
           {
             "type": "command",
-            "command": [
-              "${CLAUDE_PLUGIN_ROOT}/hooks/agent_lifecycle.sh"
-            ],
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 3.75 open ${CLAUDE_PLUGIN_ROOT}/hooks/agent_lifecycle.sh",
             "timeout": 5
           },
           {
             "type": "command",
-            "command": [
-              "${CLAUDE_PLUGIN_ROOT}/hooks/post_agent_shutdown_enforce.sh"
-            ],
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 7.5 open ${CLAUDE_PLUGIN_ROOT}/hooks/post_agent_shutdown_enforce.sh",
             "timeout": 10
           },
           {
             "type": "command",
-            "command": [
-              "${CLAUDE_PLUGIN_ROOT}/hooks/agent_completion_guard.sh"
-            ],
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 3.75 open ${CLAUDE_PLUGIN_ROOT}/hooks/agent_completion_guard.sh",
             "timeout": 5
           },
           {
             "type": "command",
-            "command": [
-              "${CLAUDE_PLUGIN_ROOT}/hooks/PostToolUse_Agent_inprocess_detect.sh"
-            ]
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 590 open ${CLAUDE_PLUGIN_ROOT}/hooks/PostToolUse_Agent_inprocess_detect.sh"
           },
           {
             "type": "command",
-            "command": [
-              "${CLAUDE_PLUGIN_ROOT}/hooks/PostToolUse_agent_bind_check.sh"
-            ]
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 590 open ${CLAUDE_PLUGIN_ROOT}/hooks/PostToolUse_agent_bind_check.sh",
+            "async": true
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 590 open ${CLAUDE_PLUGIN_ROOT}/hooks/PostToolUse_Agent_pane_label.sh",
+            "async": true
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 238 open ${CLAUDE_PLUGIN_ROOT}/hooks/PostToolUse_Agent_spawn_ack_watch.sh",
+            "timeout": 240,
+            "asyncRewake": true
           }
         ]
       },
@@ -429,16 +597,12 @@
         "hooks": [
           {
             "type": "command",
-            "command": [
-              "${CLAUDE_PLUGIN_ROOT}/hooks/agent_lifecycle.sh"
-            ],
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 3.75 open ${CLAUDE_PLUGIN_ROOT}/hooks/agent_lifecycle.sh",
             "timeout": 5
           },
           {
             "type": "command",
-            "command": [
-              "${CLAUDE_PLUGIN_ROOT}/hooks/PostToolUse_TeamCreate_poller.sh"
-            ],
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 3.75 open ${CLAUDE_PLUGIN_ROOT}/hooks/PostToolUse_TeamCreate_poller.sh",
             "timeout": 5
           }
         ]
@@ -448,16 +612,12 @@
         "hooks": [
           {
             "type": "command",
-            "command": [
-              "${CLAUDE_PLUGIN_ROOT}/hooks/team_delete_sweep.sh"
-            ],
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 13 open ${CLAUDE_PLUGIN_ROOT}/hooks/team_delete_sweep.sh",
             "timeout": 15
           },
           {
             "type": "command",
-            "command": [
-              "${CLAUDE_PLUGIN_ROOT}/hooks/team_delete_followup_guard.sh"
-            ],
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 2 open ${CLAUDE_PLUGIN_ROOT}/hooks/team_delete_followup_guard.sh",
             "timeout": 3
           }
         ]
@@ -467,9 +627,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": [
-              "${CLAUDE_PLUGIN_ROOT}/hooks/cleanup_verify.sh"
-            ],
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 3.75 open ${CLAUDE_PLUGIN_ROOT}/hooks/cleanup_verify.sh",
             "timeout": 5
           }
         ]
@@ -479,9 +637,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": [
-              "${CLAUDE_PLUGIN_ROOT}/hooks/error_tracker.sh"
-            ],
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 3.75 open ${CLAUDE_PLUGIN_ROOT}/hooks/error_tracker.sh",
             "timeout": 5
           }
         ]
@@ -491,9 +647,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": [
-              "${CLAUDE_PLUGIN_ROOT}/hooks/mcp_disconnect_guard.sh"
-            ],
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 3.75 open ${CLAUDE_PLUGIN_ROOT}/hooks/mcp_disconnect_guard.sh",
             "timeout": 5
           }
         ]
@@ -503,9 +657,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": [
-              "${CLAUDE_PLUGIN_ROOT}/hooks/guards/readback_guard.sh"
-            ],
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 3.75 open ${CLAUDE_PLUGIN_ROOT}/hooks/guards/readback_guard.sh",
             "timeout": 5
           }
         ]
@@ -515,16 +667,12 @@
         "hooks": [
           {
             "type": "command",
-            "command": [
-              "${CLAUDE_PLUGIN_ROOT}/hooks/sendmessage_ack_write.sh"
-            ],
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 3.75 open ${CLAUDE_PLUGIN_ROOT}/hooks/sendmessage_ack_write.sh",
             "timeout": 5
           },
           {
             "type": "command",
-            "command": [
-              "${CLAUDE_PLUGIN_ROOT}/hooks/sendmessage_shutdown_sweep.sh"
-            ],
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 13 open ${CLAUDE_PLUGIN_ROOT}/hooks/sendmessage_shutdown_sweep.sh",
             "timeout": 15
           }
         ]
@@ -534,9 +682,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": [
-              "${CLAUDE_PLUGIN_ROOT}/hooks/oio_fallback_guard.sh"
-            ],
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 3.75 open ${CLAUDE_PLUGIN_ROOT}/hooks/oio_fallback_guard.sh",
             "timeout": 5
           }
         ]
@@ -546,9 +692,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": [
-              "${CLAUDE_PLUGIN_ROOT}/hooks/PostToolUse_const_reload.sh"
-            ],
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 3.75 open ${CLAUDE_PLUGIN_ROOT}/hooks/PostToolUse_const_reload.sh",
             "timeout": 5
           }
         ]
@@ -558,9 +702,17 @@
         "hooks": [
           {
             "type": "command",
-            "command": [
-              "${CLAUDE_PLUGIN_ROOT}/hooks/edit_loop_guard.sh"
-            ],
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 3.75 open ${CLAUDE_PLUGIN_ROOT}/hooks/edit_loop_guard.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__oio__file_edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 2.5 open ${CLAUDE_PLUGIN_ROOT}/hooks/result_json_guard.sh",
             "timeout": 5
           }
         ]
@@ -570,9 +722,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": [
-              "${CLAUDE_PLUGIN_ROOT}/hooks/PostToolUse_oio_invalid_params.sh"
-            ],
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 3.75 open ${CLAUDE_PLUGIN_ROOT}/hooks/PostToolUse_oio_invalid_params.sh",
             "timeout": 5
           }
         ]
@@ -582,9 +732,70 @@
         "hooks": [
           {
             "type": "command",
-            "command": [
-              "${CLAUDE_PLUGIN_ROOT}/hooks/PostToolUse_observation_checkpoint.sh"
-            ],
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 3.75 open ${CLAUDE_PLUGIN_ROOT}/hooks/PostToolUse_observation_checkpoint.sh",
+            "timeout": 5,
+            "async": true
+          }
+        ]
+      },
+      {
+        "matcher": "SendMessage",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/pane_state_dot.sh sendmsg",
+            "timeout": 5,
+            "async": true
+          }
+        ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/PostToolUse_agent_snapshot.sh",
+            "timeout": 10,
+            "async": true
+          }
+        ]
+      },
+      {
+        "matcher": "ListAgents",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 2.5 open ${CLAUDE_PLUGIN_ROOT}/hooks/PostToolUse_ListAgents_peer_mark.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__oio__file_write|mcp__oio__file_edit|Write|Edit|mcp__oio__bash_exec|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 3.75 open ${CLAUDE_PLUGIN_ROOT}/hooks/PostToolUse_ui_marker_lint.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__oio__file_read|mcp__oio__search|Read|Grep",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 1.5 open ${CLAUDE_PLUGIN_ROOT}/hooks/PostToolUse_plan_read_log.sh",
+            "timeout": 3
+          }
+        ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 2.5 open ${CLAUDE_PLUGIN_ROOT}/hooks/main_ask_state.sh",
             "timeout": 5
           }
         ]
@@ -595,9 +806,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": [
-              "${CLAUDE_PLUGIN_ROOT}/hooks/PreCompact.sh"
-            ],
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 3.75 open ${CLAUDE_PLUGIN_ROOT}/hooks/PreCompact.sh",
             "timeout": 5
           }
         ]
@@ -609,23 +818,27 @@
         "hooks": [
           {
             "type": "command",
-            "command": [
-              "${CLAUDE_PLUGIN_ROOT}/hooks/SessionStart.sh"
-            ],
+            "command": "mkdir -p \"${HARNESS_HOME:-$HOME/.harness}\" && ln -sfn \"${CLAUDE_PLUGIN_ROOT}\" \"${HARNESS_HOME:-$HOME/.harness}/current\"",
             "timeout": 5
           },
           {
             "type": "command",
-            "command": [
-              "${CLAUDE_PLUGIN_ROOT}/hooks/SessionStart_path_unify.sh"
-            ],
+            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/sync_rules.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 2.5 open ${CLAUDE_PLUGIN_ROOT}/hooks/SessionStart.sh",
             "timeout": 5
           },
           {
             "type": "command",
-            "command": [
-              "${CLAUDE_PLUGIN_ROOT}/scripts/sync_rules.sh"
-            ],
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 3.75 open ${CLAUDE_PLUGIN_ROOT}/hooks/SessionStart_path_unify.sh",
             "timeout": 5
           }
         ]
@@ -635,9 +848,17 @@
         "hooks": [
           {
             "type": "command",
-            "command": [
-              "${CLAUDE_PLUGIN_ROOT}/hooks/SessionStart_compact.sh"
-            ],
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 2.5 open ${CLAUDE_PLUGIN_ROOT}/hooks/SessionStart_compact.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 2.5 open ${CLAUDE_PLUGIN_ROOT}/hooks/SessionStart_role.sh",
             "timeout": 5
           }
         ]
@@ -648,10 +869,20 @@
         "hooks": [
           {
             "type": "command",
-            "command": [
-              "${CLAUDE_PLUGIN_ROOT}/hooks/SubagentStop_report_guard.sh"
-            ],
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 3.75 open ${CLAUDE_PLUGIN_ROOT}/hooks/SubagentStop_report_guard.sh",
             "timeout": 5
+          }
+        ]
+      }
+    ],
+    "StopFailure": [
+      {
+        "matcher": "authentication_failed|oauth_org_not_allowed",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 25 open ${CLAUDE_PLUGIN_ROOT}/hooks/StopFailure_auth_alert.sh",
+            "timeout": 30
           }
         ]
       }
@@ -662,22 +893,129 @@
         "hooks": [
           {
             "type": "command",
-            "command": [
-              "${CLAUDE_PLUGIN_ROOT}/hooks/Stop.sh"
-            ]
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 590 open ${CLAUDE_PLUGIN_ROOT}/hooks/Stop.sh"
           },
           {
             "type": "command",
-            "command": [
-              "${CLAUDE_PLUGIN_ROOT}/hooks/Stop_askq_guard.sh"
-            ],
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 2.5 open ${CLAUDE_PLUGIN_ROOT}/hooks/Stop_askq_guard.sh",
             "timeout": 5
           },
           {
             "type": "command",
-            "command": [
-              "${CLAUDE_PLUGIN_ROOT}/hooks/Stop_observation_guard.sh"
-            ],
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 2.5 open ${CLAUDE_PLUGIN_ROOT}/hooks/Stop_oto_residual_guard.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 2.5 open ${CLAUDE_PLUGIN_ROOT}/hooks/Stop_ointaug_output_guard.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 5 open ${CLAUDE_PLUGIN_ROOT}/hooks/deadlock/Stop_team_deadlock_guard.sh",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 2.5 open ${CLAUDE_PLUGIN_ROOT}/hooks/Stop_observation_guard.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/Stop_orphan_agent_sweep.sh",
+            "timeout": 10,
+            "async": true
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/PostToolUse_agent_snapshot.sh",
+            "timeout": 10,
+            "async": true
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/Stop_teammate_reaper.sh",
+            "timeout": 60,
+            "asyncRewake": true
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/pane_state_dot.sh idle",
+            "timeout": 5,
+            "async": true
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 2.5 open ${CLAUDE_PLUGIN_ROOT}/hooks/main_ask_state.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "TeammateIdle": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/pane_state_dot.sh idle",
+            "timeout": 5,
+            "async": true
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 7.5 open ${CLAUDE_PLUGIN_ROOT}/hooks/TeammateIdle_report_guard.sh",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/PostToolUse_agent_snapshot.sh",
+            "timeout": 10,
+            "async": true
+          }
+        ]
+      }
+    ],
+    "PermissionDenied": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 2.5 open ${CLAUDE_PLUGIN_ROOT}/hooks/PermissionDenied.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 2.5 open ${CLAUDE_PLUGIN_ROOT}/hooks/main_ask_state.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/lib/time_budget.sh 2.5 open ${CLAUDE_PLUGIN_ROOT}/hooks/main_ask_state.sh",
             "timeout": 5
           }
         ]

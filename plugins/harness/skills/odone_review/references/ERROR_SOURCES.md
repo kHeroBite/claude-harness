@@ -27,7 +27,7 @@
   절차:
     1. Grep으로 트랜스크립트에서 "Exit code" 패턴 검색
        Grep pattern="Exit code [1-9]" path="{transcript_path}" output_mode="content" -C=2
-    2. 또는 Bash: grep -c "Exit code [1-9]" "{transcript_path}" 로 실패 횟수 확인
+    2. 또는 Grep(output_mode="count") 로 실패 횟수 확인 — 셸(grep/tail) 로 트랜스크립트를 읽지 말 것 (진행 중 셸 명령에서 트랜스크립트 이름이 차단됨)
     3. 실패 항목 발견 시: 명령어와 에러 메시지 추출 → error_log에 추가
     4. 소스 A와 중복 제거 (동일 명령+동일 에러 = 1건으로 합산)
   감지_패턴:

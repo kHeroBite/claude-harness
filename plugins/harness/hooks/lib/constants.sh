@@ -1,8 +1,4 @@
 #!/bin/bash
-# >>> harness preamble
-_HP="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)}"
-[ -f "$_HP/hooks/harness_preamble.sh" ] && . "$_HP/hooks/harness_preamble.sh" 2>/dev/null || { [ -f "$_HP/harness_preamble.sh" ] && . "$_HP/harness_preamble.sh" 2>/dev/null; } || true
-# <<< harness preamble
 # constants.sh — hook/skill 공용 상수 단일 출처 (F7, jury V4 C)
 #
 # 이 파일은 .claude/hooks/lib/const.py 와 수치 동기화를 반드시 유지해야 한다.
@@ -14,7 +10,7 @@ _HP="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null
 #    lock 기반 회수는 발생하지 않아야 함. "LOCK > UX" 원칙)
 
 # 사용법:
-#   source "${HARNESS_HOOK_DIR}/lib/constants.sh"
+#   source "${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/constants.sh"
 #   [ "$age" -gt "$LOCK_STALE_TTL_SEC" ] && ...
 
 # --- oio / session lifecycle TTL ---

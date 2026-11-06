@@ -15,7 +15,7 @@ invocation:
 ## 참고 문서
 
 - **스키마 문서**: DATABASE.md (프로젝트별)
-- **연결 정보**: oinfra_{project} 프로젝트스킬의 MCP 설정 참조
+- **연결 정보**: {프로젝트 루트}/PROJECT.md 의 코딩 규칙 절(DB 관련) 참조
 
 ## 사용 시점
 
@@ -47,6 +47,8 @@ invocation:
 
 ### 필수 사용 도구
 
+> mysql MCP 는 상시 연결이 아니다. mcp-mysql 온디맨드 에이전트를 name 없이(팀원은 name·team_name 없이 일반 서브에이전트로) 띄우고, 아래 도구는 그 mcp-mysql 서브에이전트 안에서 호출한다.
+
 ```yaml
 mcp__mysql__query: SELECT 쿼리 실행 (읽기 전용)
 mcp__mysql__execute: INSERT/UPDATE/DELETE/CREATE/ALTER/DROP 실행
@@ -57,7 +59,7 @@ mcp__mysql__explain_query: 쿼리 실행 계획 분석
 
 ## 데이터베이스 구조
 
-프로젝트별 DB 스키마(테이블 목록, 권한, 연결 정보)는 `oinfra_{project}` 또는 해당 프로젝트의 `DATABASE.md`를 참조하라.
+프로젝트별 DB 스키마(테이블 목록, 권한, 연결 정보)는 `INFRA.md` 또는 해당 프로젝트의 `DATABASE.md`를 참조하라.
 범용 스킬에 특정 프로젝트 DB 구조를 기재하지 않는다 (3-tier 원칙).
 
 ## 6단계 마이그레이션 절차
@@ -94,7 +96,7 @@ mcp__mysql__query("SELECT 컬럼, HEX(컬럼) FROM {project}.{테이블} WHERE .
 
 ## 주의사항
 
-- 읽기 전용 계정은 SELECT만 가능, 쓰기 계정은 전체 권한 — DB별 권한 등급을 구분하라
+- pms: SELECT만 가능, cspms: 전체 권한
 - 한글 INSERT/UPDATE 전 반드시 SET NAMES utf8
 - 예약어 컬럼 (read, write) → 백틱 필수
 - NULL 처리: reader.IsDBNull 체크
@@ -110,7 +112,7 @@ mcp__mysql__query("SELECT 컬럼, HEX(컬럼) FROM {project}.{테이블} WHERE .
 - [ ] 빌드 테스트
 - [ ] HEX 바이트 검증
 - [ ] Git 커밋
-- [ ] 읽기 전용 DB vs 쓰기 가능 DB 권한 확인
+- [ ] pms vs cspms 권한 확인
 - [ ] 백틱 사용 (예약어)
 
 ## 성능 최적화 패턴

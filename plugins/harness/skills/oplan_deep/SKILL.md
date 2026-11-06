@@ -15,6 +15,11 @@ invocation:
 > 메인 에이전트는 이 판정을 수행하지 않는다 (CLAUDE.md "ogrill 호출 정책" 참조).
 > 상세 절차: oplan/SKILL.md "ogrill 5축 결손 판정" 섹션 참조 (단일 출처).
 
+## 레퍼런스 조사 (계획 수립 전)
+
+- Stage_0_레퍼런스_조사: 요청에 벤치마킹·레퍼런스·경쟁 솔루션 분석이 있으면 tier 와 무관하게 Phase A 진입 전에 `Skill('oplan_research')` 의 Phase_R0(REA 필요시 판정표)를 거친다. 같은 사이클에서 이미 거쳤으면 그 결과를 재사용한다.
+- ref_root(`Skill('ocanon')` §1)가 있으면 plan root 유무와 무관하게 `<ref_root>/README.md` 색인을 읽고, 참조할 항목은 `ref:<id>@<커밋 12자>:<경로>` 표기로 계획서에 남긴다.
+
 ## 적용 조건
 
 - 새 기능/폼 생성
@@ -190,6 +195,20 @@ Wave_기반_spawn_패턴:
     Wave3: ViewModel + XAML + App.xaml (3개 에이전트 통합)
 ```
 
+## 정본 참조
+
+설계 산출물은 계획서에만 두지 않고 프로젝트 정본(plan root)에 반영한다. 영역·카탈로그(`references/CATALOG.md`)·규격은 `Skill('ocanon')` 이 정본이다.
+
+1. 설계 착수 전 `plan/README.md` → `plan/index.json` → 관련 정본 문서를 `mcp__oio__file_read` 로 읽는다. 셸 `cat` 읽기는 참조 게이트의 읽기 기록에 남지 않는다.
+2. 이번 설계가 바꾸는 정본을 카탈로그 키로 고른다. 구조 결정은 `architecture`, 기술 선택은 `tech_stack`, 스키마 설계는 `erd`(to-be), 기능 목록은 `features`, 메뉴·화면 사양은 `screens`, 인터페이스는 `api`, 확정 결정은 `decisions`(ADR) 다.
+3. 선택한 키가 `index.json` 의 `profile`·`active_docs` 에 선언되어 있으면 계획서 `## 정본 참조` 절의 `반영 예정` 에 경로와 갱신 내용을 적는다. 선언되지 않은 문서는 새로 만들 필요가 있을 때만 `active_docs` 추가와 함께 반영 예정에 올린다.
+4. 정본 갱신은 file_assignment 에 문서 수정 항목으로 배정한다(문서 먼저, 코드 나중). 최소 목차는 `ocanon/references/DOC_TEMPLATES_A.md`(분석·설계)·`DOC_TEMPLATES_B.md`(계획·시험·이행)를 따른다.
+5. 같은 주제는 기존 문서를 고친다. 결정이 바뀌면 옛 ADR 을 고치지 않고 새 ADR 을 쓴 뒤 옛 ADR 상태만 `대체됨→ADR-x` 로 바꾼다.
+6. 다이어그램은 원본 텍스트(mermaid·svg)를 정본에 두고 이미지는 `_build` 재생성 대상으로 둔다.
+7. 정본에 반영할 설계가 없으면 `반영 예정: 해당 없음(사유)` 로 끝낸다. 이것도 정상 경로다.
+
+plan root 가 없는 프로젝트는 이 절을 생략하고 계획서에 `관련 문서 없음: <사유>` 를 적는다.
+
 ## MCP 연동
 
 ```yaml
@@ -332,6 +351,16 @@ IF 검토횟수 == MAX:
 - 의미 있음: 버그 예방, 50%+ 간소화, 필수 누락 보완
 - 의미 없음: 취향 차이, 10% 미만 개선, 범위 밖 기능
 
+## QA 원복 시나리오 선행 수립 (QA 선언 프로젝트 한정)
+
+> 사용자 원문(2026-10-10): "개발서버에서는 테스트데이터를 지우지 않아도 된다. 하지만 앞으로 qa서버에서는 데이터 원복을 위한 시나리오부터 계획하도록 하라."
+
+- 프로젝트가 QA(운영 데이터 연계) 단계를 선언(`.claude/qa_tier.json`)했으면, 계획서는 시험 항목보다 먼저 "원복 시나리오"를 세운다.
+- 항목마다 다음을 적는다. 대상 표·행 범위, 시험 전 스냅샷 방법, 시험 표식, 삭제·원복 절차, AUTO_INCREMENT·휘발 열 처리, 원복 불가 판정과 제외 사유.
+- 원복 시나리오가 판정을 통과한 항목만 QA 시험 목록에 올린다. 판정표에 없는 항목은 QA 에서 시험하지 않는다.
+- 예시 산출물은 세션 plans 디렉토리의 `qa_reversibility_draft.json` 이다.
+- 선언이 없으면 이 절은 적용하지 않는다.
+
 ## 검수조건 산출물 (acceptance_criteria.json)
 
 > otest Phase 2에서 구현 검증 기준으로 사용.
@@ -353,6 +382,10 @@ IF 검토횟수 == MAX:
     - 각 must/should 항목에 자동 검증 스크립트 포함
     - sandbox: curl, jq, python3, grep, test만 허용
     - exit code 0 = PASS, 그 외 = FAIL
+    - ★셸 문법★: bash_exec 는 bash 가 아니라 dash(/bin/sh) 다. auto_script 는 `bash -c '...'` 로 감싸거나 POSIX sh 문법만 쓴다.
+      금지(dash 미지원): $'\r' · [[ ]] · 배열 · ${PIPESTATUS} · 중괄호확장 {a,b}
+      bash 전용 예시: auto_script: "bash -c '[[ $(grep -c $\"\\r\" f.sh) -eq 0 ]]'"
+      POSIX 대안: auto_script: "test \"$(grep -c \"$(printf '\\r')\" f.sh)\" = 0"
     - 예시:
       method: "GET /api/users → 200"
       auto_script: "curl -s -o /dev/null -w '%{http_code}' http://localhost:5000/api/users | grep -q 200"

@@ -1,8 +1,4 @@
 #!/bin/bash
-# >>> harness preamble
-_HP="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)}"
-[ -f "$_HP/hooks/harness_preamble.sh" ] && . "$_HP/hooks/harness_preamble.sh" 2>/dev/null || { [ -f "$_HP/harness_preamble.sh" ] && . "$_HP/harness_preamble.sh" 2>/dev/null; } || true
-# <<< harness preamble
 # docker-compose.yml 수정 시 rtx5070-app 핵심 마운트 통합 검증 hook (L-RTX5070-33)
 # 트리거: PostToolUse on Edit|Write|mcp__oio__file_edit|mcp__oio__file_write
 # 동작: docker-compose.yml에 5개 핵심 마운트 중 1개라도 누락 시 stderr 경고 + exit 2

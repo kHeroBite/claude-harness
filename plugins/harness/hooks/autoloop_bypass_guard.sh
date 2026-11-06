@@ -1,8 +1,4 @@
 #!/bin/bash
-# >>> harness preamble
-_HP="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)}"
-[ -f "$_HP/hooks/harness_preamble.sh" ] && . "$_HP/hooks/harness_preamble.sh" 2>/dev/null || { [ -f "$_HP/harness_preamble.sh" ] && . "$_HP/harness_preamble.sh" 2>/dev/null; } || true
-# <<< harness preamble
 # autoloop_bypass_guard.sh — Phase Batch Auto-Loop 우회 감지 hook
 # PreToolUse(Agent) 발동 — odev 팀에이전트 spawn 시 검증
 #
@@ -29,15 +25,27 @@ TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // empty' 2>/dev/null)
 # subagent_type 추출
 SUBAGENT=$(echo "$INPUT" | jq -r '.tool_input.subagent_type // empty' 2>/dev/null)
 DESC=$(echo "$INPUT" | jq -r '.tool_input.description // empty' 2>/dev/null)
+AGENT_NAME=$(echo "$INPUT" | jq -r '.tool_input.name // empty' 2>/dev/null)
+
+# L-597 과차단 정정(2026-10-26): name 이 otest·odone·oplan(oplan_review 포함) 계열이면 odev 우회 spawn 이 아니다.
+#   state=TEST 정상 순서의 otest-1("Batch1 검증") spawn 을 description 의 batch 단어만으로 차단하던 오판을 막는다. name 이 odev 계열·빈값이면 종전 판정.
+if [[ "$AGENT_NAME" =~ ^(otest(-|$)|otest-m-|otest-w-|odone(-|$)|oplan) ]]; then
+  exit 0
+fi
 
 # odev 관련 spawn만 검사 (odev/odev-*, Batch 관련 description)
 if ! echo "$DESC" | grep -qiE "batch|odev|oplan|phase" 2>/dev/null; then
   exit 0
 fi
+# c183 B8: 계획 에이전트(oplan) spawn 은 batch 실행이 아니다 — TEST/PLAN 역라우팅 재계획을 막던 과차단(L-1186·L-1193).
+#   설명에 oplan 이 있고 실행 성격 단어(odev·batch)가 없을 때만 통과. odev/batch 가 함께 있으면 종전대로 판정한다.
+if echo "$DESC" | grep -qiE "oplan" 2>/dev/null && ! echo "$DESC" | grep -qiE "odev|batch" 2>/dev/null; then
+  exit 0
+fi
 
 # UUID 결정
-source "${HARNESS_HOOK_DIR}/lib/session_id.sh" 2>/dev/null || exit 0
-source "${HARNESS_HOOK_DIR}/lib/state_machine.sh" 2>/dev/null || true
+source "${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/session_id.sh" 2>/dev/null || exit 0
+source "${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/state_machine.sh" 2>/dev/null || true
 resolve_uuid "$INPUT" 2>/dev/null || exit 0
 [[ -z "$UUID" ]] && exit 0
 

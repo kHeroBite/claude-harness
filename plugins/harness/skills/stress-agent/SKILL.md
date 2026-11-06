@@ -16,12 +16,12 @@ invocation:
 
 ```yaml
 Step 0: 자가등록 (L-158 — config.json 경합 방어, 최우선 실행)
-  1. Read ~/.claude/teams/{TEAM}/config.json
+  1. Read ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/teams/{TEAM}/config.json
   2. 본인 이름(agent-{AGENT_ID})이 members에 있는지 확인
   3. 없으면 → flock + python3으로 원자적 자가등록:
      flock -w 10 /tmp/claude_config_lock_{TEAM}.lock python3 -c "
      import json, os
-     path = os.path.expanduser('~/.claude/teams/{TEAM}/config.json')
+     path = os.path.expanduser('${CLAUDE_CONFIG_DIR:-$HOME/.claude}/teams/{TEAM}/config.json')
      with open(path) as f:
          d = json.load(f)
      me = {'name': 'agent-{AGENT_ID}', 'agentId': 'agent-{AGENT_ID}@{TEAM}', 'isActive': True}
