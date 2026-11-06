@@ -5,8 +5,8 @@ set -uo pipefail
 # ── 사용법
 #   bash install.sh [--non-interactive] [--link-skills]
 #   환경변수 (모두 선택)
-#     HARNESS_HOME           하네스 설치 루트 (기본 ~/.harness)
-#     HARNESS_PROFILES_ROOT  cc/cas 프로필 루트 (기본 ~/.claude-profiles)
+#     HARNESS_HOME           하네스 설치 루트 (없으면 기존 rc 하네스 블록 값, 그다음 ~/.harness)
+#     HARNESS_PROFILES_ROOT  cc/cas 프로필 루트 (없으면 CLAUDE_PROFILES_ROOT → 기존 rc 블록 → ~/.claude-profiles)
 #     HARNESS_PROJECT_ROOTS  oio 파일 I/O 허용 프로젝트 루트 (콤마 구분)
 #     CLAUDE_CONFIG_DIR      Claude Code 설정 디렉터리 (기본 ~/.claude)
 #   예 (서버):
@@ -33,9 +33,34 @@ done
 [ -t 0 ] || NON_INTERACTIVE=1
 
 HARNESS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-HARNESS_HOME="${HARNESS_HOME:-$HOME/.harness}"
+# 기존 설치의 하네스 표식 블록에서 export 값을 읽는다(재설치 때 기존 값을 기본값으로 덮지 않기 위해).
+# 인자: 변수명. 값이 없으면 rc=1.
+_rc_block_value() {
+    local _f _v
+    for _f in "$HOME/.bashrc" "$HOME/.bash_profile" "$HOME/.bash_login" "$HOME/.profile"; do
+        [ -f "$_f" ] || continue
+        _v="$(sed -n '/^# >>> harness PATH$/,/^# <<< harness PATH$/ s/^export '"$1"'="\(.*\)"$/\1/p' "$_f" | tail -n 1)"
+        if [ -n "$_v" ]; then
+            printf '%s' "$_v"
+            return 0
+        fi
+    done
+    return 1
+}
+HARNESS_HOME="${HARNESS_HOME:-$(_rc_block_value HARNESS_HOME || printf '%s' "$HOME/.harness")}"
 HARNESS_HOME="${HARNESS_HOME%/}"
-PROFILES_ROOT="${HARNESS_PROFILES_ROOT:-$HOME/.claude-profiles}"
+# 프로필 루트 승계 순서: HARNESS_PROFILES_ROOT → 현재 환경 CLAUDE_PROFILES_ROOT → 기존 rc 하네스 블록 → 기본값
+_prev_profiles_root="$(_rc_block_value CLAUDE_PROFILES_ROOT || true)"
+_prev_profiles_root="${_prev_profiles_root%/}"
+if [ -n "${HARNESS_PROFILES_ROOT:-}" ]; then
+    PROFILES_ROOT="$HARNESS_PROFILES_ROOT"; _profiles_src="HARNESS_PROFILES_ROOT"
+elif [ -n "${CLAUDE_PROFILES_ROOT:-}" ]; then
+    PROFILES_ROOT="$CLAUDE_PROFILES_ROOT"; _profiles_src="현재 환경 CLAUDE_PROFILES_ROOT"
+elif [ -n "$_prev_profiles_root" ]; then
+    PROFILES_ROOT="$_prev_profiles_root"; _profiles_src="기존 rc 하네스 블록"
+else
+    PROFILES_ROOT="$HOME/.claude-profiles"; _profiles_src="기본값"
+fi
 PROFILES_ROOT="${PROFILES_ROOT%/}"
 CFG_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 BIN_SRC="${HARNESS_DIR}/bin"
@@ -92,7 +117,10 @@ echo "════════════════════════�
 echo " Claude Code 하네스 설치 (멱등 — 재실행 안전, sudo 사용 안 함)"
 echo "═══════════════════════════════════════════════"
 echo "  HARNESS_HOME          = ${HARNESS_HOME}"
-echo "  HARNESS_PROFILES_ROOT = ${PROFILES_ROOT}"
+echo "  HARNESS_PROFILES_ROOT = ${PROFILES_ROOT} (출처: ${_profiles_src})"
+if [ -n "$_prev_profiles_root" ] && [ "$_prev_profiles_root" != "$PROFILES_ROOT" ]; then
+    echo "  ⚠ CLAUDE_PROFILES_ROOT 변경: 기존 ${_prev_profiles_root} → ${PROFILES_ROOT} (출처: ${_profiles_src})"
+fi
 echo "  CLAUDE_CONFIG_DIR     = ${CFG_DIR}"
 echo ""
 

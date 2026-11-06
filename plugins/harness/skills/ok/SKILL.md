@@ -126,6 +126,7 @@ invocation:
        - 값이 ssh 별칭이면 본문을 stdin 으로 넘겨 `bash <프로젝트 루트>/.claude/scripts/peer_ssh_notify.sh send <peer_ssh값> <프로젝트명> 작업시작` 을 실행한다.
        - 값이 `outbox` 이면 `bash <프로젝트 루트>/.claude/scripts/peer_ssh_notify.sh send --outbox <프로젝트명> 작업시작` 을 실행한다.
        - 키가 없으면 이 단계를 생략한다.
+       - 프로젝트 토큰은 INFRA-FIELDS project 값 그대로 쓴다(파일명 소문자 정규화는 스크립트가 한다).
        본문 형식은 4번의 [작업시작] 과 같다. 타 세션 UUID/team_name/state 와 이메일은 포함 금지.
        실패(rc≠0 포함)는 logs/peer_notify.log 에 한 줄 기록 후 진행한다 (차단 금지).
   처리: 통지 후 즉시 다음 단계 진행 (충돌 발견 시에도 멈추지 않음)

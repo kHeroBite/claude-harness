@@ -550,6 +550,7 @@ step8_peer_finish_notify (동일 프로젝트 타 세션 종료 통지 — 일�
        - 값이 ssh 별칭이면 3번과 같은 [작업종료] 본문을 stdin 으로 넘겨 `bash <프로젝트 루트>/.claude/scripts/peer_ssh_notify.sh send <peer_ssh값> <프로젝트명> 작업종료` 를 실행한다.
        - 값이 `outbox` 이면 `bash <프로젝트 루트>/.claude/scripts/peer_ssh_notify.sh send --outbox <프로젝트명> 작업종료` 를 실행한다.
        - 키가 없으면 이 단계를 생략한다.
+       - 프로젝트 토큰은 INFRA-FIELDS project 값 그대로 쓴다(파일명 소문자 정규화는 스크립트가 한다).
        인계 통지([인계] 태그)를 보낼 때도 같은 분기를 쓰며 태그 인자만 `인계` 로 바꾼다. 타 세션 UUID/team_name/state 와 이메일은 포함 금지.
        실패(rc≠0 포함)는 logs/peer_notify.log 에 한 줄 기록 후 진행한다 (차단 금지).
   실패_허용: 실패는 logs/peer_notify.log 에 한 줄 기록 후 계속 진행 (IDLE 전환 차단 금지)

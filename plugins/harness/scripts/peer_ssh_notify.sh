@@ -15,6 +15,7 @@
 # 위치: inbox  = ${PEER_NOTIFY_HOME:-$HOME/.claude}/peer_inbox/<프로젝트>.jsonl
 #       outbox = ${PEER_NOTIFY_HOME:-$HOME/.claude}/peer_outbox/<프로젝트>.jsonl
 #       1줄 = 1건 {"ts","from_host","project","tag","body","via"}
+#       <프로젝트> 파일명은 소문자로 정규화한다(Pd → pd.jsonl). pull 의 project 대조도 대소문자를 가리지 않는다.
 #       CLAUDE_CONFIG_DIR 는 쓰지 않는다. cas 세션은 그 값이 종료 때 지워지는 /tmp/cc-* 라서
 #       inbox 가 세션마다 흩어지고 사라진다(2026-11-06 실측). 머신당 한 곳에 모은다.
 # 커서: new 는 <커서파일> 에 마지막으로 읽은 바이트 위치를 적는다. 커서가 없으면 마지막 10건까지만,
@@ -119,7 +120,8 @@ elif mode == "ingest":
     for raw in sys.stdin.buffer.read().splitlines():
         try:
             o = json.loads(raw.decode("utf-8"))
-            if not isinstance(o, dict) or o.get("project") != project:
+            if not isinstance(o, dict) or not isinstance(o.get("project"), str) \
+                    or o.get("project").lower() != project.lower():
                 raise ValueError
             tag, host, body = o.get("tag"), o.get("from_host"), o.get("body")
             if tag not in TAGS or not isinstance(host, str) or not TOK.match(host) or not isinstance(body, str):
@@ -166,15 +168,16 @@ PY
 )
 
 usage() {
-    sed -n '4,33p' "$0" | sed 's/^# \{0,1\}//' >&2
+    sed -n '4,34p' "$0" | sed 's/^# \{0,1\}//' >&2
     exit 2
 }
 
 err() { printf 'peer_ssh_notify: %s\n' "$*" >&2; }
 
 cfg_dir() { printf '%s' "${PEER_NOTIFY_HOME:-$HOME/.claude}"; }
-inbox_path() { printf '%s/peer_inbox/%s.jsonl' "$(cfg_dir)" "$1"; }
-outbox_path() { printf '%s/peer_outbox/%s.jsonl' "$(cfg_dir)" "$1"; }
+# 파일명은 프로젝트 토큰을 소문자로 정규화한다(Pd·pd 가 서로 다른 파일로 갈라지지 않게).
+inbox_path() { printf '%s/peer_inbox/%s.jsonl' "$(cfg_dir)" "${1,,}"; }
+outbox_path() { printf '%s/peer_outbox/%s.jsonl' "$(cfg_dir)" "${1,,}"; }
 
 valid_token() { [[ "$1" =~ $TOKEN_RE ]]; }
 valid_tag() {
