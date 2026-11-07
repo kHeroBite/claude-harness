@@ -1,13 +1,13 @@
 ---
 name: oUpload
-description: 하네스 배포 repo(기본값 <AI 루트>/claude-harness)를 안전하게 publish하는 배포자(정본 머신) 전용 스킬. 배포본 빌드 → 자격증명 스캔 게이트 → plugin.json + marketplace.json 2파일 동기 version 범프 → RELEASE.json 메타(요약·큰 변경·해야 할 일) 작성과 lint-release → 명시 경로 add·커밋·태그 → push 순서로 진행한다. 두 파일의 version이 일치해야 하며, 한쪽만 올리면 불일치가 남아 수신자 자동갱신이 깨진다. 다른 머신은 install-online.sh 1줄 설치 또는 /oUpdate 로 받는다. 사용자가 '/oUpload', '하네스 배포', '배포본 올려', '플러그인 배포' 요청 시 사용.
+description: 하네스 배포 repo(기본값 <AI 루트>/claude-harness)를 안전하게 publish하는 배포자(정본 머신) 전용 스킬. 배포본 빌드 → 자격증명 스캔 게이트 → plugin.json + marketplace.json 2파일 동기 version 범프 → RELEASE.json 메타(요약·큰 변경·해야 할 일) 작성과 lint-release → 명시 경로 add·커밋·태그 → push 순서로 진행한다. 두 파일의 version이 일치해야 하며, 한쪽만 올리면 불일치가 남아 수신자 자동갱신이 깨진다. 다른 머신은 install_harness.sh 파일 전달 후 bash install_harness.sh 설치 또는 /oUpdate 로 받는다. 사용자가 '/oUpload', '하네스 배포', '배포본 올려', '플러그인 배포' 요청 시 사용.
 ---
 
 # oUpload — 하네스 배포 publish (배포자 전용)
 
 > **전제**: 배포자 환경(정본 AI 프로젝트가 실디렉터리인 머신)에서만 실행한다. 배포 repo 를 소유하지 않은 환경에서 호출되면 즉시 중단한다. 수신자 머신의 갱신은 `/oUpdate` 다.
 > **목적**: 자격증명 유출 없이 배포 repo 를 git 에 모두 올리고(push), 수신자 갱신을 확실히 트리거한다.
-> **끝나는 지점**: push 다. 별도 설치본·dist·릴리스 첨부는 만들지 않는다. 다른 머신은 배포 repo 의 `install-online.sh` 로 설치하고 `/oUpdate` 로 갱신한다.
+> **끝나는 지점**: push 다. 별도 설치본·dist·릴리스 첨부는 만들지 않는다. 다른 머신은 배포 repo 의 `install_harness.sh` 파일을 전달해 `bash install_harness.sh` 로 설치하고 `/oUpdate` 로 갱신한다.
 
 ---
 
@@ -39,7 +39,7 @@ bash -c 'A="${HARNESS_AI_ROOT:-}";
 - `scripts/credential_scan.sh` 가 없다 (게이트 부재 = fail-closed).
 - `plugins/harness/.claude-plugin/plugin.json` 이 없다.
 - `.claude-plugin/marketplace.json` 이 없다.
-- `install-online.sh`·`requires.txt` 가 없다 (새 머신 설치 경로 부재).
+- `install_harness.sh`·`requires.txt` 가 없다 (새 머신 설치 경로 부재). 구 이름 `install-online.sh` 는 호환 래퍼로 남는다.
 - `<AI 루트>/.claude/scripts/harness_update.py` 가 없다 (RELEASE.json 작성·검사 불가).
 - 현재 브랜치가 배포 브랜치가 아니다 (사용자 확인 필요).
 
@@ -122,14 +122,15 @@ bash -c 'find "<배포 repo>" -maxdepth 6 \( -name ".venv" -o -name "__pycache__
 | 4 | 전 hook shebang 이 bash 계열 | 아래 명령 |
 | 5 | `rules/harness.md` 존재 | `[ -f ... ]` |
 | 6 | `bin/` 실행기 6종 존재(cc·ccc·lcc·lccc·claude-as·cas) | 아래 명령 |
-| 7 | `install-online.sh` 문법·`requires.txt` 존재 | `sh -n`·`[ -f ... ]` |
+| 7 | `install_harness.sh` 문법·`install-online.sh` 호환 래퍼·`requires.txt` 존재 | `sh -n`·`[ -f ... ]` |
 
 ```bash
 bash -c 'R="<배포 repo>";
   for f in "$R/plugins/harness/.claude-plugin/plugin.json" "$R/.claude-plugin/marketplace.json" "$R/plugins/harness/hooks/hooks.json"; do
     python3 -m json.tool "$f" >/dev/null 2>&1 && echo "JSON_OK $f" || echo "JSON_FAIL $f"; done;
   for b in cc ccc lcc lccc claude-as cas; do [ -e "$R/bin/$b" ] && echo "BIN_OK $b" || echo "BIN_MISSING $b"; done;
-  sh -n "$R/install-online.sh" && echo INSTALL_ONLINE_SYNTAX_OK || echo INSTALL_ONLINE_SYNTAX_FAIL;
+  sh -n "$R/install_harness.sh" && echo INSTALL_HARNESS_SYNTAX_OK || echo INSTALL_HARNESS_SYNTAX_FAIL;
+  [ -f "$R/install-online.sh" ] && echo WRAPPER_OK || echo WRAPPER_MISSING;
   [ -f "$R/requires.txt" ] && echo REQUIRES_OK || echo REQUIRES_MISSING'
 ```
 
@@ -242,7 +243,7 @@ bash -c 'python3 -B "<AI 루트>/.claude/scripts/harness_update.py" lint-release
 **전체 스테이징 금지.** 배포 대상 경로를 명시해서만 add 한다. 관리 밖 파일·다른 작업의 미커밋 파일이 섞이는 것을 막기 위해서다.
 
 ```bash
-bash -c 'cd "<배포 repo>" && git add -- plugins bin install.sh install-online.sh requires.txt README.md .claude-plugin RELEASE.json scripts && git status --short | head -30'
+bash -c 'cd "<배포 repo>" && git add -- plugins bin install.sh install_harness.sh install-online.sh requires.txt README.md .claude-plugin RELEASE.json scripts && git status --short | head -30'
 ```
 
 - `git status --short` 에 위 경로 밖의 스테이징 항목이 있으면 중단하고 확인한다.
@@ -276,7 +277,7 @@ push 가 끝나면 배포는 끝난다.
 - 커밋 해시 + 변경 파일 수, 태그 `v<새버전>`
 - push 대상 원격/브랜치
 - **수신자 안내**
-  - 새 머신: 배포 repo 루트의 `install-online.sh` 1줄 설치(curl·wget·clone 후 실행 3가지, 형식은 `/oUpdate` 스킬 "새 머신 설치" 절과 README).
+  - 새 머신: 배포 repo 루트의 `install_harness.sh` 파일을 전달(복사)해 `bash install_harness.sh` 로 설치한다(curl 1줄 설치가 아니라 파일 복사 배포, 형식은 `/oUpdate` 스킬 "새 머신 설치" 절과 README). 구 이름 `install-online.sh` 는 호환 래퍼다.
   - 이미 설치된 머신: `/oUpdate` 로 받는다. 큰 변경이면 수신자 쪽에서 확인을 받은 뒤 적용된다.
   - 플러그인 본체(hook·oio)는 마켓플레이스 갱신으로도 전파되지만, 스킬 facade·`bin` 실행기·rc 설정은 `/oUpdate` 가 맞춘다.
 

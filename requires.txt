@@ -1,7 +1,7 @@
-# 하네스 필수 도구 목록(정본) — install-online.sh 와 oUpdate(harness_update.py write-release)가 함께 읽는다
+# 하네스 필수 도구 목록(정본) — install_harness.sh 와 oUpdate(harness_update.py write-release)가 함께 읽는다
 # 형식: 이름|최소버전|need|apt=패키지|dnf=…|yum=…|zypper=…|pacman=…|apk=…|brew=…|user=<방법>
 #   최소버전이 비면 존재만 본다. need 는 required|optional.
-#   user=builtin 은 install-online.sh 안의 전용 사다리(공식 설치 경로)를 쓴다는 뜻이다.
+#   user=builtin 은 install_harness.sh 안의 전용 사다리(공식 설치 경로)를 쓴다는 뜻이다.
 #   jq 의 사용자 공간 바이너리 설치는 자산명·체크섬 출처를 확인하지 못해 넣지 않았다(패키지 관리자 단계로 간다).
 git|2.0|required|apt=git|dnf=git|yum=git|zypper=git|pacman=git|apk=git|brew=git
 python3|3.10|required|apt=python3|dnf=python3|yum=python3|zypper=python3|pacman=python|apk=python3|brew=python@3

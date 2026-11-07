@@ -51,7 +51,7 @@ AI_루트 (링크 원본, 대문자 AI):
   순서: --ai-root 인자 > HARNESS_AI_ROOT 환경변수 > ${CLAUDE_CONFIG_DIR:-~/.claude}/harness_ai_root 파일
         > ~/.config/claude-harness/project_home 첫 줄 + /AI > realpath(${HARNESS_HOME:-$HOME/.harness}/current/hooks) 가 <X>/.claude/hooks 이고 <X>/CLAUDE.md 가 있으면 <X>
   정본_머신: 기존 정본 AI 폴더(실디렉터리)로 풀린다
-  설치_머신: <프로젝트홈>/AI facade 로 풀린다(install-online.sh·oUpdate 가 만든 폴더)
+  설치_머신: <프로젝트홈>/AI facade 로 풀린다(install_harness.sh·oUpdate 가 만든 폴더)
 
 프로젝트_루트 (프로젝트명 인자의 부모):
   순서: --projects-root 인자 > CLAUDE_PROJECT_ROOTS 첫 항목 > ~/.config/claude-harness/project_home

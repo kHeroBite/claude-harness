@@ -60,9 +60,10 @@ REQUIRED_TREE_FILES = (
     PLUG + "/scripts/harness_update.py",
     PLUG + "/scripts/harness_ai_root.py",
     PLUG + "/scripts/ocopy_link.py",
-    "install-online.sh",
     "requires.txt",
 )
+# 설치 진입 스크립트 — 신 이름을 먼저 보고 구 이름(호환 래퍼)을 폴백으로 본다
+INSTALLER_NAMES = ("install_harness.sh", "install-online.sh")
 RELEASE_KEYS = {"schema": int, "version": str, "source_commit": str, "built_at": str, "summary": str,
                 "breaking": bool, "requires": list, "migrations": list, "post_actions": list, "history": list}
 POST_KINDS = ("new_shell", "restart_cc", "reload_plugin", "note")
@@ -522,6 +523,8 @@ def pre_verify(tree):
         for f in REQUIRED_TREE_FILES:
             if not os.path.exists(os.path.join(tree, f)):
                 errs.append("필수 파일 없음: " + f)
+        if not find_installer(tree):
+            errs.append("필수 파일 없음: install_harness.sh (또는 install-online.sh)")
     vers = [tree_version(tree), _load_json(os.path.join(tree, PLUGIN_JSON)).get("version")]
     mv = [p.get("version") for p in _load_json(os.path.join(tree, MARKET_JSON)).get("plugins", [])
           if p.get("name") == "harness"]
@@ -764,12 +767,21 @@ def run_migrations(meta, phase, done, tree, mig_home, ai_root):
     return True, ran, skipped
 
 
+def find_installer(tree):
+    """트리의 설치 스크립트 경로(신 이름 우선, 구 이름 폴백). 없으면 None."""
+    for n in INSTALLER_NAMES:
+        p = os.path.join(tree, n)
+        if os.path.isfile(p):
+            return p
+    return None
+
+
 def run_requires(tree, args):
-    """대상 트리 install-online.sh --deps-only 위임. 반환 (rc, 출력)."""
-    sh = os.path.join(tree, "install-online.sh")
+    """대상 트리 install_harness.sh(없으면 install-online.sh) --deps-only 위임. 반환 (rc, 출력)."""
+    sh = find_installer(tree)
     req = os.path.join(tree, "requires.txt")
-    if not os.path.isfile(sh) or not os.path.isfile(req):
-        return 0, "install-online.sh·requires.txt 없음 — 건너뜀"
+    if not sh or not os.path.isfile(req):
+        return 0, "install_harness.sh·install-online.sh·requires.txt 없음 — 건너뜀"
     inter = _is_interactive(args)
     cmd = ["sh", sh, "--deps-only", "--requires", req]
     if not inter:

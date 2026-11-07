@@ -5,7 +5,7 @@ description: 이 머신에 설치된 하네스를 배포 repo 의 최신판(또�
 
 # oUpdate — 하네스 최신판 받기 (수신자 전용)
 
-> **대상 머신**: 설치 sh(`install-online.sh`)나 레거시 설치로 하네스를 받은 머신이다.
+> **대상 머신**: 설치 sh(`install_harness.sh`)나 레거시 설치로 하네스를 받은 머신이다.
 > **정본(배포자) 머신은 대상이 아니다.** 정본 머신에서 배포는 `/oUpload` 로 한다. 엔진이 `OUPDATE REFUSE` rc=3 으로 거부하며 아무것도 바꾸지 않는다.
 > **새 머신**은 이 스킬이 아니라 아래 "새 머신 설치" 의 1줄 설치를 쓴다.
 > 이 스킬은 갱신 엔진 `harness_update.py` 를 부르고 결과를 사용자에게 전달한다. 엔진이 하지 않는 일(재시작·로그인·플러그인 재로드)은 안내만 한다.
@@ -157,7 +157,7 @@ bash -c 'python3 -B "$ENGINE" rollback; echo "RC=$?"'
 
 ```bash
 bash -c 'S="$HARNESS_HOME/src"; T="$(mktemp -d)"; git -C "$S" fetch origin --tags || exit 2;
-  for p in plugins/harness/scripts/harness_update.py plugins/harness/scripts/harness_ai_root.py install-online.sh requires.txt; do
+  for p in plugins/harness/scripts/harness_update.py plugins/harness/scripts/harness_ai_root.py install_harness.sh requires.txt; do
     git -C "$S" show "origin/HEAD:$p" > "$T/$(basename "$p")" || exit 2; done;
   PATH="$HOME/.local/bin:$PATH" python3 -B "$T/harness_update.py" status'
 ```
@@ -170,12 +170,13 @@ bash -c 'S="$HARNESS_HOME/src"; T="$(mktemp -d)"; git -C "$S" fetch origin --tag
 
 ## 6. 새 머신 설치 (oUpdate 가 아니라 설치 sh)
 
-하네스가 없는 머신은 배포 repo 루트의 `install-online.sh` 하나로 설치한다. `<owner>/<repo>/<기본브랜치>` 는 배포 repo README 의 값을 쓴다(이미 설치된 머신에서는 `git -C "$HARNESS_HOME/src" remote get-url origin` 으로 확인한다). URL 에 토큰이 들어 있으면 그 부분은 출력하지 않는다.
+하네스가 없는 머신은 배포 repo 루트의 `install_harness.sh` 파일을 전달받아 `bash install_harness.sh` 로 설치한다(구 이름 `install-online.sh` 는 호환 래퍼). `<owner>/<repo>/<기본브랜치>` 는 배포 repo README 의 값을 쓴다(이미 설치된 머신에서는 `git -C "$HARNESS_HOME/src" remote get-url origin` 으로 확인한다). URL 에 토큰이 들어 있으면 그 부분은 출력하지 않는다.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/<owner>/<repo>/<기본브랜치>/install-online.sh | sh
-wget -qO- https://raw.githubusercontent.com/<owner>/<repo>/<기본브랜치>/install-online.sh | sh
-git clone <배포 repo URL> /tmp/ch && sh /tmp/ch/install-online.sh
+# 1순위는 install_harness.sh 파일을 대상 머신으로 복사한 뒤 실행하는 방식이다.
+bash install_harness.sh
+# 대안은 배포 repo 를 clone 해 실행하는 방식이다.
+git clone <배포 repo URL> /tmp/ch && bash /tmp/ch/install_harness.sh
 ```
 
 - 프로젝트 홈 폴더를 1회 묻고(`--home` 으로 지정 가능) `<프로젝트홈>/AI` 를 만든 뒤 필수 도구 점검·설치, clone, apply, `~/.local/bin` 링크(cc·ccc·lcc·lccc·claude-as·cas)까지 수행한다.

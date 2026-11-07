@@ -116,7 +116,7 @@ if [[ ${#PROFILES[@]} -eq 0 ]]; then
     else
         echo "❌ 등록된 프로파일이 없습니다(${PROFILES_ROOT})."
         echo "   다음 할 일: cas create <이름> 으로 프로파일을 만들고, 이어 열리는 Claude 에서 /login 을 마친 뒤 cc 를 다시 실행하세요."
-        echo "   install-online 으로 막 설치했다면 설치 마지막에 나온 안내문(로그인·PATH)을 먼저 확인하세요."
+        echo "   install_harness.sh 로 막 설치했다면 설치 마지막에 나온 안내문(로그인·PATH)을 먼저 확인하세요."
         exit 1
     fi
 fi

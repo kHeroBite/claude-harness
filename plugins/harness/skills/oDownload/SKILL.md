@@ -22,7 +22,7 @@ description: 옛 이름 별칭 스킬. 하네스 배포본 갱신은 이제 oUpd
 ## 절차
 
 1. `Skill('oUpdate')` 를 호출하고 그 스킬의 절차를 끝까지 따른다. 먼저 `status` 를 보고, 그다음 `apply` 를 실행한다.
-2. oUpdate 가 없는 옛 판이면(아래 두 경로에 `harness_update.py` 가 모두 없음) 아무것도 바꾸지 말고, 배포 repo README 의 `install-online.sh` 1줄 설치 명령을 사용자에게 안내한다.
+2. oUpdate 가 없는 옛 판이면(아래 두 경로에 `harness_update.py` 가 모두 없음) 아무것도 바꾸지 말고, 배포 repo 의 `install_harness.sh` 파일을 전달받아 `bash install_harness.sh` 로 설치하도록 사용자에게 안내한다(구 이름 `install-online.sh` 는 호환 래퍼).
    새 설치 스크립트가 기존 설치를 감지해 갱신으로 처리한다.
 
    확인 명령은 아래와 같다.

@@ -76,14 +76,14 @@ claude
 - 설치 시 `~/.bashrc`·로그인 셸 파일(`~/.bash_profile` 또는 `~/.profile`)·`~/.tmux.conf` 의 표식 블록,
   `~/.local/bin`, `<프로젝트홈>/AI` 와 그 안의 `.harness`(= `$HARNESS_HOME`), `$HARNESS_PROFILES_ROOT`(기본 `~/.claude-profiles`),
   `~/.config/claude-harness/project_home`, `~/.claude/rules` 를 생성·수정합니다.
-- `install.sh` 는 **sudo·apt 를 쓰지 않습니다.** 도구 설치는 `install-online.sh` 가 맡습니다.
+- `install.sh` 는 **sudo·apt 를 쓰지 않습니다.** 도구 설치는 `install_harness.sh` 가 맡습니다.
   sudo 는 사용자 공간 설치로 안 될 때만, 대화 모드에서 명령을 보여 주고 y/N 동의를 받은 뒤에만 씁니다(`--no-sudo` 면 아예 쓰지 않음).
 
 ---
 
 ## 전제 조건
 
-필요한 도구는 설치 스크립트(`install-online.sh`)가 점검하고, 없으면 설치를 제안합니다(배포 repo 루트 `requires.txt` 가 목록의 정본입니다).
+필요한 도구는 설치 스크립트(`install_harness.sh`)가 점검하고, 없으면 설치를 제안합니다(배포 repo 루트 `requires.txt` 가 목록의 정본입니다).
 
 | 항목 | 요구사항 | 비고 |
 |---|---|---|
@@ -99,30 +99,18 @@ claude
 
 ## 설치
 
-### 새 머신 — 1줄 설치 (권장)
+### 새 머신 — 설치 스크립트 파일 전달 (권장)
 
-셋 중 하나만 실행하면 됩니다. 처음에 프로젝트 홈 폴더를 한 번 묻습니다(기본 `$HOME/Project`). 그 아래 `AI` 폴더가 하네스의 정본 자리가 됩니다.
-
-**curl**
+`install_harness.sh` 파일 하나를 새 머신에 복사(scp·USB 등)한 뒤 실행하면 됩니다. 배포 저장소 주소와 기본 판은 스크립트에 내장돼 있습니다. 처음에 프로젝트 홈 폴더를 한 번 묻습니다(기본 `$HOME/Project`). 그 아래 `AI` 폴더가 하네스의 정본 자리가 됩니다.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/kHeroBite/claude-harness/master/install-online.sh | sh
+bash install_harness.sh
 ```
 
-**wget** (curl 이 없을 때)
+대안(비권장): `curl -fsSL https://raw.githubusercontent.com/kHeroBite/claude-harness/master/install_harness.sh | sh`. 구 이름 `install-online.sh` 도 호환 래퍼로 남아 있습니다(다음 메이저에서 제거 예정).
 
-```bash
-wget -qO- https://raw.githubusercontent.com/kHeroBite/claude-harness/master/install-online.sh | sh
-```
-
-**clone 후 실행** (스크립트를 먼저 읽어 보고 싶을 때)
-
-```bash
-git clone https://github.com/kHeroBite/claude-harness.git /tmp/ch && sh /tmp/ch/install-online.sh
-```
-
-- 파이프로 실행해도 폴더 질문은 터미널(`/dev/tty`)에서 받습니다. 터미널이 없으면 비대화로 진행합니다.
-- 주요 인자: `--home <프로젝트홈>`(질문 생략), `--non-interactive`, `--yes`(동의 질문에 자동 예), `--no-sudo`(sudo 를 전혀 쓰지 않음), `--no-plugin`, `--no-rc`, `--repo-url <URL>`. 인자는 `sh -s -- --home ~/Project --yes --no-sudo` 처럼 넘깁니다.
+- 폴더 질문은 터미널(`/dev/tty`)에서 받습니다. 터미널이 없으면 비대화로 진행합니다.
+- 주요 인자: `--home <프로젝트홈>`(질문 생략), `--non-interactive`, `--yes`(동의 질문에 자동 예), `--no-sudo`(sudo 를 전혀 쓰지 않음), `--no-plugin`, `--no-rc`, `--repo-url <URL>`, `--ref <태그|브랜치>`. 인자는 `bash install_harness.sh --home ~/Project --yes --no-sudo` 처럼 넘깁니다.
 - 이미 설치된 머신에서 다시 실행하면 새로 설치하지 않고 `oUpdate` 갱신으로 처리합니다.
 
 설치 스크립트가 하는 일은 다음과 같습니다.
@@ -197,7 +185,7 @@ Claude Code 안에서 실행합니다.
 
 ### 일반 Linux 서버 설치 (사용자 공간, sudo 없음)
 
-공용 서버처럼 root 권한이 없는 계정에서는 1줄 설치에 `--no-sudo` 를 붙이는 것이 기본입니다(예: `curl -fsSL …/install-online.sh | sh -s -- --home /data/me/Project --yes --no-sudo`).
+공용 서버처럼 root 권한이 없는 계정에서는 1줄 설치에 `--no-sudo` 를 붙이는 것이 기본입니다(예: `bash install_harness.sh --home /data/me/Project --yes --no-sudo`).
 아래는 예전(레거시) 수동 설치 절차입니다. 이렇게 설치한 머신은 첫 `/oUpdate` 때 새 레이아웃(`<프로젝트홈>/AI/.harness`)으로 옮겨집니다. tmux·python3·git 은 미리 있어야 합니다.
 
 ```bash

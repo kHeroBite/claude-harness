@@ -23,7 +23,7 @@ invocation:
 2. **질문이면 모든 단계에서 즉시 답변** — 파이프라인 상태 무관
 3. **작업은 상태에 따라**: PLAN/DEV → 팀에이전트 즉시 위임, TEST/DONE/FINISH → 큐잉
 4. **state를 변경하지 않는다**
-5. **항상 팀에이전트로 spawn** — 메인은 1문장 이내 즉시 답변만 직접 처리. 그 이상은 모두 팀에이전트(oi-qa/oi-worker)로 spawn. 팀 없을 때도 TeamCreate 후 spawn (직접 처리 폴백 금지).
+5. **항상 팀에이전트로 spawn** — 메인은 1문장 이내 즉시 답변만 직접 처리. 그 이상은 모두 팀에이전트(oqa/oi-worker)로 spawn. 팀이 없어도 Agent 호출이 팀을 자동으로 만든다(TeamCreate 호출 불필요). 그대로 spawn 한다 (직접 처리 폴백 금지).
 6. **ok 흐름 정식 스킬은 oi 경유 면제** (Phase A 보강 — 2026-05-06):
    - **면제 대상**: `ok_pipeline`, `ofinish`, `oinit` (그 외 ok가 직접 호출하는 정식 흐름 스킬 포함)
    - **사유**: 이들은 ok 흐름의 정식 단계로, 메인이 PLAN/DEV/TEST/DONE 상태에서 직접 호출해도 oi 라우팅이 부적절
@@ -132,44 +132,18 @@ UUID는 hook 메시지(`💬 [oi] 활성(PLAN|DEV)`)에서 확인.
       # Step 0에서 확인한 TEAM_NAME 사용
       1. 팀명 없으면:
            팀_없음_처리:
-             TeamCreate(team_name="oi-temp-{UUID 앞 8자}") 실행 후 oi-qa spawn
+             별도 팀 생성 없이 oqa 를 그대로 spawn 한다. 팀은 Agent 호출이 자동 생성한다.
              (직접 처리 폴백 금지)
 
-      2. Q&A 에이전트 spawn (기존 팀에 합류):
-         Agent(
-           name: "oi-qa",
-           team_name: "{TEAM_NAME}",
-           subagent_type: "general-purpose",
-           mode: "bypassPermissions",
-           run_in_background: true,
-           prompt: """
-           PIPELINE_UUID={UUID}
-           당신은 oi-qa 에이전트입니다. 파이프라인 진행 중 사용자 질문에 답변하는 전담 에이전트입니다.
-           첫 번째 질문: {사용자_질문}
+      2. Skill('oqa') 를 호출하고 그 절차를 따른다 (인자=사용자 질문). Q&A 에이전트(oqa-N)의
+         spawn 프롬프트·no_kill 마커·팀 합류 방식은 oqa 스킬이 단일 출처이며 여기서 재정의하지 않는다.
+         팀명은 위 TEAM_NAME 을 전달한다(없으면 oqa 스킬의 session-{UUID 앞 8자} 규칙을 따른다).
 
-           ## 역할
-           - 질문에 상세히 답변 (Read/Grep/Glob/Bash 읽기 전용 사용 가능)
-           - 답변 후 다음 질문을 기다림 (세션 유지 — 종료 명령 받을 때까지)
-           - 파일 수정 금지
+         agents/ 등록은 oqa 절차가 수행한다.
 
-           ## 종료 조건
-           메인으로부터 shutdown_request 수신 시 정상 종료.
-           (ofinish 단계에서 메인이 shutdown 발송)
-
-           ## 답변 후
-           SendMessage(to="team-lead@{TEAM_NAME}", message="[oi-qa] 답변 완료: {요약}", summary="qa 답변 완료")
-           """
-         )
-
-      3. oi-qa agents/ 등록 (ofinish가 누락 없이 정리할 수 있도록 방어적 등록):
-         mcp__oio__file_write(
-           path="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/session-env/${UUID}/agents/oi-qa",
-           content="oi-qa"
-         )
-
-      4. 사용자에게: "질문을 oi-qa 에이전트가 처리합니다. 답변을 기다려주세요."
-      5. oi-qa는 ofinish 단계에서 다른 팀에이전트와 함께 shutdown됨
-         (ofinish → team-cleanup.sh → TeamDelete 순서로 팀 전체 정리)
+      3. 사용자에게: "질문을 oqa 에이전트가 처리합니다. 답변을 기다려주세요."
+      4. oqa-N 은 ofinish 단계에서 다른 팀에이전트와 함께 shutdown됨
+         (팀 디렉토리는 세션 종료 시 Claude Code 가 자동 정리하므로 별도 정리 도구를 호출하지 않는다.)
 ```
 
 ## 주의사항
@@ -179,4 +153,4 @@ UUID는 hook 메시지(`💬 [oi] 활성(PLAN|DEV)`)에서 확인.
 - oi는 ok를 호출하지 않음
 - IDLE 상태에서는 oi가 호출되지 않음
 - 슬래시 명령(/ox 포함)은 hook이 oi 바이패스 처리 — oi가 개입하지 않음
-- Q&A 에이전트(oi-qa)는 agents/ 디렉토리에 방어적 등록 + Agent 도구가 팀 config에 자동 등록 → ofinish가 누락 없이 정리
+- Q&A 에이전트(oqa-N)의 spawn·no_kill·agents/ 등록 절차는 oqa 스킬이 보유 → ofinish가 누락 없이 정리
