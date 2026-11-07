@@ -212,7 +212,7 @@ def _team_pane_ids(config):
         p = str(m.get("tmuxPaneId") or "")
         if m.get("backendType") == "in-process":
             p = ""
-        if PANE_RX.match(p):
+        if PANE_RX.fullmatch(p):
             ids.add(p)
     return ids
 
@@ -310,7 +310,7 @@ def proven_panes(config, uuid, team):
         n = str(m.get("name") or "")
         if m.get("backendType") == "in-process":
             p = ""
-        if PANE_RX.match(p) and NAME_RX.match(n) and n != "team-lead":
+        if PANE_RX.fullmatch(p) and NAME_RX.fullmatch(n) and n != "team-lead":
             cands[p] = n
     if not cands or not team or not uuid:
         return set()
@@ -368,7 +368,7 @@ def alive_agent_names(team):
         for i in range(len(tok) - 1):
             if tok[i] == "--agent-id" and tok[i + 1].endswith(suf):
                 n = tok[i + 1][:-len(suf)]
-                if NAME_RX.match(n):
+                if NAME_RX.fullmatch(n):
                     names.add(n)
     return names
 
@@ -385,7 +385,7 @@ def _bg_env_sid(pid):
             for kv in f.read().split(b"\0"):
                 if kv.startswith(b"CLAUDE_CODE_SESSION_ID="):
                     v = kv[23:].decode("utf-8", "replace")
-                    return v if BG_SID_RX.match(v) else None
+                    return v if BG_SID_RX.fullmatch(v) else None
     except Exception:
         pass
     return None
@@ -425,7 +425,7 @@ def _bg_alive(fp, sid="", launched=0.0):
     sid = bg.json 기록의 팀원 세션 ID, launched = 착수 시각. 다른 팀원이 띄운 동명 프로세스는 제외한다
     (사이클182 반복1 — 남의 동명 작업 때문에 J 결과 미회수를 놓치던 미탐).
     TIG_BG_PROCS(줄 단위 cmdline) 테스트 주입 — 줄 앞 `@<epoch>[,…]`(자신·조상 시작 시각)·`@sid=<id>` 접두 허용."""
-    sid = sid if BG_SID_RX.match(sid or "") else ""
+    sid = sid if BG_SID_RX.fullmatch(sid or "") else ""
     inj = os.environ.get("TIG_BG_PROCS")
     rows = []
     if inj is not None:
@@ -474,7 +474,7 @@ def bg_unreported(session_dir, name, last_in, joined=0):
     """teammate_turn/<name>.bg.json 에서 '살아 있는 것을 본 뒤 끝났고 그 뒤 수신 0건' 인 최신 기록 (fp, alive_seen) 또는 None
     joined: 현 인스턴스의 joinedAt(초). 같은 이름 재spawn 시 그보다 이른 기록(alive_seen·launched < joined)은
     이전 인스턴스 것이라 건너뛴다(2026-10-11 — last_in 이 0 으로 초기화돼 이전 기록이 결과 미회수로 오인되던 문제)."""
-    if not NAME_RX.match(name or ""):
+    if not NAME_RX.fullmatch(name or ""):
         return None
     d = _load_json(os.path.join(session_dir, "teammate_turn", name + ".bg.json"), {})
     if not isinstance(d, dict):
@@ -498,7 +498,7 @@ def bg_unreported(session_dir, name, last_in, joined=0):
 
 def load_turn(session_dir, name, team):
     """TeammateIdle_report_guard 가 기록한 teammate_turn/<name>.json (자기 팀 것만)."""
-    if not NAME_RX.match(name or ""):
+    if not NAME_RX.fullmatch(name or ""):
         return {}
     d = _load_json(os.path.join(session_dir, "teammate_turn", name + ".json"), {})
     if not isinstance(d, dict):
@@ -574,7 +574,7 @@ def evaluate(session_dir, config, st, now, self_name=None, panes=None, syncs=Non
         # 실존 판정(tmux 모드 팀원만): pane 이 목록에 있거나(죽은 pane 포함) --agent-id NAME@TEAM 프로세스가 살아 있어야 대상.
         # 둘 다 없으면 과거 인스턴스(명단은 in-memory 라 디스크로는 못 지우나 메인 TaskStop 으로 정리 가능) → 모든 규칙에서 제외.
         # 단 이 가드가 살아 있는 것을 본 뒤 사라진 경우만 GONE_WARN 동안 E 소실 경고(shutdown 미발송 시).
-        if not PANE_RX.match(pane) and m.get("backendType") != "in-process" and m.get("isActive") is None:
+        if not PANE_RX.fullmatch(pane) and m.get("backendType") != "in-process" and m.get("isActive") is None:
             # 명단 유령(2026-10-10 c174): pane id 가 비고 backendType·isActive 도 없는 항목은 종료된 인스턴스가
             # in-memory 명단에 남은 것이다. --agent-id 프로세스가 실제로 있을 때만 판정하고, 없으면 경고 없이
             # 자기 세션 roster 정리 대상으로만 기록한다(종전에는 S 가 "프로세스/pane 실존" 이라고 거짓 경고했다).
@@ -584,7 +584,7 @@ def evaluate(session_dir, config, st, now, self_name=None, panes=None, syncs=Non
                 st.setdefault("roster_ghosts", {}).setdefault(name, now)
                 out.append(("ghost", "G", name, "명단 유령(pane·프로세스 없음) — roster 정리 대상"))
                 continue
-        if PANE_RX.match(pane):
+        if PANE_RX.fullmatch(pane):
             if panes is not None and pane in panes:
                 prow = panes[pane]
                 seen[name] = pane

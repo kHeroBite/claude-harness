@@ -1250,8 +1250,40 @@ _auto_osync() {
     return 0
 }
 
+# 가져온 대화 fork 재개의 롤 상속(_adopt_fork): fork 새 sid 는 롤 기록이 없어 'all' 로 색인되므로 종료 뒤 원본 롤로 다시 기록한다.
+#   환경변수 전달은 쓰지 않는다 — cas 는 프로젝트별 tmux 소켓 서버가 이미 떠 있으면 그 서버 환경으로 claude 를 띄워 상속이 보장되지 않고,
+#   상속되더라도 팀원·/clear 새 세션까지 같은 값을 받아 잘못 색인될 수 있다. 판정은 role_lib fork-adopt 가 한다
+#   (원본 대화 uuid 를 공유하는 새 대화가 정확히 1개 + 실행 전 목록에 없음 + 새 sid 기록이 없거나 'all' 일 때만).
+#   실행 전 목록은 claude 실행 직전에 fork-snapshot 으로 떠 둔다. cas 가 실패(rc≠0)하면 상속을 부르지 않는다.
+_cc_fork_since=""
+_cc_fork_before=""
+if [[ -n "$RESUME_SID" && " ${SESSION_ARGS[*]} " == *" --fork-session "* ]]; then
+    _cc_fork_since=$(( $(date +%s) - 1 ))
+    if [[ -f "$ROLE_LIB" ]]; then
+        _cc_fork_before="$(mktemp 2>/dev/null || true)"
+        [[ -n "$_cc_fork_before" ]] && { python3 -B "$ROLE_LIB" fork-snapshot --cwd "$WORK_DIR" > "$_cc_fork_before" 2>/dev/null || true; }
+    fi
+fi
+_adopt_fork() {
+    local proj out rc=0
+    [[ -n "$_cc_fork_since" && -f "$ROLE_LIB" ]] || return 0
+    proj="$(python3 -B "$ROLE_LIB" project-slug --cwd "$WORK_DIR" 2>/dev/null || true)"
+    [[ -n "$proj" ]] || return 0
+    out="$(python3 -B "$ROLE_LIB" fork-adopt --project "$proj" --parent "$RESUME_SID" --cwd "$WORK_DIR" \
+            --since "$_cc_fork_since" ${ROLE_VALUE:+--value "$ROLE_VALUE"} \
+            ${_cc_fork_before:+--before "$_cc_fork_before"} 2>&1)" || rc=$?
+    if [[ $rc -eq 0 ]]; then
+        echo "🔗 이어 쓴 대화를 원본 롤로 기록: ${out#FORK_ADOPT }"
+    elif [[ -n "$out" ]]; then
+        echo "ℹ️  가져온 대화 롤 상속 생략: ${out#FORK_SKIP }" >&2
+    fi
+    return 0
+}
+
 _cc_rc=0
 cas "$SELECTED" "${SESSION_ARGS[@]}" --model "$_MODEL_ARG" --dangerously-skip-permissions 2> >(eval "$_CAS_FILTER" >&2) || _cc_rc=$?
+if [[ $_cc_rc -eq 0 ]]; then _adopt_fork || true; fi
 _auto_osync || true
 [[ -n "$_cc_t0" ]] && rm -f "$_cc_t0"
+[[ -n "$_cc_fork_before" ]] && rm -f "$_cc_fork_before"
 exit $_cc_rc

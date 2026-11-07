@@ -361,7 +361,7 @@ def lint_release(path, repo=None):
     if rel["schema"] != 1:
         errs.append("schema 는 1 이어야 함")
     ver = rel["version"]
-    if not re.match(r"^\d+\.\d+\.\d+$", ver):
+    if not re.fullmatch(r"^\d+\.\d+\.\d+$", ver):
         errs.append("version 형식 오류: %s" % ver)
     pj = os.path.join(repo, PLUGIN_JSON)
     if os.path.exists(pj) and _load_json(pj).get("version") != ver:
@@ -430,7 +430,7 @@ def cmd_write_release(a):
     mdir = os.path.join(repo, PLUG, "scripts", "migrations")
     if os.path.isdir(mdir):
         for fn in sorted(os.listdir(mdir)):
-            if not re.match(r"^m\d{4}_.*\.py$", fn):
+            if not re.fullmatch(r"^m\d{4}_.*\.py$", fn):
                 continue
             d = _migration_decl(os.path.join(mdir, fn))
             mid = d.get("MIGRATION_ID") or fn[:-3]
@@ -471,7 +471,7 @@ def latest_target(src, ref=None):
             if r.returncode == 0:
                 return r.stdout.strip(), ref
         return None, ref
-    tags = [t for t in git(["-C", src, "tag", "-l", "v*"]).stdout.split() if re.match(r"^v\d+\.\d+\.\d+$", t)]
+    tags = [t for t in git(["-C", src, "tag", "-l", "v*"]).stdout.split() if re.fullmatch(r"^v\d+\.\d+\.\d+$", t)]
     if tags:
         t = max(tags, key=vtuple)
         r = git(["-C", src, "rev-parse", "--verify", "-q", t + "^{commit}"])
@@ -839,7 +839,7 @@ def post_update(home, src_installer):
         return res
     found = 0
     for line in (r.stdout or "").splitlines():
-        m = re.match(r"^POST (marketplace|codex) (ok|skipped|failed)\s*(.*)$", line.strip())
+        m = re.fullmatch(r"^POST (marketplace|codex) (ok|skipped|failed)\s*(.*)$", line.strip())
         if m:
             res[m.group(1)] = {"status": m.group(2), "reason": _redact(m.group(3).strip())[:200]}
             found += 1

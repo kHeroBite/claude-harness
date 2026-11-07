@@ -115,7 +115,7 @@ def parse_command(cmd):
         return res
     first = []
     for t in toks:
-        if _OPS.match(t):
+        if _OPS.match(t):  # fullmatch-scan: ok — 탐지·수집 쪽은 match 유지가 더 엄격(D-5)
             res["notes"].append("복합 셸 명령")
             break
         first.append(t)
@@ -124,7 +124,7 @@ def parse_command(cmd):
         return res
     t0 = _expand(first[0])
     base = os.path.basename(t0)
-    if _INTERP.match(base):
+    if _INTERP.match(base):  # fullmatch-scan: ok — 탐지·수집 쪽은 match 유지가 더 엄격(D-5)
         res["kind"] = "interp"
         script = None
         for a in first[1:]:

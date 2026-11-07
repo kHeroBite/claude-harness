@@ -188,7 +188,7 @@ def _team_members(session_dir):
     try:
         with open(os.path.join(session_dir, "team_name"), encoding="utf-8") as f:
             team = f.read().strip()
-        if not NAME_RX.match(team):
+        if not NAME_RX.fullmatch(team):
             return None
         cfg = _load(os.path.join(_teams_base(), team, "config.json"))
         if not isinstance(cfg, dict):
@@ -291,7 +291,7 @@ def reclaim_candidates(session_dir, live, now):
     try:
         with open(os.path.join(session_dir, "team_name"), encoding="utf-8") as f:
             team = f.read().strip()
-        if not NAME_RX.match(team):
+        if not NAME_RX.fullmatch(team):
             return [], []
         cfg = _load(os.path.join(_teams_base(), team, "config.json"))
         if not isinstance(cfg, dict):
@@ -304,7 +304,7 @@ def reclaim_candidates(session_dir, live, now):
         for key, ent in live.items():
             name = ent.get("name") or ""
             # 소유 증명: 자기 세션 프로세스(--parent-session-id) + --agent-id 가 NAME@TEAM 정확 일치
-            if not NAME_RX.match(name) or name == "team-lead" or key != "%s@%s" % (name, team):
+            if not NAME_RX.fullmatch(name) or name == "team-lead" or key != "%s@%s" % (name, team):
                 continue
             m = members.get(name)
             if not m:
@@ -390,7 +390,7 @@ def main():
     if not name or ti.get("subagent_type") == "fork":
         return 0
     sid = data.get("session_id")
-    if not isinstance(sid, str) or not SID_RE.match(sid):
+    if not isinstance(sid, str) or not SID_RE.fullmatch(sid):
         return _failopen(None, "bad_sid")
     session_dir = os.path.join(_session_base(), sid)
     if not os.path.isdir(session_dir):

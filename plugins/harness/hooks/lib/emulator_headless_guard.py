@@ -34,10 +34,10 @@ def _base(tok):
 
 def _is_emulator(tok):
     t = tok.strip("\"'")
-    if re.match(r"^\$\{?[A-Za-z_]*EMULATOR[A-Za-z_]*\}?$", t, re.I):
+    if re.match(r"^\$\{?[A-Za-z_]*EMULATOR[A-Za-z_]*\}?$", t, re.I):  # fullmatch-scan: ok — 탐지·수집 쪽은 match 유지가 더 엄격(D-5)
         return True
     b = re.sub(r"\.exe$", "", _base(t).lower())
-    return bool(re.match(r"^(emulator(64)?(-[a-z0-9_]+)*|qemu-system-[a-z0-9_\-]+)$", b))
+    return bool(re.match(r"^(emulator(64)?(-[a-z0-9_]+)*|qemu-system-[a-z0-9_\-]+)$", b))  # fullmatch-scan: ok — 탐지·수집 쪽은 match 유지가 더 엄격(D-5)
 
 
 def _strip_heredoc(cmd):
@@ -131,7 +131,7 @@ def _analyze(cmd, depth=0):
                 k += 1
             elif b == "timeout":
                 k += 1
-                while k < len(toks) and (toks[k][0].startswith("-") or re.match(r"^\d+[smhd]?$", toks[k][0])):
+                while k < len(toks) and (toks[k][0].startswith("-") or re.match(r"^\d+[smhd]?$", toks[k][0])):  # fullmatch-scan: ok — 탐지·수집 쪽은 match 유지가 더 엄격(D-5)
                     k += 1
             else:
                 break
@@ -147,7 +147,7 @@ def _analyze(cmd, depth=0):
                         viol += _analyze(r, depth + 1)
                 if rest and not any(re.search(r"\s", r) for r in rest):
                     r2 = list(rest)
-                    while r2 and re.match(r"^[/-][A-Za-z]{1,12}$", r2[0]):
+                    while r2 and re.match(r"^[/-][A-Za-z]{1,12}$", r2[0]):  # fullmatch-scan: ok — 탐지·수집 쪽은 match 유지가 더 엄격(D-5)
                         r2.pop(0)                                 # /c -c -Command 같은 셸 옵션 제거
                     viol += _analyze(" ".join(r2), depth + 1)     # cmd /c emulator.exe -avd x 처럼 풀어 쓴 경우
             continue
@@ -168,7 +168,7 @@ def _marker_ok(data):
         return any(os.path.isfile(os.path.join(d, "emulator_windowed_ok")) for d in dirs.split(":") if d)
     base = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(os.path.expanduser("~"), ".claude")
     for u in (os.environ.get("PIPELINE_UUID", ""), str(data.get("session_id", ""))):
-        if u and re.match(r"^[0-9A-Za-z\-]+$", u) and \
+        if u and re.fullmatch(r"^[0-9A-Za-z\-]+$", u) and \
                 os.path.isfile(os.path.join(base, "session-env", u, "emulator_windowed_ok")):
             return True
     return False

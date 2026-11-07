@@ -678,7 +678,7 @@ def session_deletables(sdir, purge_plans):
         is_dir = e.is_dir(follow_symlinks=False)
         is_file = e.is_file(follow_symlinks=False)
         if is_dir or is_link:
-            if name in SESS_DEL_DIRS or SESS_DEL_DIR_RE.match(name):
+            if name in SESS_DEL_DIRS or SESS_DEL_DIR_RE.fullmatch(name):
                 out.append((e.path, name if name in SESS_DEL_DIRS else "cycle_dir"))
                 continue
             if name == "plans":
@@ -738,7 +738,7 @@ def run_sessions(ctx):
         if a.max_dirs and processed >= a.max_dirs:
             break
         name = e.name
-        if not UUID_RE.match(name):
+        if not UUID_RE.fullmatch(name):
             continue
         if e.is_symlink() or not e.is_dir(follow_symlinks=False):
             continue
@@ -819,7 +819,7 @@ def run_repo(ctx):
             continue
         if hard_excluded(relc):
             continue
-        m = REPO_CANDIDATE_RE.match(relc)
+        m = REPO_CANDIDATE_RE.fullmatch(relc)
         if m and rel.endswith("/"):
             if a.include_candidates:
                 cid = m.group(1)
@@ -836,7 +836,7 @@ def run_repo(ctx):
         if os.path.basename(relc) == "__pycache__":
             found.append((absp, "pycache", "untracked_pycache", "delete"))
             continue
-        if REPO_TMP_DIR_RE.match(relc):
+        if REPO_TMP_DIR_RE.fullmatch(relc):
             found.append((absp, "tmp_dir", "untracked_claude_tmp", "delete"))
             continue
         # 통째로 untracked 인 디렉터리 안을 훑는다(내부도 전부 untracked)
@@ -858,7 +858,7 @@ def run_repo(ctx):
                         continue
                     if e.name == "__pycache__":
                         found.append((e.path, "pycache", "untracked_pycache", "delete"))
-                    elif REPO_TMP_DIR_RE.match(sub_rel):
+                    elif REPO_TMP_DIR_RE.fullmatch(sub_rel):
                         found.append((e.path, "tmp_dir", "untracked_claude_tmp", "delete"))
                     else:
                         stack.append(e.path)
@@ -982,7 +982,7 @@ def build_parser():
 
 
 def validate(p, a):
-    if a.uuid is not None and not UUID_RE.match(a.uuid):
+    if a.uuid is not None and not UUID_RE.fullmatch(a.uuid):
         p.error("--uuid 형식이 UUID 가 아닙니다")
     if a.scope == "self" and not a.uuid:
         p.error("--scope self 는 --uuid 가 필요합니다")

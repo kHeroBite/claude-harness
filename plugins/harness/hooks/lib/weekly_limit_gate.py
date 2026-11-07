@@ -70,12 +70,13 @@ ALLOW_TOOLS = {
     "mcp__oio__get_cwd", "mcp__oio__lock_status", "mcp__oio__search",
 }
 ALLOW_SKILLS = {"ointaug", "oi", "oteam"}
+HARNESS_PREFIX = "harness:"  # 하네스 플러그인 설치본의 skill 접두사 — 이것만 벗긴다(다른 플러그인 접두사는 불허)
 
 
 def _thresholds():
     """단계 목록 내림차순(바깥→안쪽). 2개 이상 N개 쉼표 목록, 중복이 있거나 형식이 틀리면 기본값."""
     raw = os.environ.get("WLG_THRESHOLDS") or ""
-    if THRESHOLD_RE.match(raw):
+    if THRESHOLD_RE.fullmatch(raw):
         vals = [float(x) for x in raw.split(",")]
         if len(set(vals)) == len(vals):
             return tuple(sorted(vals, reverse=True))
@@ -119,7 +120,7 @@ def read_records(cpath, week):
         with open(cpath, encoding="utf-8", errors="replace") as f:
             for ln in f:
                 p = ln.rstrip("\n").split("\t")
-                m = TARGET_RE.match(p[1]) if len(p) >= 2 else None
+                m = TARGET_RE.fullmatch(p[1]) if len(p) >= 2 else None
                 if m and int(m.group(3)) == week:
                     recs.append((float(m.group(1)), m.group(2), int(m.group(4))))
     except FileNotFoundError:
@@ -277,10 +278,12 @@ def tool_allowed(tool, tool_input):
     ti = tool_input if isinstance(tool_input, dict) else {}
     if tool == "Skill":
         name = ti.get("skill") or ti.get("skill_name") or ""
+        if isinstance(name, str) and name.startswith(HARNESS_PREFIX):
+            name = name[len(HARNESS_PREFIX):]  # harness:oi → oi. other-plugin:oi 는 그대로 남아 불허된다
         return isinstance(name, str) and name in ALLOW_SKILLS
     if tool in ("Bash", "mcp__oio__bash_exec"):
         cmds = [ti[k] for k in ("command", "cmd") if ti.get(k)]
-        return len(cmds) == 1 and isinstance(cmds[0], str) and bool(DATE_RE.match(cmds[0]))
+        return len(cmds) == 1 and isinstance(cmds[0], str) and bool(DATE_RE.fullmatch(cmds[0]))
     return False
 
 
@@ -472,11 +475,11 @@ def main():
     if not isinstance(inp, dict):
         return
     sid, tool = inp.get("session_id"), inp.get("tool_name")
-    if not isinstance(sid, str) or not UUID_RE.match(sid) or not isinstance(tool, str) or not tool:
+    if not isinstance(sid, str) or not UUID_RE.fullmatch(sid) or not isinstance(tool, str) or not tool:
         return
     role = os.environ.get("WLG_ROLE") or "main"
     lead = os.environ.get("WLG_LEAD") or sid
-    if role not in ("main", "teammate") or not UUID_RE.match(lead):
+    if role not in ("main", "teammate") or not UUID_RE.fullmatch(lead):
         return
     if role == "main" and lead != sid:
         return  # 메인의 리드는 자기 세션뿐이다. 다르면 판정하지 않고 다른 세션 폴더에 쓰지 않는다

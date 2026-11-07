@@ -8,6 +8,7 @@ INPUT=$(cat)
 
 # tool_input.skill 추출 (skill 이름 확인)
 SKILL=$(echo "$INPUT" | python3 -c "import sys, json; d=json.load(sys.stdin); print(d.get('tool_input', {}).get('skill', ''))" 2>/dev/null)
+SKILL="${SKILL##*:}"  # 플러그인 접두사(harness:ogrill → ogrill) 정규화
 
 # ogrill 호출이 아니면 통과
 [ "$SKILL" != "ogrill" ] && exit 0

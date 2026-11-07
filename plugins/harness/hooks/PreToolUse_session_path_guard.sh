@@ -131,6 +131,7 @@ _STOP_ACTIVE=$(echo "$INPUT" | jq -r '.stop_hook_active // false' 2>/dev/null)
 # oi 는 넣지 않는다 — oi 대기 중에는 Skill('oi') 가 유일한 통과 경로이므로 막으면 복구할 길이 없다.
 _ENTRY_SKILLS="ok|oto|oroof|oralph|o1|o2|o3|o4|o5|okconsult|okdebate|okdeep|odeep|oconsult|odebate|oplan|onormal|osimple"
 _SKILL=$(printf '%s' "$INPUT" | jq -r '(.tool_input.skill // .tool_input.skill_name // empty)' 2>/dev/null)
+_SKILL="${_SKILL##*:}"  # 플러그인 접두사(harness:ok → ok) 정규화
 [ -n "$_SKILL" ] || exit 0
 case "|${_ENTRY_SKILLS}|" in
   *"|${_SKILL}|"*) ;;

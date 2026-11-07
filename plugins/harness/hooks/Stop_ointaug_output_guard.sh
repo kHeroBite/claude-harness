@@ -99,7 +99,7 @@ LABELS = [
 NOTIF = ("<teammate-message", "<task-notification", "<cross-session-message",
          "Another Claude session sent a message", "[Request interrupted")
 NOT_PROMPT = ("Base directory for this skill", "Stop hook feedback", "<system-reminder>")
-OX = re.compile(r"^(?:/ox(?:\s|$)|<command-name>/?ox</command-name>)")
+OX = re.compile(r"^(?:/(?:[A-Za-z0-9_-]+:)?ox(?:\s|$)|<command-name>/?(?:[A-Za-z0-9_-]+:)?ox</command-name>)")
 
 
 def log(msg):
@@ -178,7 +178,7 @@ def is_call(b):
     if b.get("type") != "tool_use" or b.get("name") != "Skill":
         return False
     i = b.get("input") or {}
-    return str(i.get("skill") or i.get("skill_name") or "").lstrip("/") == "ointaug"
+    return str(i.get("skill") or i.get("skill_name") or "").lstrip("/").rsplit(":", 1)[-1] == "ointaug"
 
 
 def judge(data):

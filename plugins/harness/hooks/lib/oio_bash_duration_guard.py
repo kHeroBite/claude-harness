@@ -110,7 +110,7 @@ def _deny_cmds():
         except Exception:
             continue
         for r in ((d.get("permissions") or {}).get("deny") or []):
-            m = re.match(r"^Bash\(([\w.-]+)(?::\*|\s\*)?\)$", str(r))
+            m = re.match(r"^Bash\(([\w.-]+)(?::\*|\s\*)?\)$", str(r))  # fullmatch-scan: ok — 탐지·수집 쪽은 match 유지가 더 엄격(D-5)
             if m:
                 out.add(m.group(1))
     return out

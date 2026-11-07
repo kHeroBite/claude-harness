@@ -535,7 +535,7 @@ def _strict_readonly(seg, depth=0):
         toks = shlex.split(seg)
     except ValueError:
         return False
-    while toks and re.match(r"^(LC_ALL|LANG)=[^\s]*$", toks[0]):
+    while toks and re.fullmatch(r"^(LC_ALL|LANG)=[^\s]*$", toks[0]):
         toks = toks[1:]
     if not toks or re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", toks[0]):
         return False  # 그 밖의 환경변수 접두(LD_PRELOAD= 등)·단독 대입
@@ -550,7 +550,7 @@ def _strict_readonly(seg, depth=0):
     if v == "env":  # c196 A-1′: 인자 0개(환경 출력)만 조회. 인자가 있으면 실행 접두·대입이므로 종전대로 비조회
         return len(args) == 0
     if v == "command":  # c214 T4: command -v/-V 이름… 은 위치 조회만(실행 없음). 그 밖(command x · -p)은 실행이므로 비조회
-        return len(args) >= 2 and args[0] in ("-v", "-V") and all(re.match(r"^[\w.+-]+$", t) and not t.startswith("-")
+        return len(args) >= 2 and args[0] in ("-v", "-V") and all(re.fullmatch(r"^[\w.+-]+$", t) and not t.startswith("-")
                                                                   for t in args[1:])
     if v in ("bash", "sh", "dash"):
         if len(args) == 2 and args[0] == "-n":
@@ -558,7 +558,7 @@ def _strict_readonly(seg, depth=0):
         if v == "bash" and _gp_query(args):  # c206 F-2②: 승격기 조회 실행(verify·status)만
             return True
         if len(args) == 2 and args[0] == "-c" and depth < 2:
-            m = re.match(r"^\s*\S+\s+-c\s+'([^']*)'\s*$", seg)
+            m = re.fullmatch(r"^\s*\S+\s+-c\s+'([^']*)'\s*$", seg)
             return bool(m) and _all_strict(m.group(1), depth + 1)
         return False
     if v == "git":
@@ -574,7 +574,7 @@ def _strict_readonly(seg, depth=0):
         if "-n" not in opts or any(t not in ("-n", "-E", "-r", "--quiet", "--silent") for t in opts):
             return False
         pos = [t for t in args if not (t.startswith("-") and t != "-")]
-        return bool(pos) and bool(SED_PRINT_RE.match(pos[0]))
+        return bool(pos) and bool(SED_PRINT_RE.fullmatch(pos[0]))
     if v not in READONLY_VERBS:
         return False
     if v == "find":
@@ -613,7 +613,7 @@ def _gp_query(args):
         return False
     sub, rest = args[1], args[2:]
     if not ((sub == "verify" and not rest) or
-            (sub == "status" and len(rest) <= 1 and all(GP_ID_RE.match(x) for x in rest))):
+            (sub == "status" and len(rest) <= 1 and all(GP_ID_RE.fullmatch(x) for x in rest))):
         return False
     try:
         h = os.path.join(os.path.expanduser("~"), ".claude", "hooks")
@@ -827,7 +827,7 @@ LOOP_CTRL_HEADS = ("for", "do", "done", "while", "until", "if", "then", "elif", 
 
 def _loop_strict(segs, i, depth):
     """segs[i] 가 엄격 읽기전용 for 반복의 헤더면 짝 done 의 인덱스, 아니면 None"""
-    m = FOR_HEAD_RE.match(segs[i])
+    m = FOR_HEAD_RE.fullmatch(segs[i])
     if not m:
         return None
     var, words_raw = m.group(1), m.group(2)
@@ -837,7 +837,7 @@ def _loop_strict(segs, i, depth):
         words = shlex.split(words_raw)
     except ValueError:
         return None
-    if not words or not all(LOOP_WORD_RE.match(w) for w in words):
+    if not words or not all(LOOP_WORD_RE.fullmatch(w) for w in words):
         return None
     j = next((k for k in range(i + 1, len(segs)) if segs[k] == "done"), None)
     if j is None or j == i + 1:
@@ -883,11 +883,11 @@ def _pure_assign_names(seg):
         return None
     names = []
     for t in toks:
-        m = ASSIGN_TOK_RE.match(t)
+        m = ASSIGN_TOK_RE.fullmatch(t)
         if not m:
             return None
         n = m.group(1)
-        if ASSIGN_DANGER_RE.match(n) or n in os.environ:
+        if ASSIGN_DANGER_RE.match(n) or n in os.environ:  # fullmatch-scan: ok — 탐지·수집 쪽은 match 유지가 더 엄격(D-5)
             return None
         names.append(n)
     return names
@@ -977,7 +977,7 @@ def _git_index_only(seg):
                 continue
             if not dd and t in GIT_ADD_SAFE:   # cgit(사용자 지시 10:52): 인덱스만 바꾸는 add 옵션
                 continue
-            if t.startswith("-") or not GIT_INDEX_PATH_RE.match(t):
+            if t.startswith("-") or not GIT_INDEX_PATH_RE.fullmatch(t):
                 return False
             paths.append(t)
         return bool(paths)
@@ -988,7 +988,7 @@ def _git_index_only(seg):
             if t in ("-m", "--message", "-F", "--file"):
                 if i + 1 >= len(rest):
                     return False
-                if t in ("-F", "--file") and not GIT_INDEX_PATH_RE.match(rest[i + 1]):
+                if t in ("-F", "--file") and not GIT_INDEX_PATH_RE.fullmatch(rest[i + 1]):
                     return False
                 has_msg, i = True, i + 2
                 continue
@@ -1008,7 +1008,7 @@ def _git_index_only(seg):
             if t in ("-u", "--set-upstream", "-q", "--quiet", "--tags", "--follow-tags", "-v", "--verbose") or \
                     t in GIT_PUSH_SAFE or t.startswith("--force-with-lease="):
                 continue
-            if t.startswith("-") or "::" in t or not GIT_INDEX_PATH_RE.match(t):
+            if t.startswith("-") or "::" in t or not GIT_INDEX_PATH_RE.fullmatch(t):
                 return False
         return True
     if sub == "tag":   # cgit: 태그는 refs 만 바꾼다(가드 파일 디스크 불변) — 서명·에디터 옵션 거부는 NX 와 같은 구조 판정
@@ -1059,7 +1059,7 @@ def _git_index_sub(sub, rest, xargs=False):
             t = rest[i]
             i += 1
             if dd:
-                if not GIT_INDEX_PATH_RE.match(t):
+                if not GIT_INDEX_PATH_RE.fullmatch(t):
                     return False
                 paths.append(t)
                 continue
@@ -1070,7 +1070,7 @@ def _git_index_sub(sub, rest, xargs=False):
                 v = t.split("=", 1)[1] if "=" in t else (rest[i] if i < len(rest) else "")
                 if "=" not in t:
                     i += 1
-                if not v or v.startswith("-") or not GIT_REV_RE.match(v):
+                if not v or v.startswith("-") or not GIT_REV_RE.fullmatch(v):
                     return False
                 continue
             if t.startswith("--"):
@@ -1086,11 +1086,11 @@ def _git_index_sub(sub, rest, xargs=False):
                     has_need = True
                 continue
             if sub == "reset" and not paths:
-                if not GIT_REV_RE.match(t):
+                if not GIT_REV_RE.fullmatch(t):
                     return False
                 paths.append(t)   # 첫 위치 인자 = 커밋 또는 경로 — 어느 쪽이든 HEAD·인덱스만 바뀐다
                 continue
-            if not GIT_INDEX_PATH_RE.match(t) or t.startswith("-"):
+            if not GIT_INDEX_PATH_RE.fullmatch(t) or t.startswith("-"):
                 return False
             paths.append(t)
         if not has_need:
@@ -1311,7 +1311,7 @@ def _quoted_msg_norm(cmd):
                 if raw[k] == "--no-pager":
                     k += 1
                     continue
-                if raw[k] == "-C" and k + 1 < len(raw) and GIT_INDEX_PATH_RE.match(raw[k + 1]):
+                if raw[k] == "-C" and k + 1 < len(raw) and GIT_INDEX_PATH_RE.fullmatch(raw[k + 1]):
                     k += 2
                     continue
                 break
@@ -1427,7 +1427,7 @@ def _msg_exec_shape(m, rules):
             if toks:
                 heads.append(toks[0].strip("'\""))
         if any(("/" in h or _match(rules, h)) for h in heads) and any(
-                os.path.basename(h) in NX_EXECUTORS or NX_INTERP_RE.match(os.path.basename(h))
+                os.path.basename(h) in NX_EXECUTORS or NX_INTERP_RE.match(os.path.basename(h))  # fullmatch-scan: ok — 탐지·수집 쪽은 match 유지가 더 엄격(D-5)
                 or os.path.basename(h) in ("source", "eval", "exec", "command", "builtin") for h in heads):
             return True
         for piece in MSG_CUT_RE.split(m):
@@ -1439,13 +1439,13 @@ def _msg_exec_shape(m, rules):
             h = toks[0].strip("'\"")
             b = os.path.basename(h)
             # 종전 LOW-2 의 부분집합만 남긴다(실행 동사가 명령 자리에 있을 때) — 경로형·규칙 이름 첫 낱말은 종전에도 통과였다(단조 완화)
-            exe = b in NX_EXECUTORS or NX_INTERP_RE.match(b) or b in (".", "source", "eval", "exec", "command", "builtin")
+            exe = b in NX_EXECUTORS or NX_INTERP_RE.match(b) or b in (".", "source", "eval", "exec", "command", "builtin")  # fullmatch-scan: ok — 탐지·수집 쪽은 match 유지가 더 엄격(D-5)
             if exe and _match(rules, " ".join(toks)):
                 return True
             # 보수 보강: 명령 자리가 아니어도 실행 동사 바로 뒤(옵션 낱말 건너뜀) 낱말이 규칙에 걸리면 실행 모양으로 본다("run bash 배포스크립트")
             for k, t in enumerate(toks):
                 bt = os.path.basename(t.strip("'\"")).lower()
-                if bt in NX_EXECUTORS or NX_INTERP_RE.match(bt) or bt in ("source", "eval", "exec", "command", "builtin"):
+                if bt in NX_EXECUTORS or NX_INTERP_RE.match(bt) or bt in ("source", "eval", "exec", "command", "builtin"):  # fullmatch-scan: ok — 탐지·수집 쪽은 match 유지가 더 엄격(D-5)
                     nxt = [x for x in toks[k + 1:] if not x.startswith("-")][:1]
                     if nxt and _match(rules, nxt[0]):
                         return True
@@ -1522,7 +1522,7 @@ def _nx_cmd_ok(cmd):
                 toks = shlex.split(seg)
             except ValueError:
                 return False
-            while toks and re.match(r"^(LC_ALL|LANG)=[^\s]*$", toks[0]):
+            while toks and re.fullmatch(r"^(LC_ALL|LANG)=[^\s]*$", toks[0]):
                 toks = toks[1:]
             if not toks:
                 continue
@@ -1547,8 +1547,8 @@ def _nx_cmd_ok(cmd):
                     ga = _timeout_git(t2)
                     if ga is not None and _nx_git(ga, []):
                         continue
-            if (b in NX_EXECUTORS or NX_INTERP_RE.match(b) or ("/" in h and os.path.dirname(h) not in SAFE_BIN_DIRS)) \
-                    and not _strict_readonly(seg) and not _bash_n_read(seg):   # c214 D-3: bash -nv 구문검사도 실행기 아님
+            if ((b in NX_EXECUTORS or NX_INTERP_RE.match(b) or ("/" in h and os.path.dirname(h) not in SAFE_BIN_DIRS))  # fullmatch-scan: ok — 탐지·수집 쪽은 match 유지가 더 엄격(D-5)
+                    and not _strict_readonly(seg) and not _bash_n_read(seg)):   # c214 D-3: bash -nv 구문검사도 실행기 아님
                 return False
         return True
     except Exception:
@@ -1644,7 +1644,7 @@ def _timeout_git(toks):
                 i += 1
                 continue
             break
-        if i >= len(toks) or not TIMEOUT_DUR_RE.match(toks[i]):
+        if i >= len(toks) or not TIMEOUT_DUR_RE.fullmatch(toks[i]):
             return None
         i += 1
         if i >= len(toks) or toks[i] != "git":
@@ -1680,7 +1680,7 @@ def _nx_git_tag(rest, rules):
             annot = annot or t == "--annotate"
             i += 1
             continue
-        if re.match(r"^-n[0-9]*$", t):
+        if re.fullmatch(r"^-n[0-9]*$", t):
             i += 1
             continue
         if t.startswith("--"):
@@ -1705,7 +1705,7 @@ def _nx_git_tag(rest, rules):
                 j += 1
             i += 1
             continue
-        if not GIT_INDEX_PATH_RE.match(t):
+        if not GIT_INDEX_PATH_RE.fullmatch(t):
             return False
         i += 1
     if annot and not has_msg:
@@ -1735,7 +1735,7 @@ def _nx_git_notes(rest, rules):
         if t in ("-f", "--force", "--allow-empty"):
             i += 1
             continue
-        if t.startswith("-") or not GIT_INDEX_PATH_RE.match(t):
+        if t.startswith("-") or not GIT_INDEX_PATH_RE.fullmatch(t):
             return False
         pos, i = pos + 1, i + 1
     if not has_msg or pos > 1:
@@ -1777,7 +1777,7 @@ def _nx_git_config(rest):
             return True
         if not pos:
             return False
-        return bool(GIT_CONFIG_SAFE_KEY_RE.match(pos[0]))
+        return bool(GIT_CONFIG_SAFE_KEY_RE.fullmatch(pos[0]))
     except Exception:
         return False
 
@@ -1904,7 +1904,7 @@ def _nx_sed(args, rules):
         if t.startswith("--"):
             n = t.split("=", 1)[0]
             if n == "--in-place":
-                if "=" in t and not NX_SED_SUFFIX_RE.match(t.split("=", 1)[1]):
+                if "=" in t and not NX_SED_SUFFIX_RE.fullmatch(t.split("=", 1)[1]):
                     return False
             elif t in ("--quiet", "--silent", "--regexp-extended"):
                 pass
@@ -1929,7 +1929,7 @@ def _nx_sed(args, rules):
                     j += 1
                     continue
                 if ch == "i":   # GNU: -i 뒤에 붙은 글자는 전부 백업 접미사(-ie = -i + 접미사 e)
-                    if not NX_SED_SUFFIX_RE.match(body[j + 1:]):
+                    if not NX_SED_SUFFIX_RE.fullmatch(body[j + 1:]):
                         return False
                     break
                 if ch == "e":
@@ -1967,7 +1967,7 @@ def _nonexec_args(seg, rules):
         return False
     except Exception:
         return False
-    while toks and re.match(r"^(LC_ALL|LANG)=[^\s]*$", toks[0]):
+    while toks and re.fullmatch(r"^(LC_ALL|LANG)=[^\s]*$", toks[0]):
         toks = toks[1:]
     if not toks or re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", toks[0]):
         return False
@@ -2136,7 +2136,7 @@ def _droppable(seg, v_ok=False):
         toks = shlex.split(seg)
     except ValueError:
         return False
-    while toks and re.match(r"^(LC_ALL|LANG)=[^\s]*$", toks[0]):
+    while toks and re.fullmatch(r"^(LC_ALL|LANG)=[^\s]*$", toks[0]):
         toks = toks[1:]
     if not toks:
         return False
@@ -2194,7 +2194,7 @@ def _bash_n_read(seg):
         pos = [t for t in toks[1:] if not t.startswith(("-", "+"))]
         if len(pos) != 1 or toks[1:] != opts + pos:
             return False
-        return bool(opts) and all(re.match(r"^-[nvx]+$", t) for t in opts) and any("n" in t for t in opts)
+        return bool(opts) and all(re.fullmatch(r"^-[nvx]+$", t) for t in opts) and any("n" in t for t in opts)
     except Exception:
         return False
 
@@ -2805,9 +2805,9 @@ def _heredoc_norm(cmd, rules):
                 if any(not t.lower().endswith(HD_DOC_EXT) for t in redir):
                     return cmd, 0
                 wrote = wrote or bool(redir)
-            elif NX_INTERP_RE.match(v) and v.startswith(("python", "py")):
+            elif NX_INTERP_RE.match(v) and v.startswith(("python", "py")):  # fullmatch-scan: ok — 탐지·수집 쪽은 match 유지가 더 엄격(D-5)
                 rest = toks[1:]
-                if not rest or any(not (t == "-" or t == "HEREDOC" or re.match(r"^-[IuBEsS]+$", t)) for t in rest) \
+                if not rest or any(not (t == "-" or t == "HEREDOC" or re.fullmatch(r"^-[IuBEsS]+$", t)) for t in rest) \
                         or "-" not in rest:
                     return cmd, 0
                 if others or redir:
@@ -2900,7 +2900,7 @@ def _path_vals(body):
         out.append((v, False))
     for v in re.findall(r"[\"']PATH[\"']\s*:\s*([^,}\n]+)", body):
         v = v.strip()
-        m = re.match(r"^[\"']([^\"']*)[\"']$", v)
+        m = re.fullmatch(r"^[\"']([^\"']*)[\"']$", v)
         out.append((m.group(1), False) if m else (v, True))
     for v in re.findall(r"(?<![\w\"'])PATH\s*=\s*(?![\"'])([^,)\n]+)", body):
         out.append((v.strip(), True))
@@ -3376,7 +3376,7 @@ def _cx_command(toks, st, depth, mode, ro, out, persist=False, pipe=None):
         _cx_script(args, lst, depth, out)
     elif nm == "watch":
         _cx_watch(args, lst, depth, out)
-    elif _CX_PY_RE.match(nm):
+    elif _CX_PY_RE.match(nm):  # fullmatch-scan: ok — 탐지·수집 쪽은 match 유지가 더 엄격(D-5)
         _cx_py(args, stdin, lst, out)
     elif nm in _CX_INTERP:
         _cx_interp(nm, args, stdin, lst, out)
@@ -3606,7 +3606,7 @@ def _cx_interp(nm, args, stdin, st, out):
 
 
 def _cx_pw_isopt(t):
-    return (t.startswith("-") and len(t) > 1) or bool(re.match(r"^/[A-Za-z]+$", t))
+    return (t.startswith("-") and len(t) > 1) or bool(re.fullmatch(r"^/[A-Za-z]+$", t))
 
 
 def _cx_pw_kind(t):
@@ -3718,7 +3718,7 @@ def _cx_cmd(args, st, depth, out):
         if re.match(r"^/[ckr]\S", tl) and "/" not in t[1:]:
             _cx_scan(" ".join([t[2:]] + args[j + 1:]), _cx_copy(st), depth + 1, "cmd", out)
             return
-        if re.match(r"^/[a-z]+(:\S*)?$", tl) and "/" not in t[1:]:
+        if re.fullmatch(r"^/[a-z]+(:\S*)?$", tl) and "/" not in t[1:]:
             j += 1
             continue
         break
@@ -3743,7 +3743,7 @@ def _cx_start(args, st, mode, out):
         if tl in ("/node", "/affinity"):
             j += 2
             continue
-        if re.match(r"^/[a-z]+$", tl):
+        if re.fullmatch(r"^/[a-z]+$", tl):
             j += 1
             continue
         if mode == "pwsh" and t.startswith("-") and len(t) > 1:
@@ -3849,7 +3849,7 @@ def _cwd_exec_hit(inp, tool, cmd, cmd_n, wd, confs, skip=None):
 # ── 화면 승인 채널(2026-10-24) — askq_approval.py 판정 기준을 코어 안에 복제(보호 경계 밖 파일을 import 하지 않는다) ──
 def _ap_main_transcript(sid, tpath):
     """메인 세션 트랜스크립트 판별 → (realpath|None, code)"""
-    if not isinstance(sid, str) or not APPROVAL_SID_RE.match(sid):
+    if not isinstance(sid, str) or not APPROVAL_SID_RE.fullmatch(sid):
         return None, "bad_session"
     if not isinstance(tpath, str) or not tpath or not os.path.isabs(tpath):
         return None, "no_transcript"
@@ -4253,10 +4253,10 @@ def _self_heredoc_mask(cmd):
     vals = {}
     while i < len(lines):
         line = lines[i]
-        m = re.match(r"^\s*cat\s+(?:>|>>|<<\s*(['\"])([A-Za-z_][A-Za-z0-9_]*)\1\s+>)\s*([^\s;&|<>]+)\s*<<\s*(['\"])([A-Za-z_][A-Za-z0-9_]*)\4\s*$", line.rstrip("\r\n"))
+        m = re.fullmatch(r"^\s*cat\s+(?:>|>>|<<\s*(['\"])([A-Za-z_][A-Za-z0-9_]*)\1\s+>)\s*([^\s;&|<>]+)\s*<<\s*(['\"])([A-Za-z_][A-Za-z0-9_]*)\4\s*$", line.rstrip("\r\n"))
         # 표준형 cat > file <<'TAG' 및 cat <<'TAG' > file
-        m1 = re.match(r"^\s*cat\s+(?:>|>>)[ \t]+([^\s;&|<>]+)[ \t]+<<[ \t]*(['\"])([A-Za-z_][A-Za-z0-9_]*)\2[ \t]*$", line.rstrip("\r\n"))
-        m2 = re.match(r"^\s*cat[ \t]+<<[ \t]*(['\"])([A-Za-z_][A-Za-z0-9_]*)\1[ \t]+(?:>|>>)[ \t]*([^\s;&|<>]+)[ \t]*$", line.rstrip("\r\n"))
+        m1 = re.fullmatch(r"^\s*cat\s+(?:>|>>)[ \t]+([^\s;&|<>]+)[ \t]+<<[ \t]*(['\"])([A-Za-z_][A-Za-z0-9_]*)\2[ \t]*$", line.rstrip("\r\n"))
+        m2 = re.fullmatch(r"^\s*cat[ \t]+<<[ \t]*(['\"])([A-Za-z_][A-Za-z0-9_]*)\1[ \t]+(?:>|>>)[ \t]*([^\s;&|<>]+)[ \t]*$", line.rstrip("\r\n"))
         if m1 or m2:
             target = m1.group(1) if m1 else m2.group(3)
             tag = m1.group(3) if m1 else m2.group(2)
@@ -4276,7 +4276,7 @@ def _self_heredoc_mask(cmd):
         out.append(line)
         for a in re.finditer(r"(?:^|[; \t])([A-Za-z_][A-Za-z0-9_]*)=([A-Za-z0-9_./:@%+,=-]+)", line):
             n, v = a.group(1), a.group(2)
-            if not ASSIGN_DANGER_RE.match(n) and n not in os.environ:
+            if not ASSIGN_DANGER_RE.match(n) and n not in os.environ:  # fullmatch-scan: ok — 탐지·수집 쪽은 match 유지가 더 엄격(D-5)
                 vals[n] = v
         i += 1
     return ("".join(out), found)

@@ -6,6 +6,7 @@ trap 'exit 0' ERR
 
 INPUT=$(timeout 5 cat 2>/dev/null) || INPUT=""
 SKILL=$(echo "$INPUT" | jq -r '(.tool_input.skill // .tool_input.skill_name // empty)' 2>/dev/null || echo "")
+SKILL="${SKILL##*:}"  # 플러그인 접두사(harness:odev → odev) 정규화
 
 # odev 계열만 처리
 case "$SKILL" in

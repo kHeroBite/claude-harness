@@ -381,10 +381,15 @@ def _문서경로형(토큰):
     """자체 폴백 파서용 — plan_ref_gate._문서경로 와 같은 규칙(명령 토큰 제외)."""
     if not 토큰 or any(c.isspace() for c in 토큰) or 토큰.startswith("-"):
         return False
+    if "://" in 토큰:  # URL 은 문서 경로가 아니다
+        return False
+    if 토큰.startswith("/") and "/" not in 토큰[1:] and "." not in 토큰[1:]:
+        return False  # '/oUpload' 같은 슬래시 명령
     if "/" in 토큰:
         return True
     _앞, 점, 확장 = 토큰.rpartition(".")
-    return bool(점) and 확장.isalnum() and 1 <= len(확장) <= 8
+    # 확장자에 영문자가 1개 이상 있어야 한다('python3.12'·'v1.3.7' 제외)
+    return bool(점) and 확장.isalnum() and 1 <= len(확장) <= 8 and any(c.isalpha() for c in 확장)
 
 
 def 반영_예정_추출(계획서):

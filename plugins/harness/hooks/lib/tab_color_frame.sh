@@ -5,7 +5,7 @@
 #   tmux 가 메인 pane 테두리를 그릴 때(status-interval 1초마다) 그 pane 문맥으로 인자를 펼쳐 실행한다(2026-11-06 실측: 테두리 #() 는 해당 pane 문맥, 1초 간격).
 #   형식은 메인 pane 에만 pane 옵션(-p)으로 걸리므로 대상은 메인 pane 하나다. 다른 pane·세션은 건드리지 않는다.
 # 판정값 출처: lib/main_ask_fmt.sh MAIN_TAB_STATE_FMT — 제목·테두리의 '?'(MAIN_ASK_COND)·스피너(MAIN_SPIN_COND)와 같은 식.
-#   on=머신 작업색 / ask=작업색·종료색 교대 / done=머신별 아주 연한 색 / none(켠 적 없음)·그 밖=보내지 않음.
+#   on=머신 작업색 / ask=작업색·종료색 교대 / done=머신별 회색에 가까운 색 / none(켠 적 없음)·그 밖=보내지 않음.
 # 출력 없음(테두리에 글자를 더하지 않는다), 항상 rc=0. 매 호출 printf 1회(내장)만 한다.
 # 인자(m10): $1=#{pane_id} $2=#{pane_tty} $3=#{socket_path} $4=판정값. 쓰기 전에 그 소켓의 tmux 로 pane 의 실제 tty 를 1회 조회해 $2 와 같을 때만 쓴다
 #   (2026-11-06 실측 1회 약 4ms). 소켓·조회 실패·불일치는 쓰지 않는다(fail-closed).

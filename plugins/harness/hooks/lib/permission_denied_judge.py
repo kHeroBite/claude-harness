@@ -95,7 +95,7 @@ def _ancestor_ids():
             elif tok[i] == "--parent-session-id":
                 psid = tok[i + 1]
         if aid or psid:
-            return aid, (psid if psid and UUID_RX.match(psid) else None)
+            return aid, (psid if psid and UUID_RX.fullmatch(psid) else None)
         try:
             with open("/proc/%d/stat" % pid) as f:
                 pid = int(f.read().rsplit(")", 1)[1].split()[1])
@@ -127,7 +127,7 @@ def resolve_context(inp):
     aid, psid = _ancestor_ids()
     env_pu = os.environ.get("PIPELINE_UUID", "")
     sid = str(inp.get("session_id") or "")
-    uuid = psid or (env_pu if UUID_RX.match(env_pu) else "") or (sid if UUID_RX.match(sid) else "")
+    uuid = psid or (env_pu if UUID_RX.fullmatch(env_pu) else "") or (sid if UUID_RX.fullmatch(sid) else "")
     teammate = bool(aid or psid or env_pu)
     sdir = os.path.join(CFG, "session-env", uuid) if uuid else ""
     auto = bool(sdir) and _read(os.path.join(sdir, "auto"), 16).upper() == "ON"
@@ -284,7 +284,7 @@ def relay_path(inp):
     if st:
         return os.path.join(st, "logs", RELAY_NAME)
     sid = str(inp.get("session_id") or "")
-    if not UUID_RX.match(sid):
+    if not UUID_RX.fullmatch(sid):
         return ""
     sd = os.path.join(CFG, "session-env", sid)
     return os.path.join(sd, "logs", RELAY_NAME) if os.path.isdir(sd) else ""

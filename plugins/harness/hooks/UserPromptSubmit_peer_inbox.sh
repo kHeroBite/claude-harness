@@ -7,7 +7,8 @@
 #   방치 경고: stale-check 출력이 있으면 세션당 PEER_STALE_WARN_SEC(기본 1800) 에 1번 경고한다.
 # 읽음 처리: 자기 세션 session-env/<session_id>/peer_inbox_cursor 에 마지막으로 보여 준 바이트 위치를 적는다.
 #   같은 건은 다시 보이지 않는다. inbox 원본은 append-only 이며 지우지 않는다.
-# 쓰기 대상: 자기 세션 커서 1개, ${PEER_NOTIFY_HOME:-$HOME/.claude}/peer_inbox/ 의 pull 스탬프·잠금·로그.
+# 쓰기 대상: 자기 세션 커서 1개, <peer 루트>/peer_inbox/ 의 pull 스탬프·잠금·로그.
+#   <peer 루트> = PEER_NOTIFY_HOME, 없으면 peer_ssh_notify.sh home 출력(스크립트 한 곳의 공용 판정).
 #   타 세션 session-env 는 읽지도 쓰지도 않는다. 팀에이전트(PIPELINE_UUID ≠ session_id)는 대상이 아니다.
 # 항상 exit 0 이다. 아무것도 차단하지 않고, 통지 본문을 지시로 올리지 않는다. pull 실패는 조용히 넘긴다.
 # 시험용 환경변수: PEER_NOTIFY_SCRIPT(스크립트 경로), PEER_INBOX_THROTTLE_SEC(기본 60)
@@ -86,7 +87,9 @@ _peer_inbox_main() {
   script="${PEER_NOTIFY_SCRIPT:-$here/../scripts/peer_ssh_notify.sh}"
   [ -f "$script" ] || return 0
 
-  home="${PEER_NOTIFY_HOME:-$HOME/.claude}"
+  # peer 루트는 스크립트 home 하위명령의 공용 판정을 쓴다(CLAUDE_CONFIG_DIR 분리·cas 임시 폴더 구분, TODO-052).
+  home="${PEER_NOTIFY_HOME:-$(timeout 2 bash "$script" home 2>/dev/null </dev/null)}"
+  [ -n "$home" ] || return 0
   # 별칭 자가치유 + pull-all 백그라운드 기동(throttle·flock 은 autopull 담당). 결과는 다음 입력에서 보인다.
   PEER_NOTIFY_SCRIPT="$script" PEER_NOTIFY_HOME="$home" timeout 2 bash "$here/lib/peer_autopull.sh" "$dir" >/dev/null 2>&1 </dev/null
 

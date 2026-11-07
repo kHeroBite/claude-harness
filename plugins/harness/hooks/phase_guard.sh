@@ -3,6 +3,7 @@
 trap 'exit 0' ERR
 INPUT=$(timeout 5 cat 2>/dev/null) || INPUT=""
 SKILL_NAME=$(echo "$INPUT" | jq -r '(.tool_input.skill // .tool_input.skill_name // empty)' 2>/dev/null)
+SKILL_NAME="${SKILL_NAME##*:}"  # 플러그인 접두사(harness:ok → ok) 정규화
 SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // empty' 2>/dev/null || echo "")
 
 # UUID 결정 — 세션별 상태 파일 경로

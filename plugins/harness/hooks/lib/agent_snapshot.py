@@ -163,7 +163,7 @@ def prove_teammate():
         psid = _pair_value(tok, "--parent-session-id")
         if aid and psid and "@" in aid:
             name, team = aid.split("@", 1)
-            if NAME_RX.match(name) and NAME_RX.match(team) and UUID_RX.match(psid):
+            if NAME_RX.fullmatch(name) and NAME_RX.fullmatch(team) and UUID_RX.fullmatch(psid):
                 return name, team, psid
             return None
         pid = _ppid(proc_root, pid)
@@ -181,16 +181,16 @@ def stage_of(sdir):
 def resolve_identity(inp, base):
     """반환: dict(kind, name, team, uuid) 또는 None(무동작)."""
     sid = str(inp.get("session_id") or "")
-    if not UUID_RX.match(sid):
+    if not UUID_RX.fullmatch(sid):
         return None
     agent_id = str(inp.get("agent_id") or "")
     hint = os.environ.get("PIPELINE_UUID") or sid
     ident = None
-    if UUID_RX.match(hint):
+    if UUID_RX.fullmatch(hint):
         cache = _read(os.path.join(base, hint, "agent_state", ".id_" + sid), 512)
         if cache:
             f = cache.split()
-            if len(f) == 4 and f[0] in ("teammate", "main") and f[3] == hint and NAME_RX.match(f[1]):
+            if len(f) == 4 and f[0] in ("teammate", "main") and f[3] == hint and NAME_RX.fullmatch(f[1]):
                 ident = {"kind": f[0], "name": f[1], "team": f[2] if f[2] != "-" else "", "uuid": f[3], "cached": True}
     if ident is None:
         tm = prove_teammate()
@@ -199,7 +199,7 @@ def resolve_identity(inp, base):
         else:
             ident = {"kind": "main", "name": "_main", "team": "", "uuid": sid, "cached": False}
     if agent_id:
-        if not AGENT_ID_RX.match(agent_id):
+        if not AGENT_ID_RX.fullmatch(agent_id):
             return None
         ident = {"kind": "subagent", "name": "sub_" + agent_id, "team": ident["team"],
                  "uuid": ident["uuid"], "cached": True, "agent_id": agent_id}
@@ -495,7 +495,7 @@ def snapshot_teammate(ident, inp, sdir, adir, mode, now):
 
 def note_instruction_to(adir, to, text, now):
     """메인의 SendMessage 를 받는 팀원 스냅샷의 last_instruction 으로 반영한다(lite 모드에서도 지시가 남게)."""
-    if not NAME_RX.match(to or "") or to.startswith("_") or to.startswith("sub_"):
+    if not NAME_RX.fullmatch(to or "") or to.startswith("_") or to.startswith("sub_"):
         return
     path = os.path.join(adir, to + ".json")
     if not os.path.exists(path):

@@ -206,7 +206,7 @@ def check_name(name):
         raise RoleError("NAME_INVALID 빈 이름")
     if len(n) > NAME_MAX:
         raise RoleError("NAME_INVALID 이름이 너무 깁니다(최대 %d자)" % NAME_MAX)
-    if not _NAME_ASCII_OK.match(n):
+    if not _NAME_ASCII_OK.fullmatch(n):
         raise RoleError("NAME_INVALID %r — 영문·숫자·한글·.·_·- 만 쓸 수 있습니다(공백·#·:·/ 등 금지)" % n)
     if n.isdigit():
         raise RoleError("NAME_INVALID %r — 숫자만으로 된 이름은 쓸 수 없습니다" % n)
@@ -265,7 +265,7 @@ def _wt_main_of(path):
 
 def project_slug(tmux_session=None, cwd=None):
     s = (tmux_session or "").strip()
-    m = re.match(r"^claude-(.+)$", s)
+    m = re.fullmatch(r"^claude-(.+)$", s)
     if m:
         p = m.group(1)
         q = re.sub(r"-\d+$", "", p)
@@ -380,7 +380,7 @@ def resolve_sid(given, required=True):
         if required:
             raise RoleError("SID_MISSING (--sid 또는 PIPELINE_UUID/CLAUDE_SESSION_ID 필요)")
         return None
-    if not UUID_RE.match(sid):
+    if not UUID_RE.fullmatch(sid):
         raise RoleError("SID_INVALID %s" % sid)
     return sid.lower()
 
@@ -937,7 +937,7 @@ def normalize_value(text, root=None, project=None, exclude_key=None, keep_area=N
         t = t.strip()
         name = check_name(n)
     rid_txt, area = t, ""
-    m = re.match(r"^(\S+?)\s+(\S+)$", t)
+    m = re.fullmatch(r"^(\S+?)\s+(\S+)$", t)
     if m:
         rid_txt, area = m.group(1), m.group(2)
     else:
@@ -1120,10 +1120,13 @@ def cmd_set(a):
     rid, area = split_value(value)
     profile = a.profile if a.profile is not None else os.environ.get("CLAUDE_PROFILE_NAME", "")
     old = resume_last(project, sid)
-    resume_upsert(project, {"sid": sid, "role": rid, "area": area, "name": name_of(value), "value": value,
-                            "profile": profile or old.get("profile", ""),
-                            "topic": a.topic if a.topic is not None else old.get("topic", ""),
-                            "cwd": cwd, "source": a.source})
+    rec = {"sid": sid, "role": rid, "area": area, "name": name_of(value), "value": value,
+           "profile": profile or old.get("profile", ""),
+           "topic": a.topic if a.topic is not None else old.get("topic", ""),
+           "cwd": cwd, "source": a.source}
+    if old.get("imported_from"):
+        rec["imported_from"] = old["imported_from"]  # 재개 기록이 '가져온 대화' 표식을 지우지 않게 이월한다
+    resume_upsert(project, rec)
     out = ["ROLE_SET %s" % value]
     try:
         os.unlink(os.path.join(od, "role_registered"))
@@ -1186,7 +1189,7 @@ def make_reservation(sid, project, value, mode):
 def drop_reservation(sid, project):
     """자기 예약(토큰)만 지운다. 반드시 project_lock 안에서 부른다."""
     for tok in own_tokens(sid):
-        if re.match(r"^[0-9a-f]{8}$", tok):
+        if re.fullmatch(r"^[0-9a-f]{8}$", tok):
             try:
                 os.unlink(os.path.join(reserve_dir(project), tok + ".json"))
             except OSError:
@@ -1238,9 +1241,12 @@ def do_register(sid, pane, tsess, pid, profile, cwd, topic, project=None, force=
             if toks:
                 drop_reservation(sid, project)
     old = resume_last(project, sid)
-    resume_upsert(project, {"sid": sid, "role": rid, "area": area, "name": name_of(value), "value": value,
-                            "profile": profile or old.get("profile", ""),
-                            "topic": topic or old.get("topic", ""), "cwd": cwd or old.get("cwd", "")})
+    rec = {"sid": sid, "role": rid, "area": area, "name": name_of(value), "value": value,
+           "profile": profile or old.get("profile", ""),
+           "topic": topic or old.get("topic", ""), "cwd": cwd or old.get("cwd", "")}
+    if old.get("imported_from"):
+        rec["imported_from"] = old["imported_from"]  # 세션 등록이 '가져온 대화' 표식을 지우지 않게 이월한다
+    resume_upsert(project, rec)
     atomic_write(reg_path, sig + "\n")
     return warn
 
@@ -1376,7 +1382,20 @@ def cmd_resume_list(a):
         # 가져온 대화(imported_from)는 기록 계정이 비어 있어도 계정 필터에서 빼지 않는다
         recs = [r for r in recs if r.get("profile") == a.profile or r.get("imported_from")]
     recs = [r for r in recs if transcript_exists(r["sid"])]
-    recs.sort(key=lambda r: r.get("updated_ts", 0), reverse=True)
+    # 활동 시각 = max(색인 updated_ts, 대화 파일 mtime). cc 밖(claude --resume)에서 이어 쓴 대화는 색인이 갱신되지 않으므로
+    # 파일 mtime 으로 보정한다(ADR-035). 파일은 읽지 않고 mtime 만 본다. 파일이 없으면 색인 값 그대로다
+    for r in recs:
+        act = r.get("updated_ts", 0) or 0
+        p = _find_transcript(r["sid"])
+        try:
+            mt = os.path.getmtime(p) if p else 0
+        except OSError:
+            mt = 0
+        if mt > act:
+            r["updated"] = iso(mt)  # 메모리상 기록만 고친다(색인 파일은 쓰지 않는다)
+            act = mt
+        r["_act_ts"] = act
+    recs.sort(key=lambda r: r.get("_act_ts", 0), reverse=True)
     if a.per_role:
         # 롤당 1건 축약은 이 머신 대화에만 적용한다. 가져온 대화는 항상 후보에 남긴다
         seen, keep = set(), []
@@ -1392,7 +1411,7 @@ def cmd_resume_list(a):
         recs = keep
     imp = [r for r in recs if r.get("imported_from")][: a.limit]
     loc = [r for r in recs if not r.get("imported_from")][: max(a.limit - len(imp), 0)]
-    recs = sorted(imp + loc, key=lambda r: r.get("updated_ts", 0), reverse=True)
+    recs = sorted(imp + loc, key=lambda r: r.get("_act_ts", 0), reverse=True)
     rows = [{"sid": r["sid"], "role": r.get("role", ""), "area": parse_value(rec_value(r))[1],
              "value": rec_value(r),
              "display": display_of(rec_value(r)),
@@ -1414,6 +1433,145 @@ def cmd_resume_list(a):
             if a.preview:
                 cols += [r["last_ts"], r["last_user"], r["last_assistant"]]
             print("\t".join(cols))
+    return 0
+
+
+def _fork_dir(cwd):
+    return os.path.join(home_base(), "projects", re.sub(r"[^A-Za-z0-9]", "-", cwd or ""))
+
+
+def _transcript_uuids(path, limit=None):
+    """대화 jsonl 의 기록 uuid 집합. limit 이 있으면 앞 limit 줄만 본다. 내용은 읽지 않고 uuid 키만 쓴다."""
+    out = set()
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for i, ln in enumerate(f):
+                if limit is not None and i >= limit:
+                    break
+                try:
+                    o = json.loads(ln)
+                except ValueError:
+                    continue
+                u = o.get("uuid") if isinstance(o, dict) else None
+                if isinstance(u, str) and u:
+                    out.add(u)
+    except OSError:
+        pass
+    return out
+
+
+def _fork_log(project, text):
+    """fork-adopt 판정 사유를 프로젝트 색인 옆 fork_adopt.log 에 남긴다(서버 재실측 진단용)."""
+    try:
+        p = os.path.join(os.path.dirname(resume_path(project)), "fork_adopt.log")
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "a", encoding="utf-8") as f:
+            f.write("%s %s\n" % (iso(), text))
+    except OSError:
+        pass
+
+
+def _fork_skip(project, code, text, rc=3):
+    msg = "FORK_SKIP %s %s" % (code, text)
+    print(msg)
+    _fork_log(project, msg)
+    return rc
+
+
+def cmd_fork_snapshot(a):
+    """cc 가 claude 실행 전에 부른다 — cwd 대화 폴더의 기존 sid 목록을 한 줄씩 출력(fork-adopt --before 입력)."""
+    try:
+        names = os.listdir(_fork_dir(a.cwd))
+    except OSError:
+        names = []
+    for n in sorted(names):
+        if n.endswith(".jsonl"):
+            print(n[:-6])
+    return 0
+
+
+def cmd_fork_adopt(a):
+    """가져온 대화를 --fork-session 으로 재개한 뒤(cc 종료 시점) 새 sid 를 원본 롤로 색인한다.
+
+    fork 새 sid 는 롤 파일이 없어 세션 등록(do_register)이 'all' 로 색인하므로, 이어 쓴 대화가 롤당 1건 축약에서
+    다른 'all' 세션에 밀린다. 아래를 모두 만족하는 대화가 정확히 1개일 때만 그 sid 를 원본 기록의 롤·계정·주제로
+    다시 기록하고 forked_from 을 남긴다.
+      - cwd 대화 폴더에서 --since 이후 바뀐, 원본이 아닌 일반 대화(팀원 대화 제외)
+      - --before(cc 가 실행 전에 뜬 sid 목록)에 없음 = 이번 실행에서 새로 생긴 대화
+      - fork 증거: 앞 200줄의 기록 uuid 중 하나 이상이 원본 대화의 uuid 집합에 있음
+        (같은 cwd 의 무관한 세션은 uuid 를 공유하지 않는다)
+      - 새 sid 의 최신 색인 기록이 없거나 기본 'all'(fork 안에서 /orole 로 바꾼 롤은 덮어쓰지 않는다)
+    ⚠️ uuid 공유가 --fork-session 산출물 고유 특성인지는 미확정 추정이다. 근거는 로컬 대화 메타 관측
+       (파생 대화가 원본 메시지 uuid 를 복사해 가짐, 그중 한 묶음은 가져온 대화에서 이어짐)뿐이다.
+       증거가 없으면 상속하지 않는 쪽(FORK_SKIP)으로 둔다.
+    건너뛴 사유는 FORK_SKIP <코드> 로 출력하고 fork_adopt.log 에 남긴다.
+      코드: no_parent_file · no_shared_uuid · multi · preexisting(실행 전부터 있던 sid 만 바뀜) · non_all · no_role
+    rc 0=기록, 3=건너뜀, 2=인자 오류.
+    """
+    project = a.project.lower()
+    parent = a.parent or ""
+    if not re.fullmatch(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", parent):
+        print("FORK_SKIP bad_args 원본 sid 형식 오류")
+        return 2
+    d = _fork_dir(a.cwd)
+    before = set()
+    if a.before:
+        try:
+            with open(a.before, encoding="utf-8", errors="replace") as f:
+                before = {ln.strip() for ln in f if ln.strip()}
+        except OSError:
+            pass
+    ppath = os.path.join(d, parent + ".jsonl")
+    if not os.path.isfile(ppath):
+        ppath = _find_transcript(parent)
+    puuids = _transcript_uuids(ppath) if ppath else set()
+    if not puuids:
+        return _fork_skip(project, "no_parent_file", "원본 %s 대화 파일(uuid)이 없어 fork 를 판정할 수 없음" % parent[:8])
+    changed, pre, cands = 0, 0, []
+    try:
+        names = os.listdir(d)
+    except OSError:
+        names = []
+    for n in names:
+        if not n.endswith(".jsonl") or n[:-6] == parent:
+            continue
+        p = os.path.join(d, n)
+        try:
+            if os.path.getmtime(p) < a.since:
+                continue
+        except OSError:
+            continue
+        if _is_agent_transcript(p):
+            continue
+        changed += 1
+        if n[:-6] in before:
+            pre += 1
+            continue
+        if _transcript_uuids(p, 200) & puuids:
+            cands.append(n[:-6])
+    if not cands:
+        if changed and pre == changed:
+            return _fork_skip(project, "preexisting", "바뀐 대화 %d개가 모두 실행 전부터 있던 sid" % changed)
+        return _fork_skip(project, "no_shared_uuid", "바뀐 대화 %d개(실행 전부터 있던 것 %d개) 중 원본 uuid 를 공유하는 것 없음"
+                          % (changed, pre))
+    if len(cands) != 1:
+        return _fork_skip(project, "multi", "원본 uuid 를 공유하는 새 대화 %d개(1개일 때만 롤 상속)" % len(cands))
+    new = cands[0]
+    cur = resume_last(project, new)
+    if cur and (cur.get("value") or "all") != "all":
+        return _fork_skip(project, "non_all", "새 sid %s 에 이미 롤 %s 기록이 있음(덮어쓰지 않음)" % (new[:8], cur.get("value")))
+    old = resume_last(project, parent)
+    value = old.get("value") or a.value or ""
+    if not value:
+        return _fork_skip(project, "no_role", "원본 롤 기록 없음")
+    rid, area = split_value(value)
+    rec = {"sid": new, "role": rid, "area": area, "name": name_of(value), "value": value,
+           "profile": old.get("profile", ""), "topic": old.get("topic", ""), "cwd": a.cwd or old.get("cwd", ""),
+           "source": "fork", "forked_from": parent}
+    resume_upsert(project, rec)
+    msg = "FORK_ADOPT %s → %s (%s)" % (parent[:8], new[:8], value)
+    print(msg)
+    _fork_log(project, msg)
     return 0
 
 
@@ -1629,7 +1787,7 @@ def cmd_handoff_open(a):
     sid = resolve_sid(a.sid)
     import secrets  # 지연 import(기동 비용 절감)
     hid = (a.id or secrets.token_hex(3)).lower()
-    if not re.match(r"^[0-9a-f]{6}$", hid):
+    if not re.fullmatch(r"^[0-9a-f]{6}$", hid):
         raise RoleError("HANDOFF_ID_INVALID %s (6자리 16진)" % hid)
     if a.state not in HANDOFF_STATES:
         raise RoleError("HANDOFF_STATE_INVALID %s" % a.state)
@@ -1913,7 +2071,7 @@ def project_roots():
 def cmd_project_dir(a):
     # 프로젝트 이름 → 절대경로. 성공 rc=0, 없음 rc=1, 한 루트 안 대소문자 무시 모호 rc=2
     name = a.name
-    if not _PROJECT_NAME_RE.match(name) or name in (".", ".."):
+    if not _PROJECT_NAME_RE.fullmatch(name) or name in (".", ".."):
         sys.stderr.write(f"❌ 프로젝트 이름 형식이 아닙니다: {name}\n")
         return 1
     roots = project_roots()
@@ -2014,6 +2172,15 @@ def build_parser():
     q.add_argument("--limit", type=int, default=9)
     q.add_argument("--json", action="store_true")
     q.add_argument("--preview", action="store_true")
+    q = add("fork-adopt", cmd_fork_adopt, sid=False)
+    q.add_argument("--project", required=True)
+    q.add_argument("--parent", required=True)
+    q.add_argument("--cwd", required=True)
+    q.add_argument("--since", type=float, required=True)
+    q.add_argument("--value")
+    q.add_argument("--before")
+    q = add("fork-snapshot", cmd_fork_snapshot, sid=False)
+    q.add_argument("--cwd", required=True)
     q = add("ask-pages", cmd_ask_pages)
     q.add_argument("--current")
     q.add_argument("--json", action="store_true")

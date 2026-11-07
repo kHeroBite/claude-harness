@@ -333,7 +333,7 @@ def owner_sid(transcript):
     if s is None:
         s = os.path.basename(transcript or "")
         s = s[:-6] if s.endswith(".jsonl") else s
-    return s if SID_RX.match(s or "") else ""
+    return s if SID_RX.fullmatch(s or "") else ""
 
 
 def _env_sid(pid):
@@ -343,7 +343,7 @@ def _env_sid(pid):
             for kv in f.read().split(b"\0"):
                 if kv.startswith(SID_KEY):
                     v = kv[len(SID_KEY):].decode("utf-8", "replace")
-                    return v if SID_RX.match(v) else None
+                    return v if SID_RX.fullmatch(v) else None
     except Exception:
         pass
     return None

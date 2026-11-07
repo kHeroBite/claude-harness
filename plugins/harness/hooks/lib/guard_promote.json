@@ -5,7 +5,7 @@
       "live": "lib/prod_deploy_guard.py",
       "test": "tests/test_pdg_readonly.sh",
       "test_sha256": "a1bed950e69765f9e666153950d3fde5c86f0659be4002f5ee712580e0d73672",
-      "core_sha256": "6a2612bcd443711e35329d7f1f0e0a925566677e76220edba204ef4349e5bbd1",
+      "core_sha256": "7d66f3cf4ab267198c1463cbb0cf5ad0974c53c6e564eb9c3765eb7caae0c80d",
       "min_pass": 1425,
       "max_skip": 0,
       "lang": "python"
@@ -77,7 +77,7 @@
       "live": "lib/bg_job_guard.py",
       "test": "tests/test_bg_job_da.sh",
       "test_sha256": "582525f11e973f30b671c5e6ee4d82ca77673f7f54399ad3452610b2f5fe452f",
-      "core_sha256": "2f5df7c16b182b8e7618f85a867ec7b12e9a982616de2eed4551c55115eeecbe",
+      "core_sha256": "29c4d0e57f70cfffe31bbdcc76baac4602eca787e1f0a11fb0c995e06440e274",
       "min_pass": 12,
       "max_skip": 0,
       "lang": "python"

@@ -14,15 +14,19 @@
 #   peer_ssh_notify.sh pull-all <ssh별칭>                             상대 outbox 전부를 ssh 1회로 가져와 프로젝트별 inbox 에 넣고 ack
 #   peer_ssh_notify.sh stale-check [--sec N]                          방치된 pull·outbox 점검(로컬만, 기본 PEER_STALE_SEC 또는 600초)
 #   peer_ssh_notify.sh outbox-take-all | outbox-ack-all <프로젝트> <바이트> <sha256>…   (내부) pull-all 이 쓰는 원격 부분
+#   peer_ssh_notify.sh home                                           peer 파일 루트(아래 <루트>) 판정 결과만 출력(쓰기 없음)
 #
 # 태그: 작업시작 · 작업종료 · 인계 · 인계결과 (이 넷만 허용)
 # 본문: 반드시 stdin 으로만 넘긴다(argv 금지). UTF-8, 4096 바이트 이하, 제어문자(줄바꿈·탭 제외)는 지운다.
-# 위치: inbox  = ${PEER_NOTIFY_HOME:-$HOME/.claude}/peer_inbox/<프로젝트>.jsonl
-#       outbox = ${PEER_NOTIFY_HOME:-$HOME/.claude}/peer_outbox/<프로젝트>.jsonl
+# 위치: inbox  = <루트>/peer_inbox/<프로젝트>.jsonl
+#       outbox = <루트>/peer_outbox/<프로젝트>.jsonl
 #       1줄 = 1건 {"ts","from_host","project","tag","body","via"}
 #       <프로젝트> 파일명은 소문자로 정규화한다(Pd → pd.jsonl). pull 의 project 대조도 대소문자를 가리지 않는다.
-#       CLAUDE_CONFIG_DIR 는 쓰지 않는다. cas 세션은 그 값이 종료 때 지워지는 /tmp/cc-* 라서
-#       inbox 가 세션마다 흩어지고 사라진다(2026-11-06 실측). 머신당 한 곳에 모은다.
+#       <루트> 판정(cfg_dir): ① PEER_NOTIFY_HOME ② CLAUDE_CONFIG_DIR(비어 있지 않고 cas 임시 폴더
+#       /tmp/cc-<uuid> 가 아니며 $HOME/.claude 와 실경로가 다를 때) ③ $HOME/.claude.
+#       cas 세션의 /tmp/cc-* 는 종료 때 지워져 inbox 가 흩어지므로 머신 공용 $HOME/.claude 에 모은다(2026-11-06 실측).
+#       hook(UserPromptSubmit_peer_inbox.sh·lib/peer_autopull.sh)도 home 하위명령으로 같은 판정을 쓴다.
+# 중복: inbox 기록은 배타 잠금 안에서 inbox 전체의 줄 요약(sha256)과 대조해 같은 줄을 다시 쓰지 않는다.
 # 커서: new 는 <커서파일> 에 마지막으로 읽은 바이트 위치를 적는다. 커서가 없으면 마지막 10건까지만,
 #       있으면 그 뒤 완결된 줄만 낸다. inbox 가 커서보다 작아졌으면 처음부터 다시 읽는다.
 #
@@ -34,7 +38,7 @@
 #   PEER_NOTIFY_REMOTE_HARNESS  원격의 HARNESS_HOME 절대경로(기본: 원격 PATH 의 peer_ssh_notify.sh,
 #                               없으면 원격 ${HARNESS_HOME:-$HOME/.harness}/current/scripts/)
 #   PEER_NOTIFY_TMUX=0          수신 시 tmux 상태줄 알림 끔
-#   PEER_NOTIFY_HOME            inbox·outbox·peer_hosts 루트(기본 $HOME/.claude)
+#   PEER_NOTIFY_HOME            inbox·outbox·peer_hosts 루트(없으면 위 <루트> 판정)
 #   PEER_STALE_SEC              stale-check 기본 기준 초(기본 600)
 #
 # 종료 코드: 0 성공 · 1 실행 실패(ssh·파일) · 2 사용법·검증 실패(ssh 호출 전 거부)
@@ -59,8 +63,9 @@ PY_HELPER=$(cat <<'PY'
 import sys, os, json, fcntl, re, time, hashlib
 MAX = 4096
 TAGS = {"작업시작", "작업종료", "인계", "인계결과"}
-TOK = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')
-STEM = re.compile(r'^[a-z0-9][a-z0-9._-]{0,63}$')
+# 토큰 검사는 fullmatch 로만 한다. re.match + '$' 는 끝 개행 1개를 통과시킨다(TODO-054).
+TOK = re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]{0,63}')
+STEM = re.compile(r'[a-z0-9][a-z0-9._-]{0,63}')
 
 def die(msg, rc=2):
     sys.stderr.write("peer_ssh_notify: " + msg + "\n")
@@ -83,7 +88,7 @@ def record(project, tag, host, body, via, ts=None):
                        "tag": tag, "body": body, "via": via}, ensure_ascii=False)
 
 def check_tokens(project, tag, host):
-    if not TOK.match(project) or not TOK.match(host) or tag not in TAGS:
+    if not TOK.fullmatch(project) or not TOK.fullmatch(host) or tag not in TAGS:
         die("프로젝트·태그·호스트 검증 실패")
 
 def locked_append(path, lines):
@@ -108,7 +113,7 @@ def parse_frame(raw_all, project):
             if not isinstance(prj, str) or prj.lower() != project.lower():
                 raise ValueError
             if not isinstance(tag, str) or tag not in TAGS or not isinstance(host, str) \
-                    or not TOK.match(host) or not isinstance(body, str):
+                    or not TOK.fullmatch(host) or not isinstance(body, str):
                 raise ValueError
             b = body.encode("utf-8")
             if len(b) > MAX:
@@ -119,17 +124,36 @@ def parse_frame(raw_all, project):
             bad += 1
     return good, bad
 
-def dedupe(path, good):
+def dedupe_append(path, good):
     # ack 가 건너뛰어져 같은 줄을 다시 가져온 경우를 막는다: inbox 에 이미 같은 줄이 있으면 기록하지 않는다.
-    try:
-        with open(path, "rb") as f:
-            size = f.seek(0, 2)
-            f.seek(max(0, size - 4 * 1024 * 1024))
-            have = set(f.read().decode("utf-8", "replace").splitlines())
-    except OSError:
-        have = set()
-    keep = [g for g in good if g not in have]
-    return keep, len(good) - len(keep)
+    # 중복 검사와 기록을 같은 배타 잠금 안에서 한다(동시 수신이 서로의 기록을 못 보고 둘 다 쓰는 경쟁 차단).
+    # inbox 전체를 처음부터 줄 단위로 훑어 sha256 요약만 집합에 담는다(창 제한 없음, 메모리 = 줄 수×32바이트).
+    # 기록한 줄도 집합에 넣어 한 프레임 안의 같은 줄은 1줄만 남긴다. (기록 수, 중복 수)를 돌려준다.
+    if not good:
+        return 0, 0  # 정상 기록이 없으면 inbox 파일을 만들지 않는다(종전 동작 유지)
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    fd = os.open(path, os.O_RDWR | os.O_APPEND | os.O_CREAT, 0o600)
+    with os.fdopen(fd, "r+b") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        f.seek(0)
+        have, last = set(), b"\n"
+        for ln in f:
+            last = ln
+            have.add(hashlib.sha256(ln[:-1] if ln.endswith(b"\n") else ln).digest())
+        out = []
+        for g in good:
+            b = g.encode("utf-8")
+            h = hashlib.sha256(b).digest()
+            if h in have:
+                continue
+            have.add(h)
+            out.append(b + b"\n")
+        if out:
+            f.seek(0, 2)
+            # 끝 줄이 개행 없이 끊겨 있으면 새 기록이 그 줄에 붙지 않게 개행을 먼저 쓴다.
+            f.write((b"" if last.endswith(b"\n") else b"\n") + b"".join(out))
+            f.flush()
+    return len(out), len(good) - len(out)
 
 def read_hosts(path):
     out = []
@@ -137,7 +161,7 @@ def read_hosts(path):
         with open(path, encoding="utf-8") as f:
             for ln in f.read().splitlines():
                 ln = ln.strip()
-                if TOK.match(ln) and ln != "outbox" and ln not in out:
+                if TOK.fullmatch(ln) and ln != "outbox" and ln not in out:
                     out.append(ln)
     except (OSError, UnicodeDecodeError):
         pass
@@ -177,10 +201,8 @@ elif mode == "ack":
 elif mode == "ingest":
     path, project = sys.argv[2], sys.argv[3]
     good, bad = parse_frame(sys.stdin.buffer.read(), project)
-    good, dup = dedupe(path, good)
-    if good:
-        locked_append(path, good)
-    sys.stdout.write("pulled=%d skipped=%d\n" % (len(good), bad + dup))
+    n, dup = dedupe_append(path, good)
+    sys.stdout.write("pulled=%d skipped=%d\n" % (n, bad + dup))
 elif mode == "new":
     path, cur_path = sys.argv[2], sys.argv[3]
     try:
@@ -217,7 +239,7 @@ elif mode == "take_all":
     for name in names:
         stem = name[:-6]
         p = os.path.join(d, name)
-        if not name.endswith(".jsonl") or not STEM.match(stem) or os.path.islink(p) or not os.path.isfile(p):
+        if not name.endswith(".jsonl") or not STEM.fullmatch(stem) or os.path.islink(p) or not os.path.isfile(p):
             continue
         with open(p, "rb") as f:
             fcntl.flock(f, fcntl.LOCK_EX)
@@ -230,8 +252,8 @@ elif mode == "ack_all":
     if len(rest) % 3:
         die("ack 인자 3개 조(프로젝트 바이트 sha256)가 맞지 않는다")
     for i in range(0, len(rest), 3):
-        if not STEM.match(rest[i]) or not re.match(r'^[0-9]{1,9}$', rest[i + 1]) \
-                or not re.match(r'^[0-9a-f]{64}$', rest[i + 2]):
+        if not STEM.fullmatch(rest[i]) or not re.fullmatch(r'[0-9]{1,9}', rest[i + 1]) \
+                or not re.fullmatch(r'[0-9a-f]{64}', rest[i + 2]):
             die("ack 인자 검증 실패")
     for i in range(0, len(rest), 3):
         p, n, sha = os.path.join(d, rest[i] + ".jsonl"), int(rest[i + 1]), rest[i + 2]
@@ -264,7 +286,7 @@ elif mode == "ingest_all":
         except UnicodeDecodeError:
             dirty = True
             break
-        if not STEM.match(proj):
+        if not STEM.fullmatch(proj):
             dirty = True
             break
         n, start = int(parts[2]), nl + 1
@@ -276,19 +298,17 @@ elif mode == "ingest_all":
         path = os.path.join(inbox, proj + ".jsonl")
         good, bad = parse_frame(frame, proj)
         try:
-            good, dup = dedupe(path, good)
-            if good:
-                locked_append(path, good)
+            wrote, dup = dedupe_append(path, good)
         except OSError as e:
             sys.stderr.write("peer_ssh_notify: %s inbox 기록 실패(ack 하지 않음): %s\n" % (proj, e))
             dirty = True
             continue
-        sys.stdout.write("ACK %s %d %d %d %s\n" % (proj, n, len(good), bad + dup, hashlib.sha256(frame).hexdigest()))
+        sys.stdout.write("ACK %s %d %d %d %s\n" % (proj, n, wrote, bad + dup, hashlib.sha256(frame).hexdigest()))
     if dirty:
         sys.stdout.write("BAD\n")
 elif mode == "hosts_add":
     path, alias = sys.argv[2], sys.argv[3]
-    if not TOK.match(alias) or alias == "outbox":
+    if not TOK.fullmatch(alias) or alias == "outbox":
         die("별칭 검증 실패(outbox 는 등록할 수 없다)")
     os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
     fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
@@ -325,7 +345,7 @@ elif mode == "stale":
     from datetime import datetime
     for name in names:
         stem, p = name[:-6], os.path.join(od, name)
-        if not name.endswith(".jsonl") or not STEM.match(stem) or not os.path.isfile(p):
+        if not name.endswith(".jsonl") or not STEM.fullmatch(stem) or not os.path.isfile(p):
             continue
         try:
             with open(p, "rb") as f:
@@ -348,13 +368,33 @@ PY
 )
 
 usage() {
-    sed -n '4,40p' "$0" | sed 's/^# \{0,1\}//' >&2
+    sed -n '4,44p' "$0" | sed 's/^# \{0,1\}//' >&2
     exit 2
 }
 
 err() { printf 'peer_ssh_notify: %s\n' "$*" >&2; }
 
-cfg_dir() { printf '%s' "${PEER_NOTIFY_HOME:-$HOME/.claude}"; }
+# peer 파일 루트 판정(TODO-052, hook 2종도 home 하위명령으로 이 판정을 쓴다).
+#   ① PEER_NOTIFY_HOME 이 있으면 그 값
+#   ② CLAUDE_CONFIG_DIR 가 비어 있지 않고 cas 세션 임시 폴더(/tmp/cc-<uuid>)가 아니며
+#      $HOME/.claude 와 실경로가 다르면 그 값(시험·격리 실행이 실 $HOME/.claude 를 건드리지 않게)
+#   ③ 그 밖에는 머신 공용 $HOME/.claude
+cfg_dir() {
+    if [ -n "${PEER_NOTIFY_HOME:-}" ]; then printf '%s' "$PEER_NOTIFY_HOME"; return 0; fi
+    local c="${CLAUDE_CONFIG_DIR:-}" d="$HOME/.claude"
+    if [ -n "$c" ] && ! [[ "$c" =~ ^/tmp/cc-[0-9a-fA-F-]{36}/?$ ]]; then
+        if [ "$(realpath -m -- "$c" 2>/dev/null)" != "$(realpath -m -- "$d" 2>/dev/null)" ]; then
+            [ "$c" = / ] || c="${c%/}"
+            printf '%s' "$c"; return 0
+        fi
+    fi
+    printf '%s' "$d"
+}
+
+cmd_home() {
+    [ $# -eq 0 ] || usage
+    printf '%s\n' "$(cfg_dir)"
+}
 # 파일명은 프로젝트 토큰을 소문자로 정규화한다(Pd·pd 가 서로 다른 파일로 갈라지지 않게).
 inbox_path() { printf '%s/peer_inbox/%s.jsonl' "$(cfg_dir)" "${1,,}"; }
 outbox_path() { printf '%s/peer_outbox/%s.jsonl' "$(cfg_dir)" "${1,,}"; }
@@ -590,6 +630,7 @@ main() {
         outbox-take-all) cmd_outbox_take_all "$@" ;;
         outbox-ack-all) cmd_outbox_ack_all "$@" ;;
         stale-check) cmd_stale_check "$@" ;;
+        home) cmd_home "$@" ;;
         *) usage ;;
     esac
 }

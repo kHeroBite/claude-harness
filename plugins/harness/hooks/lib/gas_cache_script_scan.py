@@ -71,7 +71,7 @@ def allowed_wt(p):
     #   조건: 경로 꼴 <루트>/.claude/hooks/<허용 이름> · <루트>가 실제 작업 트리 최상위 · git common dir 이 이 hooks 트리 저장소와 같음 ·
     #         추적 파일 · HEAD 와 내용이 같음(작업 트리·색인 모두). 하나라도 아니면 허용하지 않는다(종전처럼 본문을 검사한다).
     #   worktrees 아래 가짜 디렉터리는 최상위 판정에서, 별도 git init 저장소는 common dir 판정에서, 수정한 사본은 HEAD 대조에서 걸린다.
-    m = WT_RE.match(p)
+    m = WT_RE.fullmatch(p)
     if not m:
         return False
     root, rel = os.path.realpath(m.group(1)), ".claude/hooks/" + m.group(2)
@@ -92,7 +92,7 @@ def allowed_wt(p):
 
 
 def allowed(p):
-    if p.startswith(HK + "/") and ALLOW.match(p[len(HK) + 1:]):
+    if p.startswith(HK + "/") and ALLOW.fullmatch(p[len(HK) + 1:]):
         return True
     return allowed_wt(p)
 
@@ -196,7 +196,7 @@ def decode_esc(s):
 def _sh_val(v, env):
     """대입 값 → 문자열(모르면 None). 따옴표 벗김 · $(printf 'X') · $(echo [-e] X) · `…` 단순형 · 알려진 변수 풀이"""
     v = v.strip()
-    m = re.match(r"^(?:\$\(|`)\s*(?:printf|echo(?:\s+-[neE]+)*)\s+(.*?)\s*(?:\)|`)$", v)
+    m = re.fullmatch(r"^(?:\$\(|`)\s*(?:printf|echo(?:\s+-[neE]+)*)\s+(.*?)\s*(?:\)|`)$", v)
     if m:
         if re.search(r"[|;&<>`]|\$\(", re.sub(r"'[^']*'|\"[^\"]*\"", "", m.group(1))):
             return None   # 파이프·리다이렉트·중첩 치환이 붙은 명령 치환은 값을 알 수 없다
@@ -225,7 +225,7 @@ def sh_derive(body):
             if env:
                 seg = re.sub(r"\$\{([A-Za-z_]\w*)\}|\$([A-Za-z_]\w*)", lambda mm: env.get(mm.group(1) or mm.group(2), mm.group(0)), seg)
                 parts[i] = seg
-            m = re.match(r"^\s*(?:export\s+|local\s+|readonly\s+|declare\s+(?:-\w+\s+)?)?([A-Za-z_]\w*)=(.*)$", seg)
+            m = re.match(r"^\s*(?:export\s+|local\s+|readonly\s+|declare\s+(?:-\w+\s+)?)?([A-Za-z_]\w*)=(.*)$", seg)  # fullmatch-scan: ok — 탐지·수집 쪽은 match 유지가 더 엄격(D-5)
             if m:
                 val = _sh_val(decode_esc(m.group(2)), env)
                 if val is None:
@@ -364,7 +364,7 @@ def scan(cmd, cwd, depth):
                 if o == "--":
                     break
                 opts.append(o)
-            if vb == "pushd" and (not a or re.match(r"^[+-]\d+$", a[0]) or any("n" in o for o in opts)):
+            if vb == "pushd" and (not a or re.fullmatch(r"^[+-]\d+$", a[0]) or any("n" in o for o in opts)):
                 continue   # 스택 회전형·-n(위치 안 바꿈) pushd 는 따라가지 않는다(잔존 한계)
             t = a[0] if a else ("~" if vb == "cd" else None)
             if t == "-":
@@ -377,7 +377,7 @@ def scan(cmd, cwd, depth):
                     stack.append(base)
                 prev, base = base, nb
             continue
-        if vb in SHELLS or INTERP.match(vb):
+        if vb in SHELLS or INTERP.match(vb):  # fullmatch-scan: ok — 탐지·수집 쪽은 match 유지가 더 엄격(D-5)
             j, cstr = 0, None
             code_opts = ("-c",) if vb in SHELLS else ("-c", "-e", "-E", "-r")
             while j < len(rest) and rest[j].startswith("-"):
@@ -387,7 +387,7 @@ def scan(cmd, cwd, depth):
                     cstr = ""; break
                 if vb in SHELLS and rest[j] in ("-o", "+o") and j + 1 < len(rest):
                     j += 1
-                if vb in SHELLS and re.match(r"^-[a-zA-Z]*n[a-zA-Z]*$", rest[j]):
+                if vb in SHELLS and re.fullmatch(r"^-[a-zA-Z]*n[a-zA-Z]*$", rest[j]):
                     cstr = ""; break   # [사이클220] bash -n 은 문법 검사만 한다(실행 아님) — 본문을 보지 않는다
                 j += 1
             if cstr is not None:

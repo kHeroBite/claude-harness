@@ -77,7 +77,7 @@ def now_of(args):
 # ───────────── 장부 ─────────────
 
 def board_path(project):
-    if not PROJECT_RE.match(project or ""):
+    if not PROJECT_RE.fullmatch(project or ""):
         raise ArgError("프로젝트 이름 검증 실패: %r" % project)
     home = os.environ.get("COLLAB_BOARD_HOME") or os.path.join(os.path.expanduser("~"), ".claude")
     return os.path.join(home, "collab_board", project.lower() + ".jsonl")
@@ -177,7 +177,7 @@ def overlaps(a, b):
 # ───────────── claim / release / list / pack / ingest ─────────────
 
 def cmd_claim(args):
-    if not TOKEN_RE.match(args.owner or ""):
+    if not TOKEN_RE.fullmatch(args.owner or ""):
         raise ArgError("--owner 검증 실패")
     if args.tier not in TIERS:
         raise ArgError("--tier 는 %s 중 하나" % "|".join(TIERS))
@@ -218,7 +218,7 @@ def cmd_claim(args):
 
 
 def cmd_release(args):
-    if not TOKEN_RE.match(args.owner or ""):
+    if not TOKEN_RE.fullmatch(args.owner or ""):
         raise ArgError("--owner 검증 실패")
     now = now_of(args)
     host = args.host or socket.gethostname()
@@ -274,7 +274,7 @@ def pack_lines(project, claims):
 
 
 def cmd_pack(args):
-    if not TOKEN_RE.match(args.owner or ""):
+    if not TOKEN_RE.fullmatch(args.owner or ""):
         raise ArgError("--owner 검증 실패")
     now = now_of(args)
     host = args.host or socket.gethostname()
@@ -291,7 +291,7 @@ def valid_claim(c, project):
     if not isinstance(c, dict) or c.get("v") != VERSION or c.get("op") != "claim":
         return None
     for k in ("id", "host", "owner", "project", "ts"):
-        if not isinstance(c.get(k), str) or not TOKEN_RE.match(c[k]):
+        if not isinstance(c.get(k), str) or not TOKEN_RE.fullmatch(c[k]):
             return None
     if c["project"].lower() != project.lower() or c.get("tier") not in TIERS:
         return None

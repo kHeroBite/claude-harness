@@ -229,7 +229,7 @@ def _judge(use, res, ttl, now, uuid):
 
 
 def verify(uuid, session_id, transcript, target, consume, ttl):
-    if not UUID_RE.match(uuid or ""):
+    if not UUID_RE.fullmatch(uuid or ""):
         return 1, "NO_APPROVAL bad_args"
     phrase = TARGETS.get(target)
     if not phrase:

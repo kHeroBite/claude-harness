@@ -234,7 +234,7 @@ def _split_py_inline(cmd):
     codes = []
     i = 0
     while i < len(toks):
-        if PY_BIN.match(os.path.basename(toks[i])):
+        if PY_BIN.match(os.path.basename(toks[i])):  # fullmatch-scan: ok — 탐지·수집 쪽은 match 유지가 더 엄격(D-5)
             j = i + 1
             while j < len(toks) and toks[j].startswith("-") and toks[j] != "-c" and not toks[j].startswith("-c"):
                 j += 1

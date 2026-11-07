@@ -41,6 +41,8 @@ if [[ -z "$INPUT" ]]; then
 fi
 CURRENT_SESSION=$(echo "$INPUT" | jq -r '.session_id // "unknown"' 2>/dev/null) || CURRENT_SESSION="unknown"
 PROMPT=$(echo "$INPUT" | jq -r '.prompt // ""' 2>/dev/null) || PROMPT=""
+# 슬래시 명령의 플러그인 접두사(/harness:ok → /ok)를 정규화한다. 접두사 없는 입력은 그대로다.
+if [[ "$PROMPT" =~ ^([[:space:]]*/)([A-Za-z0-9_-]+:)? ]]; then PROMPT="${BASH_REMATCH[1]}${PROMPT:${#BASH_REMATCH[0]}}"; fi
 
 # [P2-isolation] _find_active_pipelines() 제거 — 다른 세션 정보를 현재 에이전트에게 노출하는 것은
 # 세션 격리 위반이며, 에이전트가 타 세션 파이프라인을 자기 것으로 오인하여 크로스 뮤테이션을 유발했음.
@@ -219,8 +221,9 @@ fi
 # --- /ogrill 슬래시 감지 시 ogrill_slash_flag 마커 생성 (메인 Skill('ogrill') 허용용) ---
 # ogrill_slash_flag 마커 존재 시 PreToolUse_Skill_ogrill_main_guard.sh가 통과 허용
 if echo "$PROMPT" | grep -qP '^\s*/ogrill(\s|$)'; then  # ogrill_slash_flag 생성 트리거
-  _SESSION_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/session-env/${_FB_UUID:-}"
-  if [[ -n "${_FB_UUID:-}" ]] && [[ -d "$_SESSION_DIR" ]]; then
+  # 자기 세션(UUID=입력 session_id)에만 쓴다. _FB_UUID 는 어디서도 설정되지 않아 표식이 한 번도 생기지 않았다(2026-11-08 정정).
+  _SESSION_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/session-env/${UUID:-}"
+  if [[ "${UUID:-}" =~ ^[0-9A-Za-z-]+$ ]] && [[ -d "$_SESSION_DIR" ]]; then
     touch "$_SESSION_DIR/ogrill_slash_flag"
     _mirror_file "$_SESSION_DIR/ogrill_slash_flag"
   fi
@@ -705,6 +708,7 @@ _ups_fallback() {
   while [[ "$_p" == [[:space:]]* || "$_p" == \\n* || "$_p" == \\t* ]]; do
     if [[ "$_p" == \\* ]]; then _p="${_p:2}"; else _p="${_p:1}"; fi
   done
+  if [[ "$_p" =~ ^/([A-Za-z0-9_-]+:)? ]]; then _p="/${_p:${#BASH_REMATCH[0]}}"; fi  # 플러그인 접두사 정규화
   if [[ "$_p" == "<teammate-message"* || "$_p" == "<task-notification"* ]] || _ups_is_xsession "$_p"; then
     _nt=1
     echo "ℹ️ [알림] 시스템/팀원 메시지 — Skill('ointaug') 요구 대상 아님"
@@ -803,6 +807,7 @@ _ups_require() {
   while [[ "$_p" == [[:space:]]* || "$_p" == \\n* || "$_p" == \\t* ]]; do
     if [[ "$_p" == \\* ]]; then _p="${_p:2}"; else _p="${_p:1}"; fi
   done
+  if [[ "$_p" =~ ^/([A-Za-z0-9_-]+:)? ]]; then _p="/${_p:${#BASH_REMATCH[0]}}"; fi  # 플러그인 접두사 정규화
   [[ -z "$_p" ]] && return 0
   # [사이클 가드 교착 §2-4] 어떤 프롬프트가 ointaug 표식을 갱신했는지 사후 판정용 진단. 분류는 아래 분기가 정한 값을 그대로 쓴다. 판정 로직과 무관하다.
   #   head=프롬프트 머리 60자. 자르기 전에 자격증명 값을 가린다(값이 60자 경계에 걸려도 일부가 남지 않게). 빌트인만 쓴다(mkdir 은 logs 부재 첫 입력 1회).

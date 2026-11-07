@@ -74,7 +74,7 @@ def existing_dir(path):
 
 def sid_of(given=None):
     s = (given or "").strip()
-    return s.lower() if SID_RE.match(s) else ""
+    return s.lower() if SID_RE.fullmatch(s) else ""
 
 
 def session_dir(sid):
@@ -276,7 +276,7 @@ def infra_fields(main_root):
     if not m:
         return out
     for ln in m.group(1).splitlines():
-        mm = re.match(r"^\s*([A-Za-z0-9_]+)\s*:\s*(.*?)\s*$", ln)
+        mm = re.fullmatch(r"^\s*([A-Za-z0-9_]+)\s*:\s*(.*?)\s*$", ln)
         if mm:
             out[mm.group(1)] = mm.group(2).strip().strip("'\"")
     return out
@@ -1668,7 +1668,7 @@ def analyze_command(cmd, base_dir, sid, warns, depth=0, unverified=False):
                     wt_delete_warn(_join(cur, t), warns)
             continue
         if head in ("bash", "sh", "dash", "zsh") and depth < 3:
-            flags = [i for i, a in enumerate(s[1:], 1) if re.match(r"^-[A-Za-z]*c$", a)]
+            flags = [i for i, a in enumerate(s[1:], 1) if re.match(r"^-[A-Za-z]*c$", a)]  # fullmatch-scan: ok — 탐지·수집 쪽은 match 유지가 더 엄격(D-5)
             if flags and flags[0] + 1 < len(s):
                 analyze_command(s[flags[0] + 1], cur, sid, warns, depth + 1, unverified)
                 continue

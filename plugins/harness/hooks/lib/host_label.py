@@ -52,7 +52,7 @@ def _is_wsl():
 def host_tag():
     """'wsl' 또는 'linux'."""
     tag = os.environ.get('CLAUDE_HOST_TAG', '')
-    if _valid_env_value(tag, 12) and _TAG_RE.match(tag):
+    if _valid_env_value(tag, 12) and _TAG_RE.fullmatch(tag):
         low = tag.lower()
         if low in DEFAULT_EMOJI:
             return low

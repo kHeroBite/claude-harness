@@ -744,8 +744,11 @@ print("enabled" if "enabled" in sts else ("disabled" if "disabled" in sts else "
     # 텍스트 목록은 항목마다 "❯ <id>" 뒤에 Scope:·Status: 줄이 온다 → "<scope> <상태>" 줄로 바꾼다
     _pst="$(run_to claude plugin list 2>/dev/null | awk -v t="$_psid" '
         function emit() { print (sc == "" ? "-" : sc), (st == "" ? "unknown" : st); on = 0 }
-        { ln = $0; sub(/^[ \t]*(❯[ \t]*)?/, "", ln); sub(/[ \t].*$/, "", ln) }
+        { ln = $0; hd = ($0 ~ /^[ \t]*❯/); sub(/^[ \t]*(❯[ \t]*)?/, "", ln); sub(/[ \t].*$/, "", ln)
+          if (!hd && ln ~ /@/ && ln !~ /:/) hd = 1 }
         ln == t { if (on) emit(); on = 1; sc = ""; st = ""; next }
+        # 다른 항목 머리줄(❯ 시작 또는 첫 토큰이 이름@마켓)이 오면 빈 줄이 없어도 대상 항목을 닫는다
+        hd { if (on) emit(); next }
         on && /Scope:/ { sc = $2 }
         on && /Status:/ { st = ($0 ~ /disabled|✘/) ? "disabled" : (($0 ~ /enabled|✔/) ? "enabled" : "unknown") }
         on && NF == 0 { emit() }

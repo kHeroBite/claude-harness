@@ -23,7 +23,9 @@ _peer_autopull_worker() {
   dir="${1:--}"
   _peer_autopull_script || return 0
   here="$_AP_HERE"; script="$_AP_SCRIPT"
-  home="${PEER_NOTIFY_HOME:-$HOME/.claude}"
+  # peer 루트는 스크립트 home 하위명령의 공용 판정을 쓴다(CLAUDE_CONFIG_DIR 분리·cas 임시 폴더 구분, TODO-052).
+  home="${PEER_NOTIFY_HOME:-$(timeout 5 bash "$script" home 2>/dev/null </dev/null)}"
+  [ -n "$home" ] || return 0
 
   # 자가치유: INFRA peer_ssh 별칭을 등록부에 추가
   if [ "$dir" != "-" ] && [ -d "$dir" ]; then

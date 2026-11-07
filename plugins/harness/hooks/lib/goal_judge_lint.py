@@ -124,7 +124,7 @@ def _judge_scripts(script, sd):
             at_cmd = True
             continue
         base = os.path.basename(t)
-        if _PY_INTERP_RE.match(base):
+        if _PY_INTERP_RE.match(base):  # fullmatch-scan: ok — 탐지·수집 쪽은 match 유지가 더 엄격(D-5)
             j = i + 1
             while j < len(toks) and toks[j] not in _CMD_SEP:
                 a = toks[j]
@@ -139,7 +139,7 @@ def _judge_scripts(script, sd):
                 if a.endswith(".py"):
                     out.append(_resolve(a, sd))
                 break
-        elif _SH_INTERP_RE.match(base):
+        elif _SH_INTERP_RE.match(base):  # fullmatch-scan: ok — 탐지·수집 쪽은 match 유지가 더 엄격(D-5)
             for k in range(i + 1, len(toks) - 1):
                 if toks[k] in _CMD_SEP:
                     break
@@ -162,7 +162,7 @@ def _check_plan_ref(v, sd):
     if not refs or not all(isinstance(r, str) and r.strip() for r in refs):
         return "plan_ref 없음"
     for r in refs:
-        m = re.match(r"^(.+):(\d+)\s*$", r.strip())
+        m = re.fullmatch(r"^(.+):(\d+)\s*$", r.strip())
         if not m:
             return "plan_ref 형식이 '파일:행' 이 아님(%s)" % r
         p, ln = _resolve(m.group(1), sd), int(m.group(2))

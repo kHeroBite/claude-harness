@@ -375,7 +375,7 @@ def is_self_mate(m, uuid):
 
 def keep_ok(sdir, name, now):
     """agent_keep 유효(사유 5자 이상·TTL 이내)."""
-    if not NAME_RE.match(name):
+    if not NAME_RE.fullmatch(name):
         return False
     p = os.path.join(sdir, "agent_keep", name)
     try:
@@ -387,7 +387,7 @@ def keep_ok(sdir, name, now):
 
 
 def no_kill(sdir, name):
-    return NAME_RE.match(name) is not None and os.path.exists(os.path.join(sdir, "no_kill", name))
+    return NAME_RE.fullmatch(name) is not None and os.path.exists(os.path.join(sdir, "no_kill", name))
 
 
 # ─────────────────────────── 모드: self-done ───────────────────────────
@@ -467,7 +467,7 @@ def run_orphans(args, procs, mates, out):
     for m in mates:
         it = {"pid": m["pid"], "name": m["name"], "parent": m["parent"][:8], "action": "none"}
         res["items"].append(it)
-        if not UUID_RE.match(m["parent"] or ""):
+        if not UUID_RE.fullmatch(m["parent"] or ""):
             it["reason"] = "부모 세션 id 불명(불확실)"
             continue
         if m["parent"] in live:
@@ -600,7 +600,7 @@ def main(argv=None):
     args = p.parse_args(argv)
     if not (args.self_done or args.orphans or args.report_long):
         p.error("--self-done / --orphans / --report-long 중 하나 이상 필요")
-    if (args.self_done or args.report_long) and not UUID_RE.match(args.uuid):
+    if (args.self_done or args.report_long) and not UUID_RE.fullmatch(args.uuid):
         p.error("--self-done/--report-long 은 올바른 --uuid 가 필요")
     only = set()
     if args.only_pids:

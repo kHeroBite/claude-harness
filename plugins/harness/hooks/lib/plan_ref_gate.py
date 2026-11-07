@@ -70,7 +70,7 @@ def 정본참조_파싱(본문):
         if 줄.strip().startswith("```"):
             in_code = not in_code
             continue
-        if not in_code and 절_제목.match(줄.strip()):
+        if not in_code and 절_제목.fullmatch(줄.strip()):
             시작 = i + 1
             break
     if 시작 is None:
@@ -81,7 +81,7 @@ def 정본참조_파싱(본문):
     for 줄 in 줄들[시작:]:
         if 다음_절.match(줄):
             break
-        m = 항목_줄.match(줄)
+        m = 항목_줄.fullmatch(줄)
         if not m:
             # 들여쓴 이어짐 줄은 직전 반영 예정에 붙인다(여러 줄 허용)
             if 직전_키 == "반영예정" and 줄.startswith((" ", "\t")) and 줄.strip():
@@ -162,13 +162,20 @@ def _설명_앞(값):
 
 def _문서경로(토큰):
     """'반영 예정' 토큰이 문서 경로인가. 공백 없음 AND '-' 로 시작하지 않음 AND ('/' 포함 OR 끝이 .확장자(영숫자 1~8자)).
-    '--post-update' 같은 명령 토큰을 문서로 오인하지 않기 위함이다."""
+    '--post-update' 같은 명령 토큰을 문서로 오인하지 않기 위함이다.
+    TODO-053: URL('://' 포함), '/' 로 시작하고 그 뒤에 '/'·'.' 가 없는 슬래시 명령('/oUpload'),
+    '/' 없이 확장자에 영문자가 없는 토큰('python3.12'·'v1.3.7')도 경로가 아니다."""
     if not 토큰 or any(c.isspace() for c in 토큰) or 토큰.startswith("-"):
         return False
+    if "://" in 토큰:  # URL 은 문서 경로가 아니다
+        return False
+    if 토큰.startswith("/") and "/" not in 토큰[1:] and "." not in 토큰[1:]:
+        return False  # '/oUpload' 같은 슬래시 명령
     if "/" in 토큰:
         return True
     _앞, 점, 확장 = 토큰.rpartition(".")
-    return bool(점) and 확장.isalnum() and 1 <= len(확장) <= 8
+    # 확장자에 영문자가 1개 이상 있어야 한다('python3.12'·'v1.3.7' 제외)
+    return bool(점) and 확장.isalnum() and 1 <= len(확장) <= 8 and any(c.isalpha() for c in 확장)
 
 
 def _경로들(값, 첫토큰_허용=False):

@@ -14,8 +14,9 @@
   conv_share.py recv-import <프로젝트> [<작업폴더>]                   (내부) recv 후 그 머신에서 import(상대 세션 불필요)
   conv_share.py outbox-take <프로젝트> | outbox-ack <프로젝트> <sid:sha>...   (내부) pull 이 쓰는 원격 부분
 
-위치(머신당 한 곳, CLAUDE_CONFIG_DIR 비사용 — peer_ssh_notify.sh 와 같은 이유):
-  루트      ${PEER_NOTIFY_HOME:-$HOME/.claude}
+위치(머신당 한 곳 — peer_ssh_notify.sh 와 같은 루트 판정, 정본은 그 스크립트의 home 하위명령):
+  루트      ① PEER_NOTIFY_HOME ② CLAUDE_CONFIG_DIR(cas 임시 폴더 /tmp/cc-<uuid> 가 아니고 $HOME/.claude 와 실경로가 다를 때)
+            ③ $HOME/.claude  — cas 세션·평범한 실행은 머신 공용 $HOME/.claude, 시험·격리 실행만 그 폴더
   준비본    <루트>/conv_stage/<sid>.jsonl.gz · <sid>.meta.json
   수신함    <루트>/conv_inbox/<프로젝트 소문자>/<sid>.jsonl.gz · .meta.json · .imported · .conflict
   송신함    <루트>/conv_outbox/<프로젝트 소문자>/  (역방향 ssh 가 없을 때)
@@ -53,6 +54,7 @@ import time
 
 MAX_BYTES = int(os.environ.get("CONV_SHARE_MAX_BYTES", str(1024 * 1024 * 1024)))
 SID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+# TOK_RE·HARNESS_RE 는 fullmatch 로만 쓴다. re.match + '$' 는 끝 개행 1개를 통과시켜 ssh 원격 명령에 줄바꿈이 섞일 수 있다(TODO-054).
 TOK_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 HARNESS_RE = re.compile(r"^/[A-Za-z0-9._/-]{1,255}$")
 ROLE_RE = re.compile(r"^[^\s\t\n]{0,80}$")
@@ -90,8 +92,39 @@ class Fail(Exception):
 
 # ---------------------------------------------------------------- 경로·공통
 
+_CAS_CFG_RE = re.compile(r"/tmp/cc-[0-9a-fA-F-]{36}/?")
+_ROOT_CACHE = {}
+
+
+def _root_fallback():
+    # peer_ssh_notify.sh cfg_dir 와 같은 규칙(스크립트를 못 찾을 때만 쓴다 — 두 곳을 같게 유지한다)
+    c, d = os.environ.get("CLAUDE_CONFIG_DIR", ""), os.path.join(os.path.expanduser("~"), ".claude")
+    if c and not _CAS_CFG_RE.fullmatch(c) and os.path.realpath(c) != os.path.realpath(d):
+        return c if c == "/" else c.rstrip("/")
+    return d
+
+
 def root():
-    return os.environ.get("PEER_NOTIFY_HOME", "").strip() or os.path.join(os.path.expanduser("~"), ".claude")
+    # peer 루트 판정(TODO-052): ① PEER_NOTIFY_HOME ② cas 임시 폴더가 아니고 $HOME/.claude 와 다른 CLAUDE_CONFIG_DIR
+    # ③ $HOME/.claude. 판정 정본은 같은 폴더의 peer_ssh_notify.sh home 이다(inbox·대화 공유 루트를 한 판정으로 맞춘다).
+    pn = os.environ.get("PEER_NOTIFY_HOME", "").strip()
+    if pn:
+        return pn
+    key = (os.environ.get("CLAUDE_CONFIG_DIR", ""), os.path.expanduser("~"))
+    if key not in _ROOT_CACHE:
+        got = ""
+        psn = os.path.join(os.path.dirname(os.path.abspath(__file__)), "peer_ssh_notify.sh")
+        if os.path.isfile(psn):
+            try:
+                p = subprocess.run(["bash", psn, "home"], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                   stderr=subprocess.DEVNULL, timeout=10)
+                out = p.stdout.decode("utf-8", "replace").strip()
+                if p.returncode == 0 and out and "\n" not in out:
+                    got = out
+            except (OSError, subprocess.TimeoutExpired):
+                got = ""
+        _ROOT_CACHE[key] = got or _root_fallback()  # 구판 스크립트(home 없음 rc=2)·부재 시 같은 규칙의 대체 판정
+    return _ROOT_CACHE[key]
 
 
 def home_base():
@@ -103,13 +136,13 @@ def enc(cwd):
 
 
 def proj_key(project):
-    if not TOK_RE.match(project or ""):
+    if not TOK_RE.fullmatch(project or ""):
         raise Fail("프로젝트 형식이 올바르지 않다: 영문·숫자·._- 1~64자", 2)
     return project.lower()
 
 
 def need_sid(sid):
-    if not SID_RE.match(sid or ""):
+    if not SID_RE.fullmatch(sid or ""):
         raise Fail("sid 는 UUID 형식이어야 한다", 2)
     return sid
 
@@ -124,7 +157,7 @@ def stage_dir():
 
 def self_host():
     h = socket.gethostname().split(".")[0]
-    return h if TOK_RE.match(h) else "unknown"
+    return h if TOK_RE.fullmatch(h) else "unknown"
 
 
 def now_iso():
@@ -403,9 +436,9 @@ def verify_item(mraw, gz, project):
     need_sid(meta.get("sid", ""))
     if str(meta.get("project", "")).lower() != proj_key(project):
         raise Fail("프로젝트 불일치", 2)
-    if not TOK_RE.match(str(meta.get("host", ""))):
+    if not TOK_RE.fullmatch(str(meta.get("host", ""))):
         raise Fail("호스트 형식 오류", 2)
-    if not ROLE_RE.match(str(meta.get("role", ""))):
+    if not ROLE_RE.fullmatch(str(meta.get("role", ""))):
         raise Fail("롤 형식 오류", 2)
     if not isinstance(meta.get("cwd", ""), str) or not str(meta.get("cwd", "")).startswith("/"):
         raise Fail("원본 cwd 형식 오류", 2)
@@ -471,7 +504,7 @@ def ingest(data, project):
 # ---------------------------------------------------------------- send / recv / outbox / pull
 
 def ssh_base(alias, timeout):
-    if not TOK_RE.match(alias or ""):
+    if not TOK_RE.fullmatch(alias or ""):
         raise Fail("ssh 별칭 형식이 올바르지 않다", 2)
     if subprocess.run(["ssh", "-G", "--", alias], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode:
         raise Fail("ssh -G 로 해석되지 않는 별칭이다: %s" % alias, 2)
@@ -482,14 +515,14 @@ def remote_harness():
     h = os.environ.get("CONV_SHARE_REMOTE_HARNESS", "") or os.environ.get("PEER_NOTIFY_REMOTE_HARNESS", "")
     if not h:
         return "-"
-    if not HARNESS_RE.match(h):
+    if not HARNESS_RE.fullmatch(h):
         raise Fail("원격 HARNESS 경로 형식 오류", 2)
     return h
 
 
 def ssh_call(alias, args, stdin=b"", timeout=5, total=60):
     for a in args:
-        if not TOK_RE.match(a) and not re.match(r"^[0-9a-f-]{36}:[0-9a-f]{64}$", a) and not HARNESS_RE.match(a):
+        if not TOK_RE.fullmatch(a) and not re.fullmatch(r"[0-9a-f-]{36}:[0-9a-f]{64}", a) and not HARNESS_RE.fullmatch(a):
             raise Fail("원격 인자 검증 실패", 2)
     cmd = ssh_base(alias, timeout) + ["bash -c '%s' _ %s %s" % (REMOTE_LAUNCH, remote_harness(), " ".join(args))]
     try:
@@ -525,7 +558,7 @@ def do_send(sid, target, project=None, place=False, peer_cwd=""):
         print("SENT outbox sid=%s" % sid)
         log("send outbox sid=%s project=%s" % (sid, proj_key(project)))
         return
-    if peer_cwd and not HARNESS_RE.match(peer_cwd):
+    if peer_cwd and not HARNESS_RE.fullmatch(peer_cwd):
         raise Fail("--peer-cwd 형식 오류(절대경로, 영문·숫자·._/- 만)", 2)
     if place:
         # 상대 머신에 세션이 없어도 재개 목록에 보이도록 수신 직후 상대 쪽에서 import 까지 한다.
@@ -609,7 +642,7 @@ def cmd_outbox_take(a):
             if not n.endswith(".meta.json"):
                 continue
             sid = n[:-len(".meta.json")]
-            if not SID_RE.match(sid):
+            if not SID_RE.fullmatch(sid):
                 continue
             meta = read_json(os.path.join(d, n))
             try:
@@ -629,7 +662,7 @@ def cmd_outbox_ack(a):
     with open_lock(d):
         for pair in a.pairs:
             sid, _, sha = pair.partition(":")
-            if not SID_RE.match(sid):
+            if not SID_RE.fullmatch(sid):
                 continue
             meta = read_json(os.path.join(d, sid + ".meta.json"))
             if meta and meta.get("sha256") == sha:  # 그 사이 새 판이 들어왔으면 지우지 않는다
@@ -754,7 +787,7 @@ def cmd_import(a):
                 if not n.endswith(".meta.json"):
                     continue
                 sid = n[:-len(".meta.json")]
-                if not SID_RE.match(sid):
+                if not SID_RE.fullmatch(sid):
                     continue
                 mp = os.path.join(d, n)
                 meta = read_json(mp)
