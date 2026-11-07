@@ -1043,11 +1043,60 @@ def email_to_nick(email):
     except Exception:
         return []
 
+def _acct_hash(email):
+    """이메일 소문자·공백 제거 sha256 앞 12자(기록 파일에 이메일 원문을 남기지 않기 위함)."""
+    import hashlib
+    return hashlib.sha256((email or '').strip().lower().encode('utf-8')).hexdigest()[:12]
+
+def _acct_rec_read():
+    """세션 설정 폴더의 .display_acct({h, nick}) 읽기. 없거나 손상이면 None."""
+    try:
+        with open(os.path.join(claude_config_dir(), '.display_acct'), 'r') as f:
+            rec = json.load(f)
+        if isinstance(rec, dict) and isinstance(rec.get('h'), str) and isinstance(rec.get('nick'), str) and rec['nick']:
+            return rec
+    except Exception:
+        pass
+    return None
+
+def _acct_rec_write(email, nick):
+    """시작 라벨 고정 기록(원자 쓰기). 실패는 무시한다."""
+    try:
+        path = os.path.join(claude_config_dir(), '.display_acct')
+        tmp = path + '.tmp.%d' % os.getpid()
+        with open(tmp, 'w') as f:
+            json.dump({'h': _acct_hash(email), 'nick': nick}, f)
+        os.replace(tmp, path)
+    except Exception:
+        pass
+
 def resolve_profile_name(account_email, is_team_agent=False):
-    """statusline + 타이틀바 공통 프로필 라벨 결정 로직.
+    """메인은 .display_acct(이메일 해시+시작 라벨)로 라벨을 고정한다.
+    해시가 현재 이메일과 같으면 기록 라벨 유지(cas 의 /login 전파로 프로필이 바뀌어도 흔들리지 않음).
+    해시가 다르면(세션 내 /login) 시작 프로필을 제외한 후보가 1개일 때만 그 닉(기록 갱신), 아니면 빈 문자열.
+    기록이 없으면 기존 판정으로 구하고 결과가 있으면 기록한다. 팀원은 기록을 읽지도 쓰지도 않는다."""
+    env_profile = os.environ.get('CLAUDE_PROFILE_NAME', '').strip()
+    use_rec = (not is_team_agent) and bool((account_email or '').strip())
+    if use_rec:
+        rec = _acct_rec_read()
+        if rec:
+            if rec['h'] == _acct_hash(account_email):
+                return rec['nick']
+            others = [n for n in email_to_nick(account_email) if n != env_profile]
+            if len(others) == 1:
+                _acct_rec_write(account_email, others[0])
+                return others[0]
+            return ''
+    label = _resolve_profile_name_legacy(account_email, is_team_agent)
+    if use_rec and label:
+        _acct_rec_write(account_email, label)
+    return label
+
+def _resolve_profile_name_legacy(account_email, is_team_agent=False):
+    """기록(.display_acct)이 없을 때의 기존 판정.
     라벨은 세션의 현재 계정(/login 으로 언제든 바뀔 수 있음) 기준이다. 이메일은 호출부가 따로 붙인다.
       1. 시작 프로필(CLAUDE_PROFILE_NAME)의 계정이 현재 계정과 같거나 어느 쪽이든 모르면 시작 프로필 이름 하나('/' 묶음 없음)
-         다르면 현재 이메일 후보가 1개일 때 그 닉, 0·복수면 빈 문자열(이메일만 표시). 프로필 매핑은 바꾸지 않는다.
+         다르면 현재 이메일 후보가 1개면 그 닉, 0개면 시작 프로필 이름(시작 프로필 기록이 다른 세션 /login 으로 덮인 경우), 복수면 빈 문자열(이메일만 표시). 프로필 매핑은 바꾸지 않는다.
       2. 팀원은 환경에 시작 프로필이 전달되지 않으므로 메인이 남긴 .display_profile 을 쓴다('?'·빈 값 무시)
       3. 시작 프로필을 모를 때는 이메일 후보가 1개면 그 닉, 복수·0개면 빈 문자열(이메일만 표시)
     메인은 2번을 쓰지 않는다. .display_profile 을 쓰는 쪽이 메인이라 읽으면 낡은 값이 스스로 유지된다.
@@ -1060,7 +1109,9 @@ def resolve_profile_name(account_email, is_team_agent=False):
         if not session_email or not profile_email or profile_email == session_email:
             return env_profile
         nicks = email_to_nick(account_email)
-        return nicks[0] if len(nicks) == 1 else ''
+        if len(nicks) == 1:
+            return nicks[0]
+        return env_profile if not nicks else ''
     if is_team_agent:
         try:
             with open(os.path.join(claude_config_dir(), '.display_profile'), 'r') as f:

@@ -43,8 +43,43 @@ MAIN_TAB_STATE_FMT="#{?${MAIN_ASK_COND},ask,#{?${MAIN_RUN_COND},on,done}}"
 #   Pf·Pb 는 WT 색 테이블 번호다(15=밝은 흰색 글자, 88=xterm 256색 #870000 어두운 빨강 탭, 흰 글자 대비 약 10:1).
 #   2026-11-05 탐침(WT 1.24.12741.0): tmux 안·밖 모두 탭 색 변경 확인, OSC 4(263/264)는 효과 없음.
 #   프로필·명령에 --tabColor 가 지정된 탭은 바뀌지 않을 수 있다(미실측).
-MAIN_TAB_ON='2;15;88'
-MAIN_TAB_ASK='2;15;12'
 MAIN_TAB_DONE='2;15;240'
-# 3상태 요약 — ON=작업 중 빨강(88, 흰 글자 대비 약 10:1, 사용자 지시로 값 고정) / ASK=질문·승인 대기 파랑(12=WT 밝은 파랑, 탐침 렌더링 확인, 대비 약 4.0:1)
-#   / DONE=Stop 회색(240=#585858, 대비 약 7.1:1. WT 기본 회색 8번 #767676 은 약 4.5:1 로 경계라 택하지 않음. 240 렌더링은 육안 확인 항목).
+MAIN_TAB_ASK='2;15;12'   # 호환용 상수 — 사용처 없음(2026-11-07 파랑 고정 ask 색 폐기, main_tab_ask_arg 로 대체)
+# main_host_kind — 이 머신이 wsl 인지 linux 인지 stdout 으로 낸다(host_label.py 와 같은 규칙, 매초 호출되므로 python 기동 금지).
+#   CLAUDE_HOST_TAG(wsl|linux) → WSL_DISTRO_NAME 있으면 wsl → /proc/version 에 microsoft 가 있으면 wsl → 그 밖은 linux.
+main_host_kind() {
+  local v
+  case "${CLAUDE_HOST_TAG:-}" in wsl|linux) printf '%s' "$CLAUDE_HOST_TAG"; return 0;; esac
+  [ -n "${WSL_DISTRO_NAME:-}" ] && { printf wsl; return 0; }
+  if [ -r /proc/version ]; then
+    read -r v < /proc/version 2>/dev/null
+    case "$v" in *[Mm]icrosoft*) printf wsl; return 0;; esac
+  fi
+  printf linux
+}
+# 작업 중 탭 색 — 머신별(2026-11-07 사용자 지시): linux=빨강 88(현행 유지, 흰 글자 대비 약 10:1) / wsl=파랑 계열 25(#005faf, 흰 글자 대비는 육안 확인 항목).
+case "$(main_host_kind)" in wsl) MAIN_TAB_ON='2;15;25';; *) MAIN_TAB_ON='2;15;88';; esac
+# main_tab_ask_arg — 질문·승인 대기 탭 색 인자를 stdout 으로 낸다. 제목 교대(#{e|%%:%s,2})와 같은 박자로
+#   짝수 초=제목이 보이는 구간=그 머신 작업색(MAIN_TAB_ON), 홀수 초='?' 구간=기본 회색(MAIN_TAB_DONE). 한계: 제목(tmux %s)과 색(job 의 현재 초)은 최대 1초 어긋날 수 있다.
+main_tab_ask_arg() {
+  local t
+  printf -v t '%(%s)T' -1 2>/dev/null || t=$(date +%s)
+  if [ $((t % 2)) -eq 0 ]; then printf '%s' "$MAIN_TAB_ON"; else printf '%s' "$MAIN_TAB_DONE"; fi
+}
+# main_tab_send_wrap <DECAC 인자> — 탭 색 송출 바이트를 stdout 으로 낸다(호출자가 tty 로 리다이렉트).
+#   기본은 tmux passthrough 한 겹(ESC P tmux; ESC ESC [ 인자 ,| ESC \). 로컬 tmux 안의 lccc 서버 세션(CC_TMUX_NESTED=1)이면 한 겹 더 감싼다
+#   (안쪽 ESC 를 두 배로 하고 다시 ESC P tmux; … ESC \ 로 감쌈 — 서버 tmux 가 한 겹, 로컬 tmux 가 한 겹 벗겨 WT 에 닿는다. 로컬 pane 의 allow-passthrough 필요).
+#   호출 형식 2가지 — main_tab_send_wrap <인자> (stdout) / main_tab_send_wrap <tty> <인자> (그 tty 로 직접 쓰고 실패 시 rc=1, odev-5 합의).
+main_tab_send_wrap() {
+  if [ $# -ge 2 ]; then
+    [ -w "$1" ] || return 1
+    main_tab_send_wrap "$2" > "$1" 2>/dev/null || return 1
+    return 0
+  fi
+  if [ "${CC_TMUX_NESTED:-}" = 1 ]; then
+    printf '\033Ptmux;\033\033Ptmux;\033\033\033\033[%s,|\033\033\\\033\\' "$1"
+  else
+    printf '\033Ptmux;\033\033[%s,|\033\\' "$1"
+  fi
+}
+# 3상태 요약 — ON=작업 중(linux 빨강 88 / wsl 파랑 25) / ASK=질문·승인 대기(짝수 초 작업색·홀수 초 회색 교대, main_tab_ask_arg) / DONE=Stop 회색(240=#585858, 대비 약 7.1:1. 육안 확인 항목).

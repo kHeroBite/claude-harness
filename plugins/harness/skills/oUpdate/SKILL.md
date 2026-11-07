@@ -125,6 +125,24 @@ NEEDS 는 새 판이 요구하는 도구가 없다는 뜻이다. 대상 도구�
 
 실행 중인 세션에는 즉시 반영되지 않는다. 플러그인을 갱신해도 실행 중 세션은 이미 적재한 판을 유지하고, 새 판은 `/reload-plugins` 를 실행하거나 다음에 기동할 때 적용된다(출처: https://code.claude.com/docs/en/plugins/install, https://code.claude.com/docs/en/plugins/loading). `~/.local/bin` 링크·rc 표식 블록·AI facade 는 새로 시작하는 셸·세션부터 적용된다. 실행 중 세션이 compact·resume 때 hook 설정과 스킬을 다시 읽는지는 확인 안 됨(공식 문서에서 찾지 못함).
 
+### 2.6 후처리 (자동) — 설치기 사본 교체·codex 연결·marketplace 경로 재등록
+
+`apply` 가 성공한 뒤와 `UP_TO_DATE` 로 끝날 때, 엔진이 다음을 자동 수행한다. 실패·원복·`--dry-run`·REFUSE·LOCKED·NEEDS·BREAKING 경로에서는 실행하지 않는다.
+
+1. 대상 판의 `install_harness.sh` 를 `<HARNESS_HOME>/install_harness.sh` 로 원자 교체한다. 대상 판에 이 파일이 없으면 이어지는 두 단계도 건너뛴다.
+2. 그 사본을 `--post-update <HARNESS_HOME>` 로 호출해 codex 플러그인 연결을 멱등으로 맞춘다.
+3. 같은 호출이 harness marketplace 의 등록 경로를 `<HARNESS_HOME>/src` 로 재지정한다(add 재지정만 하고 remove 는 하지 않으므로 설치된 플러그인은 유지된다). 재지정했으면 엔진이 플러그인 갱신을 한 번 더 부른다.
+
+결과는 `후처리 <step>: <status> <사유>` 형식으로 `installer`·`marketplace`·`codex` 3줄이 나온다. status 해석은 다음과 같다.
+
+| status | 뜻 | 대응 |
+|---|---|---|
+| `ok` | 수행했거나 이미 맞아 무동작이다(사유에 `무변경`·`무동작`·`재등록`·`연결` 등) | 그대로 전달한다 |
+| `skipped` | 전제가 없어 건너뜀(대상 판에 설치기 없음, claude·codex CLI 없음, `--no-plugin`, marketplace 미등록, 옛 설치기가 `--post-update` 미지원) | 사유를 전달한다. codex 는 필요하면 6절의 명령을 안내한다 |
+| `failed` | 해당 단계 실패 | 사유를 보고한다. **apply 의 rc·결과(OK/PARTIAL)는 후처리 실패로 바뀌지 않는다** |
+
+- **첫 1회 부트스트랩 한계**: 이 후처리가 없는 옛 oUpdate 로 처음 갱신하면 그 첫 갱신에서는 후처리가 돌지 않는다. 갱신 뒤 `/oUpdate` 를 한 번 더 실행하면(`UP_TO_DATE` 경로) 새 엔진이 후처리를 수행한다.
+
 ---
 
 ## 3. 마이그레이션 규칙
@@ -182,7 +200,7 @@ git clone <배포 repo URL> /tmp/ch && bash /tmp/ch/install_harness.sh
 - 프로젝트 홈 폴더를 1회 묻고(`--home` 으로 지정 가능) `<프로젝트홈>/AI` 를 만든 뒤 필수 도구 점검·설치, clone, apply, `~/.local/bin` 링크(cc·ccc·lcc·lccc·claude-as·cas)까지 수행한다.
 - 이미 설치된 머신에서 다시 실행하면 자동으로 oUpdate(apply)를 호출한다.
 - 인자는 `--home`·`--non-interactive`·`--yes`·`--no-sudo`·`--no-plugin`·`--no-rc`·`--repo-url` 이다.
-- codex 플러그인 연결은 설치 sh 가 수행한다. 실패했거나 `--no-plugin` 이면 다음 명령을 직접 실행한다. oUpdate 는 codex 플러그인을 설치하지 않고, 없으면 `해야 할 일: [note] codex 플러그인 연결: …` 줄로 이 명령을 안내만 한다.
+- codex 플러그인 연결은 설치 sh 가 수행하고, 갱신 때는 2.6 의 후처리가 같은 연결을 멱등으로 다시 맞춘다. 후처리가 `failed`·`skipped` 를 냈거나 `--no-plugin` 이면 다음 명령을 직접 실행한다. 연결이 끝나지 않았으면 `해야 할 일: [note] codex 플러그인 연결: …` 줄이 이 명령을 안내한다.
 
 ```bash
 claude plugin marketplace add openai/codex-plugin-cc && claude plugin install codex@openai-codex

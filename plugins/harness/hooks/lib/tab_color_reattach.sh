@@ -16,10 +16,10 @@ st=""; tty=""
 while IFS='|' read -r s t; do
   case "$s" in on|ask|done) st="$s"; tty="$t"; break;; esac
 done < <(tmux list-panes -s -t "$sess" -F '#{@tab_color}|#{pane_tty}' 2>/dev/null)
-case "$st" in on) arg="$MAIN_TAB_ON";; ask) arg="$MAIN_TAB_ASK";; done) arg="$MAIN_TAB_DONE";; *) exit 0;; esac
+case "$st" in on) arg="$MAIN_TAB_ON";; ask) arg="$(main_tab_ask_arg)";; done) arg="$MAIN_TAB_DONE";; *) exit 0;; esac
 [ -n "$arg" ] || exit 0
 case "$tty" in /dev/pts/[0-9]*) ;; *) exit 0;; esac
 case "${tty#/dev/pts/}" in *[!0-9]*) exit 0;; esac
 [ -w "$tty" ] || exit 0
-printf '\033Ptmux;\033\033[%s,|\033\\' "$arg" > "$tty" 2>/dev/null
+main_tab_send_wrap "$arg" > "$tty" 2>/dev/null
 exit 0

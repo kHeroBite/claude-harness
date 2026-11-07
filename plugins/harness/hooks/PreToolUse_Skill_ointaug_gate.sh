@@ -21,6 +21,7 @@
 trap 'exit 0' ERR
 INPUT=$(timeout 5 cat 2>/dev/null) || INPUT=""
 SKILL_NAME=$(echo "$INPUT" | jq -r '(.tool_input.skill // .tool_input.skill_name // empty)' 2>/dev/null)
+SKILL_NAME="${SKILL_NAME##*:}"
 [[ -z "$SKILL_NAME" ]] && exit 0
 
 # 차단 대상 = 파이프라인 진입 스킬만 (화이트리스트 방식이 아니라 대상 명시)

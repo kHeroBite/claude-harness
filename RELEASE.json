@@ -1,9 +1,9 @@
 {
   "schema": 1,
-  "version": "1.3.4",
-  "source_commit": "86132b1646f12b6bec90aa8e39431cd6b748bca9",
-  "built_at": "2026-11-07T06:23:49Z",
-  "summary": "대화 자동 동기화(cc 종료 push·lcc/lccc 종료 pull·ofinish 대화 공유)를 기본 꺼짐으로 바꿨다(CC_AUTO_OSYNC=1·LCC_AUTO_OSYNC=1 로 다시 켬). conv_share 기본 상한을 1GB 로 올리고, 넘으면 최신 줄부터 상한만큼만 스트리밍으로 잘라 보낸다(TRUNCATED, rc=0). 받는 쪽 import 에 replace/same 판정을 추가했다.",
+  "version": "1.3.5",
+  "source_commit": "95c3062cf7b410529c123c3a0817082945932b22",
+  "built_at": "2026-11-07T12:17:41Z",
+  "summary": "oUpdate 후처리 자동화(설치기 사본 교체·codex 연결·marketplace 경로 재등록, install_harness.sh --post-update), statusline 계정 라벨 고정·프로필 미대응 계정은 시작 프로필명 표시, 재개 메뉴 받은 대화 보존, lccc 상태줄 정리, 탭 색 머신 구분(리눅스 빨강·WSL 파랑), skill 접두사(harness:) 정규화로 ointaug 교착 해소",
   "breaking": false,
   "requires": [
     {
@@ -131,8 +131,12 @@
   ],
   "post_actions": [
     {
-      "kind": "new_shell",
-      "text": "새 셸을 열어 바뀐 cc·lcc 실행기를 쓴다"
+      "kind": "note",
+      "text": "이번 갱신을 옛 oUpdate 로 받았다면 /oUpdate 를 한 번 더 실행하세요(새 엔진이 설치기 교체·codex 연결·marketplace 경로 재등록을 수행)."
+    },
+    {
+      "kind": "restart_cc",
+      "text": "hook·실행기(cc·lcc·claude-as) 변경 반영을 위해 실행 중인 cc 세션을 다시 시작하세요."
     }
   ],
   "history": [
@@ -168,6 +172,17 @@
       "breaking": false,
       "summary": "install_harness.sh 단독 파일 배포(구 install-online.sh 는 호환 래퍼), --ref 추가",
       "post_actions": []
+    },
+    {
+      "version": "1.3.4",
+      "breaking": false,
+      "summary": "대화 자동 동기화(cc 종료 push·lcc/lccc 종료 pull·ofinish 대화 공유)를 기본 꺼짐으로 바꿨다(CC_AUTO_OSYNC=1·LCC_AUTO_OSYNC=1 로 다시 켬). conv_share 기본 상한을 1GB 로 올리고, 넘으면 최신 줄부터 상한만큼만 스트리밍으로 잘라 보낸다(TRUNCATED, rc=0). 받는 쪽 import 에 replace/same 판정을 추가했다.",
+      "post_actions": [
+        {
+          "kind": "new_shell",
+          "text": "새 셸을 열어 바뀐 cc·lcc 실행기를 쓴다"
+        }
+      ]
     }
   ]
 }

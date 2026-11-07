@@ -1373,24 +1373,31 @@ def cmd_resume_list(a):
         rid = norm_id(rr) or rr
         recs = [r for r in recs if r.get("role") == rid and (not ra or (r.get("area") or "").lower() == ra.lower())]
     if a.profile:
-        recs = [r for r in recs if r.get("profile") == a.profile]
+        # 가져온 대화(imported_from)는 기록 계정이 비어 있어도 계정 필터에서 빼지 않는다
+        recs = [r for r in recs if r.get("profile") == a.profile or r.get("imported_from")]
     recs = [r for r in recs if transcript_exists(r["sid"])]
     recs.sort(key=lambda r: r.get("updated_ts", 0), reverse=True)
     if a.per_role:
+        # 롤당 1건 축약은 이 머신 대화에만 적용한다. 가져온 대화는 항상 후보에 남긴다
         seen, keep = set(), []
         for r in recs:
+            if r.get("imported_from"):
+                keep.append(r)
+                continue
             k = rec_value(r)
             if k in seen:
                 continue
             seen.add(k)
             keep.append(r)
         recs = keep
-    recs = recs[: a.limit]
+    imp = [r for r in recs if r.get("imported_from")][: a.limit]
+    loc = [r for r in recs if not r.get("imported_from")][: max(a.limit - len(imp), 0)]
+    recs = sorted(imp + loc, key=lambda r: r.get("updated_ts", 0), reverse=True)
     rows = [{"sid": r["sid"], "role": r.get("role", ""), "area": parse_value(rec_value(r))[1],
              "value": rec_value(r),
              "display": display_of(rec_value(r)),
              "profile": r.get("profile", ""), "topic": r.get("topic", ""), "cwd": r.get("cwd", ""),
-             "updated": r.get("updated", "")} for r in recs]
+             "updated": r.get("updated", ""), "imported_from": r.get("imported_from", "")} for r in recs]
     for r in rows:
         # topic 은 --topic 을 준 경우에만 기록되고 실제 호출부는 넘기지 않으므로 목록을 만들 때 계산한다
         if not r["topic"]:

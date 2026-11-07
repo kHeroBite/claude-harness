@@ -16,7 +16,8 @@
 종료코드: 0 OK·UP_TO_DATE / 1 FAIL(원복) / 2 전제 불충족 / 3 REFUSE / 4 LOCKED / 5 PARTIAL / 6 NEEDS / 7 BREAKING
 
 apply 순서(고정): mktemp 추출 → 사전 검증 → requires → breaking → migrations(pre) → 대상 home releases/ 로 rename·copy
-                → active 원자 교체(+링크·src ff·플러그인·venv·facade·current) → migrations(post) → 사후 검증 → post_actions·state 확정·prune
+                → active 원자 교체(+링크·src ff·플러그인·venv·facade·current) → migrations(post) → 사후 검증 → 후처리(설치기 사본 교체·--post-update)
+                → post_actions·state 확정·prune (UP_TO_DATE 에서도 후처리만 멱등 실행)
 자격증명 파일은 열지 않는다. settings.json·실행 중 프로세스·tmux·current(이미 있으면)는 바꾸지 않는다.
 """
 import argparse
@@ -64,6 +65,8 @@ REQUIRED_TREE_FILES = (
 )
 # 설치 진입 스크립트 — 신 이름을 먼저 보고 구 이름(호환 래퍼)을 폴백으로 본다
 INSTALLER_NAMES = ("install_harness.sh", "install-online.sh")
+INSTALLER_COPY = "install_harness.sh"  # HARNESS_HOME 에 두는 설치기 사본 이름
+POST_TIMEOUT = 300
 RELEASE_KEYS = {"schema": int, "version": str, "source_commit": str, "built_at": str, "summary": str,
                 "breaking": bool, "requires": list, "migrations": list, "post_actions": list, "history": list}
 POST_KINDS = ("new_shell", "restart_cc", "reload_plugin", "note")
@@ -776,6 +779,89 @@ def find_installer(tree):
     return None
 
 
+def replace_installer(home, src_installer):
+    """대상 판 설치기를 <home>/install_harness.sh 로 원자 교체. 반환 (status, reason)."""
+    if not src_installer or os.path.basename(src_installer) != INSTALLER_COPY:
+        return "skipped", "대상 판에 install_harness.sh 없음"
+    dst = os.path.join(home, INSTALLER_COPY)
+    if os.path.isdir(dst):
+        return "failed", "설치기 사본 경로가 디렉터리"
+    tmp = os.path.join(home, ".%s.tmp.%d" % (INSTALLER_COPY, os.getpid()))
+    try:
+        with open(src_installer, "rb") as f:
+            data = f.read()
+        if os.path.isfile(dst):
+            with open(dst, "rb") as f:
+                same = f.read() == data
+            if same:
+                os.chmod(dst, 0o755)
+                return "ok", "무변경"
+        with open(tmp, "wb") as f:
+            f.write(data)
+        os.chmod(tmp, 0o755)
+        os.replace(tmp, dst)
+    except OSError as e:
+        if os.path.lexists(tmp):
+            os.remove(tmp)
+        return "failed", "교체 실패(%s)" % e.__class__.__name__
+    return "ok", "교체"
+
+
+def post_update(home, src_installer):
+    """후처리: 설치기 사본 교체 → <home>/install_harness.sh --post-update 호출 → POST 줄 파싱.
+
+    반환 {"installer","marketplace","codex"} 각 {"status","reason"}. 어떤 실패도 예외·rc 로 전파하지 않는다.
+    """
+    res = {}
+    st_, why = replace_installer(home, src_installer)
+    res["installer"] = {"status": st_, "reason": why}
+    for step in ("marketplace", "codex"):
+        res[step] = {"status": "skipped", "reason": "설치기 사본 없음"}
+    if st_ == "failed":
+        for step in ("marketplace", "codex"):
+            res[step]["reason"] = "설치기 교체 실패 — 호출 생략"
+        return res
+    if st_ != "ok":
+        return res
+    sh = os.path.join(home, INSTALLER_COPY)
+    env = dict(os.environ)
+    env["PATH"] = os.path.join(_home(), ".local", "bin") + os.pathsep + env.get("PATH", "")
+    try:
+        r = subprocess.run(["sh", sh, "--post-update", home, "--non-interactive"], stdin=subprocess.DEVNULL,
+                           capture_output=True, text=True, timeout=POST_TIMEOUT, env=env)
+    except subprocess.TimeoutExpired:
+        for step in ("marketplace", "codex"):
+            res[step] = {"status": "failed", "reason": "시간 초과"}
+        return res
+    except OSError as e:
+        for step in ("marketplace", "codex"):
+            res[step] = {"status": "failed", "reason": "실행 실패(%s)" % e.__class__.__name__}
+        return res
+    found = 0
+    for line in (r.stdout or "").splitlines():
+        m = re.match(r"^POST (marketplace|codex) (ok|skipped|failed)\s*(.*)$", line.strip())
+        if m:
+            res[m.group(1)] = {"status": m.group(2), "reason": _redact(m.group(3).strip())[:200]}
+            found += 1
+    if r.returncode != 0 and not found:
+        for step in ("marketplace", "codex"):
+            res[step] = {"status": "skipped", "reason": "설치기가 --post-update 미지원(rc=%d)" % r.returncode}
+    return res
+
+
+def _run_post(home, installer_src):
+    """후처리를 실행하고 3줄을 출력한다. 예외도 삼켜 apply 결과를 바꾸지 않는다."""
+    try:
+        res = post_update(home, installer_src)
+    except Exception as e:
+        res = {k: {"status": "failed", "reason": "예외(%s)" % e.__class__.__name__} for k in ("installer", "marketplace", "codex")}
+    res["at"] = _now()
+    for step in ("installer", "marketplace", "codex"):
+        v = res.get(step) or {}
+        _p("후처리 %s: %s %s" % (step, v.get("status", "skipped"), v.get("reason", "")))
+    return res
+
+
 def run_requires(tree, args):
     """대상 트리 install_harness.sh(없으면 install-online.sh) --deps-only 위임. 반환 (rc, 출력)."""
     sh = find_installer(tree)
@@ -939,6 +1025,9 @@ def _apply_locked(a, home, ai_root, src):
         if not legacy and (cur_sha == sha or vtuple(tver) == vtuple(cur_ver)):
             for n in ensure_facade(home, ai_root):  # 멱등 — 플러그인·rules 가 뒤에 생긴 경우를 반영
                 _p("  · " + n)
+            if not a.dry_run:
+                st["post_update"] = _run_post(home, find_installer(os.path.join(home, "active")))
+                save_state(home, st)
             _p("OUPDATE UP_TO_DATE %s (%s)" % (cur_ver, (cur_sha or sha)[:12]))
             return RC_OK
         if vtuple(tver) < vtuple(cur_ver) and not a.ref:
@@ -1098,6 +1187,13 @@ def _apply_locked(a, home, ai_root, src):
         return restore("사후 검증(%s)" % ", ".join(verr))
     if plugin == "updated" and _plugin_version(_installed_plugins(), PLUGIN_ID) not in (None, tver):
         plugin = "partial"
+    pu = _run_post(target_home, find_installer(rel_dir))
+    if pu["marketplace"].get("status") == "ok" and "재등록" in (pu["marketplace"].get("reason") or ""):
+        p2 = plugin_update(a.skip_plugin_update)  # marketplace 소스가 바뀌었으면 새 소스에서 1회 더 갱신
+        if p2 != "n/a":
+            plugin = p2
+            if plugin == "updated" and _plugin_version(_installed_plugins(), PLUGIN_ID) not in (None, tver):
+                plugin = "partial"
     # 10. post_actions(안내만)·state 확정·prune
     actions, seen = [], set()
     for item in rng:
@@ -1121,10 +1217,11 @@ def _apply_locked(a, home, ai_root, src):
     st["current"] = {"version": tver, "sha": sha, "release": rel_name, "at": _now()}
     st["pending"] = None
     st["plugin"] = plugin
+    st["post_update"] = pu
     st["migrations_done"] = done + [i for i in ran_pre + skip_pre + ran_post + skip_post if i not in done]
     result = "PARTIAL" if plugin == "partial" else "OK"
     st["history"].append({"from": cur_ver, "to": tver, "at": _now(), "breaking": bool(brk),
-                          "post_actions": actions, "result": result})
+                          "post_actions": actions, "result": result, "post_update": pu})
     save_state(target_home, st)
     removed = prune(target_home, st)
     # 요약(서버 E2E 증거)

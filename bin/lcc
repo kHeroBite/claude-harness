@@ -52,8 +52,13 @@ esac
 _lcc_in_tmux=0
 _lcc_old_name=""
 _lcc_old_auto=""
+_lcc_old_pt=""
+_lcc_pt_set=0
 if [ -n "${TMUX:-}" ] && [ -n "${TMUX_PANE:-}" ] && command -v tmux >/dev/null 2>&1; then
     _lcc_in_tmux=1
+    # 중첩 tmux 탭 색(DECAC) 전달: 서버 쪽 DCS passthrough 가 로컬 tmux 를 통과하도록 이 pane 의 allow-passthrough 를 켠다(종료 때 원복).
+    _lcc_old_pt="$(tmux show-options -pqv -t "$TMUX_PANE" allow-passthrough 2>/dev/null)"
+    tmux set-option -p -t "$TMUX_PANE" allow-passthrough on 2>/dev/null && _lcc_pt_set=1
     _lcc_old_name="$(tmux display-message -p -t "$TMUX_PANE" '#{window_name}' 2>/dev/null)"
     # window 단위 지정값(비어 있으면 상속 상태)
     _lcc_old_auto="$(tmux show-options -wv -t "$TMUX_PANE" automatic-rename 2>/dev/null)"
@@ -62,6 +67,13 @@ fi
 
 _lcc_restore() {
     if [ "$_lcc_in_tmux" = "1" ]; then
+        if [ "$_lcc_pt_set" = "1" ]; then
+            if [ -n "$_lcc_old_pt" ]; then
+                tmux set-option -p -t "$TMUX_PANE" allow-passthrough "$_lcc_old_pt" 2>/dev/null
+            else
+                tmux set-option -pu -t "$TMUX_PANE" allow-passthrough 2>/dev/null
+            fi
+        fi
         [ -n "$_lcc_old_name" ] && tmux rename-window -t "$TMUX_PANE" "$_lcc_old_name" 2>/dev/null
         # rename-window 는 automatic-rename 을 끄므로 원래 상태로 되돌린다
         if [ -n "$_lcc_old_auto" ]; then
@@ -83,7 +95,11 @@ _lcc_args=""
 [ "$#" -gt 0 ] && _lcc_args="$(printf '%q ' "$@")"
 _lcc_cd=""
 [ -n "$_lcc_dir" ] && _lcc_cd="cd $(printf %q "$_lcc_dir") && "
-_lcc_remote="${_lcc_cd}exec env COLORTERM=$(printf %q "${COLORTERM:-truecolor}") bash -lc $(printf %q "$_lcc_cmd $_lcc_args")"
+# CC_TMUX_STATUS=off: 서버 tmux 3.2a 가 이모지 폭을 1칸으로 세어 상태줄이 넘쳐 쌓이므로 서버 cas 가 상태줄을 끈다.
+# CC_TMUX_NESTED=1: 로컬 tmux 안에서 접속했음을 알려 서버가 탭 색(DECAC)을 이중 감싸 보내게 한다.
+_lcc_nested=""
+[ "$_lcc_in_tmux" = "1" ] && _lcc_nested=" CC_TMUX_NESTED=1"
+_lcc_remote="${_lcc_cd}exec env COLORTERM=$(printf %q "${COLORTERM:-truecolor}") CC_TMUX_STATUS=off${_lcc_nested} bash -lc $(printf %q "$_lcc_cmd $_lcc_args")"
 
 # 프로젝트홈 폴백(로컬 해석 전용): CLAUDE_PROJECT_ROOTS 가 비었으면 ~/.config/claude-harness/project_home 첫 줄을 쓴다.
 #   원격 명령에는 넘기지 않는다(서버 cc 는 서버 쪽 루트·project_home 으로 해석한다).

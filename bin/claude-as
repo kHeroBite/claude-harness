@@ -1697,9 +1697,12 @@ cmd_run() {
         # 주의: 인자에 공백/특수문자 가능성 — printf %q로 quote
         local _cmd
         _cmd="$(printf '%q ' "$0" "${name}" "$@")"
+        # lcc(원격 접속)가 CC_TMUX_STATUS=off 를 넘기면 이 tmux 의 상태줄을 끈다(서버 tmux 3.2a 의 이모지 폭 오계산으로 상태줄이 넘쳐 쌓이는 문제). 그때만 적용한다.
+        local _cas_status_off=""
+        [[ "${CC_TMUX_STATUS:-}" == "off" ]] && _cas_status_off="tmux -L '${_cas_socket}' set-option -g status off 2>/dev/null; "
         # (계정 전파는 세션 /login 결과를 자동 동기화하므로 별도 허용 변수를 전달하지 않는다)
         exec tmux -L "${_cas_socket}" new-session -A -s "${_cas_session}" -n "${_cas_proj_name}" -c "${PWD}" \
-            "tmux -L '${_cas_socket}' set-option -g set-titles on 2>/dev/null; tmux -L '${_cas_socket}' set-option -g set-titles-string '${_CAS_TITLE_FMT}' 2>/dev/null; ${_cmd}; _cas_rc=\$?; if [ \"\$_cas_rc\" -ne 0 ]; then echo \"[claude-as] 종료 코드 \$_cas_rc\" >&2; sleep 5; fi; tmux -L '${_cas_socket}' kill-session -t '${_cas_session}' 2>/dev/null"
+            "tmux -L '${_cas_socket}' set-option -g set-titles on 2>/dev/null; tmux -L '${_cas_socket}' set-option -g set-titles-string '${_CAS_TITLE_FMT}' 2>/dev/null; ${_cas_status_off}${_cmd}; _cas_rc=\$?; if [ \"\$_cas_rc\" -ne 0 ]; then echo \"[claude-as] 종료 코드 \$_cas_rc\" >&2; sleep 5; fi; tmux -L '${_cas_socket}' kill-session -t '${_cas_session}' 2>/dev/null"
     fi
 
     # ── (a) 환경 위생 (S3)

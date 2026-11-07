@@ -21,7 +21,7 @@ case "$sock" in *[!A-Za-z0-9/._-]*) exit 0;; esac
 [ -S "$sock" ] || exit 0
 [ "$(tmux -S "$sock" display -p -t "$p" '#{pane_tty}' 2>/dev/null)" = "$tty" ] || exit 0
 . "${BASH_SOURCE[0]%/*}/main_ask_fmt.sh" 2>/dev/null || exit 0
-case "$st" in on) a="${MAIN_TAB_ON:-}";; ask) a="${MAIN_TAB_ASK:-}";; done) a="${MAIN_TAB_DONE:-}";; esac
+case "$st" in on) a="${MAIN_TAB_ON:-}";; ask) a="$(main_tab_ask_arg)";; done) a="${MAIN_TAB_DONE:-}";; esac
 [ -n "$a" ] && [ -w "$tty" ] || exit 0
-printf '\033Ptmux;\033\033[%s,|\033\\' "$a" > "$tty" 2>/dev/null
+main_tab_send_wrap "$a" > "$tty" 2>/dev/null
 exit 0

@@ -31,6 +31,7 @@
 trap 'exit 0' ERR
 INPUT=$(timeout 5 cat 2>/dev/null) || INPUT=""
 SKILL_NAME=$(echo "$INPUT" | jq -r '(.tool_input.skill // .tool_input.skill_name // empty)' 2>/dev/null)
+SKILL_NAME="${SKILL_NAME##*:}"
 # ★[2026-10-10 사이클174 F-INTAUG-3] oi 도 받는다 — 아래 호출 증표 기록 때문이다★
 case "$SKILL_NAME" in
   ointaug|oi) ;;

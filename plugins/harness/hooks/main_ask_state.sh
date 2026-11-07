@@ -218,7 +218,11 @@ _tab_on_mark() {  # _tab_on_mark <tty> — 주기 재전송용 tab_on 1줄 기�
 }
 
 _tab_send() {  # _tab_send <tty> <DECAC 인자> — 탭 색 송출 단일 경로(_tab_color·reassert 공용). 실패는 rc=1
-  printf '\033Ptmux;\033\033[%s,|\033\\' "$2" > "$1" 2>/dev/null
+  if declare -F main_tab_send_wrap >/dev/null 2>&1; then   # lib/main_ask_fmt.sh — CC_TMUX_NESTED=1 이면 두 겹 감싸기(중첩 tmux), 아니면 한 겹
+    main_tab_send_wrap "$2" > "$1" 2>/dev/null
+  else
+    printf '\033Ptmux;\033\033[%s,|\033\\' "$2" > "$1" 2>/dev/null
+  fi
 }
 
 _tab_color() {  # _tab_color on|ask|done — 자기 pane tty 로만 DECAC 2 를 passthrough 로 보낸다(값이 바뀔 때만, 실패는 조용히)
@@ -249,7 +253,7 @@ _tab_color() {  # _tab_color on|ask|done — 자기 pane tty 로만 DECAC 2 를 
   case "$tty" in /dev/pts/[0-9]*) ;; *) return 0;; esac
   case "${tty#/dev/pts/}" in *[!0-9]*) return 0;; esac
   [ -w "$tty" ] || return 0
-  case "$want" in on) arg="$MAIN_TAB_ON";; ask) arg="$MAIN_TAB_ASK";; done) arg="$MAIN_TAB_DONE";; *) return 0;; esac
+  case "$want" in on) arg="$MAIN_TAB_ON";; ask) if declare -F main_tab_ask_arg >/dev/null 2>&1; then arg=$(main_tab_ask_arg); else arg="$MAIN_TAB_ON"; fi;; done) arg="$MAIN_TAB_DONE";; *) return 0;; esac
   [ "$pt" = all ] || tmux set -p -t "$TMUX_PANE" allow-passthrough all >/dev/null 2>&1
   _tab_send "$tty" "$arg" || return 0   # 전이 즉시 1회는 항상 직접 보낸다(테두리가 안 그려지는 동안의 대체 경로 — 매초 재송출은 m9+ 테두리 job 몫)
   tmux set -p -t "$TMUX_PANE" @tab_color "$want" >/dev/null 2>&1

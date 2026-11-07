@@ -972,8 +972,10 @@ if not (csid and csid in rsids):
     out.append(("-", "", lab + (" %s· %s%s" % (D, t, R) if t else "")) + pv(cw))
 for r in rows:
     if not isinstance(r, dict) or not clean(r.get("sid")): continue
-    head = "[%s %s] %s %s· %s · 기록 계정 %s%s" % (clean(r.get("display")), clean(r.get("value")),
-            clip(r.get("topic") or "(주제 없음)", 22), D, ts(r.get("updated", "")), clean(r.get("profile")) or "?", R)
+    imp = clean(r.get("imported_from"))
+    who = ("가져옴(%s)" % imp) if imp else ("기록 계정 %s" % (clean(r.get("profile")) or "?"))
+    head = "[%s %s] %s %s· %s · %s%s" % (clean(r.get("display")), clean(r.get("value")),
+            clip(r.get("topic") or "(주제 없음)", 22), D, ts(r.get("updated", "")), who, R)
     out.append((clean(r.get("sid")), clean(r.get("value")), head) + pv(r))
 out.append(("+", "", "＋ 새 세션 — 롤 선택", "      %s롤 메뉴에서 롤을 고르거나 직접 입력%s" % (D, R), "      "))
 for o in out:

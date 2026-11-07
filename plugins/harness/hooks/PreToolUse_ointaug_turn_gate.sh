@@ -115,6 +115,7 @@ if [[ -z "$PEND" ]]; then
       ToolSearch|ListAgents|AskUserQuestion|Agent) exit 0 ;;
       Skill)
         _OT_SK=$(printf '%s' "$INPUT" | jq -r '(.tool_input.skill // .tool_input.skill_name // empty)' 2>/dev/null)
+        _OT_SK="${_OT_SK##*:}"
         case "$_OT_SK" in oteam|ointaug|oi) exit 0 ;; esac
         ;;
       Read|mcp__oio__file_read)
@@ -148,6 +149,7 @@ case "$TOOL" in
   mcp__context7__*) exit 0 ;;
   Skill)
     _SK=$(printf '%s' "$INPUT" | jq -r '(.tool_input.skill // .tool_input.skill_name // empty)' 2>/dev/null)
+    _SK="${_SK##*:}"
     [[ "$_SK" == "ointaug" ]] && exit 0
     # oi 대기 단계에서는 Skill 경로를 막지 않는다 — 스킬 경유는 oi_route_guard 가 증표로 판정한다
     [[ "$PEND" == "oi" ]] && exit 0

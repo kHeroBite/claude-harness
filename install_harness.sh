@@ -40,6 +40,7 @@ usage() {
   --no-rc                셸 rc 파일을 고치지 않는다(install.sh 에 전달)
   --repo-url <URL>       배포 저장소 주소(기본: 상단 DIST_URL_DEFAULT)
   --ref <태그|브랜치>    clone 뒤 이 판으로 checkout 한다(기본: 최신 v* 태그, 없으면 기본 브랜치)
+  --post-update <폴더>   oUpdate 후처리(marketplace 경로 재등록·codex 연결)만 한다. 출력 `POST <단계> <ok|skipped|failed> <사유>`
   --deps-only            필수 도구 점검·설치만 한다(oUpdate 가 재사용하는 진입점)
   --requires <파일>      도구 목록 파일(기본: 이 스크립트 옆 requires.txt, 단독 복사 시 --deps-only 는 --requires 필요)
   --only <도구>          그 도구만 점검·설치한다(--deps-only 와 같은 동작).
@@ -66,6 +67,8 @@ REF=""
 DEPS_ONLY=0
 REQ_FILE=""
 ONLY=""
+POST_UPDATE=""
+CPC_STATE=""
 
 need_arg() {
     if [ "$2" -lt 2 ]; then
@@ -87,6 +90,8 @@ while [ $# -gt 0 ]; do
         --repo-url=*) DIST_URL="${1#*=}" ;;
         --ref) need_arg "$1" $#; REF="$2"; shift ;;
         --ref=*) REF="${1#*=}" ;;
+        --post-update) need_arg "$1" $#; POST_UPDATE="$2"; shift ;;
+        --post-update=*) POST_UPDATE="${1#*=}" ;;
         --deps-only) DEPS_ONLY=1 ;;
         --requires) need_arg "$1" $#; REQ_FILE="$2"; shift ;;
         --requires=*) REQ_FILE="${1#*=}" ;;
@@ -665,6 +670,7 @@ login_notes() {
 
 # ── 플러그인 연결 ───────────────────────────────────────────────────────
 codex_plugin_connect() {
+    CPC_STATE=skipped
     if [ "$NOPLUGIN" -eq 1 ] || ! have claude; then
         if [ "$NOPLUGIN" -eq 1 ]; then
             warn "codex 플러그인 연결을 건너뛴다(--no-plugin)"
@@ -675,21 +681,27 @@ codex_plugin_connect() {
         return 0
     fi
     _ok=1
+    _chg=0
     if run_to claude plugin marketplace list 2>/dev/null | grep -q 'openai-codex'; then
         say "codex 마켓플레이스(openai-codex) 있음 — 추가 생략"
     else
         run_to claude plugin marketplace add openai/codex-plugin-cc || _ok=0
+        _chg=1
     fi
     if [ "$_ok" -eq 1 ]; then
         if run_to claude plugin list 2>/dev/null | grep -q 'codex@openai-codex'; then
             say "codex 플러그인(codex@openai-codex) 있음 — 설치 생략"
         else
             run_to claude plugin install codex@openai-codex || _ok=0
+            _chg=1
         fi
     fi
     if [ "$_ok" -eq 1 ]; then
+        CPC_STATE=unchanged
+        [ "$_chg" -eq 1 ] && CPC_STATE=connected
         say "codex 플러그인 연결 완료"
     else
+        CPC_STATE=failed
         warn "codex 플러그인 연결 실패(로그인 전이면 실패할 수 있다) — 로그인 뒤 아래 명령을 다시 실행하라"
         say "codex 플러그인 재실행 명령: $CODEX_PLUGIN_RERUN"
     fi
@@ -767,6 +779,107 @@ rc_block_value() {
     return 1
 }
 
+# oUpdate 후처리 — harness-marketplace 소스 경로 재지정. remove 는 절대 호출하지 않는다(설치된 플러그인 보존)
+post_marketplace() {
+    _pmh="$1"
+    if [ "$NOPLUGIN" -eq 1 ]; then
+        say "POST marketplace skipped --no-plugin"
+        return 0
+    fi
+    if ! have claude; then
+        say "POST marketplace skipped claude 없음"
+        return 0
+    fi
+    _pmcur=""
+    _pmok=0
+    _pmjson="$(run_to claude plugin marketplace list --json 2>/dev/null)" || _pmjson=""
+    if [ -n "$_pmjson" ] && have python3; then
+        if _pmcur="$(printf '%s' "$_pmjson" | python3 -c '
+import json,sys
+try:
+    d=json.load(sys.stdin)
+except Exception:
+    sys.exit(3)
+for m in d if isinstance(d,list) else []:
+    if m.get("name")=="harness-marketplace":
+        print(m.get("path") or m.get("installLocation") or "-")
+        sys.exit(0)
+print("")
+' 2>/dev/null)"; then
+            _pmok=1
+        fi
+    fi
+    if [ "$_pmok" -ne 1 ]; then
+        _pmkf="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/known_marketplaces.json"
+        if [ -f "$_pmkf" ] && have python3; then
+            if _pmcur="$(python3 -c '
+import json,sys
+try:
+    d=json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(3)
+m=d.get("harness-marketplace") if isinstance(d,dict) else None
+if m:
+    s=m.get("source") or {}
+    print(s.get("path") or m.get("installLocation") or "-")
+else:
+    print("")
+' "$_pmkf" 2>/dev/null)"; then
+                _pmok=1
+            fi
+        fi
+    fi
+    if [ "$_pmok" -ne 1 ]; then
+        say "POST marketplace skipped 판정 불가"
+        return 0
+    fi
+    if [ -z "$_pmcur" ]; then
+        say "POST marketplace skipped harness-marketplace 미등록"
+        return 0
+    fi
+    if [ "$_pmcur" = "-" ] || [ ! -d "$_pmcur" ]; then
+        say "POST marketplace skipped 소스가 디렉터리가 아님"
+        return 0
+    fi
+    _pmnew="$_pmh/src"
+    _pmra="$(cd "$_pmcur" 2>/dev/null && pwd -P)" || _pmra="$_pmcur"
+    _pmrb="$(cd "$_pmnew" 2>/dev/null && pwd -P)" || _pmrb="$_pmnew"
+    if [ "$_pmra" = "$_pmrb" ]; then
+        say "POST marketplace ok 무동작(경로 동일)"
+        return 0
+    fi
+    if run_to claude plugin marketplace add "$_pmnew" >/dev/null 2>&1; then
+        say "POST marketplace ok 재등록 $_pmcur -> $_pmnew"
+    else
+        say "POST marketplace failed 재등록 실패($_pmcur -> $_pmnew)"
+    fi
+    return 0
+}
+
+post_update() {
+    _puh="$1"
+    post_marketplace "$_puh"
+    if [ "$NOPLUGIN" -eq 1 ] || ! have claude; then
+        say "POST codex skipped claude 없음 또는 --no-plugin"
+    elif ! have codex; then
+        say "POST codex skipped codex CLI 없음 — requires 사다리 소관"
+    else
+        codex_plugin_connect
+        case "$CPC_STATE" in
+            unchanged) say "POST codex ok 무동작(이미 연결)" ;;
+            connected) say "POST codex ok 연결" ;;
+            *) say "POST codex failed 연결 실패" ;;
+        esac
+    fi
+    return 0
+}
+
+# ═══ 진입: --post-update ════════════════════════════════════════════════
+if [ -n "$POST_UPDATE" ]; then
+    post_update "$POST_UPDATE"
+    exit 0
+fi
+
 # ═══ 진입: --deps-only / --only ═════════════════════════════════════════
 if [ "$DEPS_ONLY" -eq 1 ] || [ -n "$ONLY" ]; then
     if [ -z "$REQ_FILE" ]; then
@@ -833,7 +946,9 @@ if [ -f "$H/update_state.json" ]; then
     say "기존 설치를 찾았다 → oUpdate 로 갱신한다"
     pre_deps_interactive "$H/src"
     apply_update "$H" "$_up"
-    exit $?
+    _grc=$?
+    [ "$_grc" -eq 0 ] && codex_plugin_connect
+    exit "$_grc"
 fi
 _lh="${HARNESS_HOME:-}"
 [ -n "$_lh" ] || _lh="$(rc_block_value HARNESS_HOME 2>/dev/null)" || _lh=""
@@ -856,6 +971,7 @@ if [ "$_lh" != "$H" ] && [ -d "$_lh/src/.git" ] && [ -L "$_lh/current" ]; then
     apply_update "$_lh" "$_bt/harness_update.py"
     _urc=$?
     rm -rf "$_bt"
+    [ "$_urc" -eq 0 ] && codex_plugin_connect
     exit "$_urc"
 fi
 
