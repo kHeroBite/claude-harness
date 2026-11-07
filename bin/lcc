@@ -136,14 +136,15 @@ fi
 
 # 접속 종료 자동 대화수신(_lcc_auto_pull): 원격은 exec … bash -lc "cc …" 라 ssh 반환 = 서버 cc 의 자동 공유가 끝난 뒤다.
 #   → conv_share.py pull <호스트> --project <slug> → import --project <slug> --cwd <로컬 폴더>(is-imported 로 중복 방지).
-#   끄기 LCC_AUTO_OSYNC=0 또는 CC_AUTO_OSYNC=0. 기본은 터미널(대화형)일 때만, LCC_AUTO_OSYNC=1 이면 항상.
+#   기본은 꺼짐(opt-in). LCC_AUTO_OSYNC=1 이면 항상 켜고, CC_AUTO_OSYNC=1 이면 터미널(대화형)일 때만 켠다.
+#   둘 중 하나라도 0 이면 우선해서 끈다.
 _lcc_auto_pull() {
     _lap_cs=""
-    [ "${CC_AUTO_OSYNC:-1}" = "0" ] && return 0
+    [ "${LCC_AUTO_OSYNC:-}" = "0" ] && return 0
+    [ "${CC_AUTO_OSYNC:-}" = "0" ] && return 0
     case "${LCC_AUTO_OSYNC:-}" in
-        0) return 0 ;;
         1) ;;
-        *) [ -t 0 ] || return 0 ;;
+        *) [ "${CC_AUTO_OSYNC:-}" = "1" ] && [ -t 0 ] || return 0 ;;
     esac
     [ -n "$_lcc_slug" ] && [ -n "$_lcc_dir_local" ] || return 0
     for _lap_c in "${CONV_SHARE:-}" "${HARNESS_HOME:-$HOME/.harness}/current/scripts/conv_share.py" "${HARNESS_HOME:-$HOME/.harness}/current/scripts/conv_share.py"; do

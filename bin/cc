@@ -1189,11 +1189,11 @@ cd "$WORK_DIR"
 
 # 종료 자동 대화공유(_auto_osync): 이번 실행에서 바뀐 대화(jsonl)가 정확히 1개면 /osync 와 같은 경로로 상대 머신에 보낸다.
 #   대상은 WORK_DIR 의 INFRA.md INFRA-FIELDS peer_ssh(비면 조용히 종료). ssh 별칭 → push --place, outbox → push --outbox.
-#   끄기 CC_AUTO_OSYNC=0. 상한 timeout ${CC_AUTO_OSYNC_TIMEOUT:-45}초. 실패해도 cc 종료코드는 cas 의 것을 그대로 쓴다.
+#   기본은 꺼짐(opt-in). 켜기 CC_AUTO_OSYNC=1. 상한 timeout ${CC_AUTO_OSYNC_TIMEOUT:-45}초. 실패해도 cc 종료코드는 cas 의 것을 그대로 쓴다.
 #   한계: cas 가 tmux 에서 분리돼 돌아온 시점까지만 보낸다(이후 대화는 다음 cc 종료 때).
 _cc_conv_dir="${ROLE_HOME_BASE:-$HOME/.claude}/projects/${WORK_DIR//[^A-Za-z0-9]/-}"
 _cc_t0=""
-if [[ "${CC_AUTO_OSYNC:-1}" != "0" ]]; then
+if [[ "${CC_AUTO_OSYNC:-0}" == "1" ]]; then
     _cc_t0="$(mktemp "${TMPDIR:-/tmp}/cc_t0.XXXXXX" 2>/dev/null || true)"
     # 표식 mtime 을 1초 앞으로 당긴다: 대화 파일이 표식과 같은 시각 틱에 찍히면 -newer(엄격 초과)가 놓친다
     [[ -n "$_cc_t0" ]] && touch -d "@$(( $(date +%s) - 1 ))" "$_cc_t0" 2>/dev/null || true

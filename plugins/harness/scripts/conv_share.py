@@ -29,10 +29,15 @@ E0 실측(docs/prd/conv-share-e0-2026-11-06.md)으로 정한 규칙:
   - 수신 머신은 --fork-session 으로 재개한다. 원본 sid 파일은 그대로라 다음 수신의 접두 판정이 유지된다.
 
 보안: 가져온 기록은 데이터로만 저장한다(실행·source 금지). 원격 명령은 고정 리터럴 + 검증된 토큰만 쓴다.
-종료 코드: 0 성공 · 1 실행 실패 · 2 사용법·검증 실패 · 3 원격(ssh) 실패 · 4 일부 거부(conflict·sha 불일치) · 5 크기 상한 초과
+크기 상한(기본 1GB, CONV_SHARE_MAX_BYTES): export 는 상한을 넘는 대화를 거부하지 않고 최신 쪽 연속 줄만 상한만큼 보낸다.
+  출력 둘째 줄 `TRUNCATED orig_bytes=.. sent_bytes=.. dropped_lines=..`, meta.truncated=true, rc 0.
+  수신 import 는 잘린 판의 앞부분이 로컬 기록 꼬리와 겹치면 새 판으로 교체한다(kind replace).
+종료 코드: 0 성공 · 1 실행 실패 · 2 사용법·검증 실패 · 3 원격(ssh) 실패 · 4 일부 거부(conflict·sha 불일치)
+          · 5 크기 상한 초과(수신 묶음·해제 크기, 또는 export 에서 최신 줄 하나가 상한보다 클 때)
 """
 
 import argparse
+import array
 import datetime
 import fcntl
 import gzip
@@ -46,7 +51,7 @@ import sys
 import tempfile
 import time
 
-MAX_BYTES = int(os.environ.get("CONV_SHARE_MAX_BYTES", str(20 * 1024 * 1024)))
+MAX_BYTES = int(os.environ.get("CONV_SHARE_MAX_BYTES", str(1024 * 1024 * 1024)))
 SID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 TOK_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 HARNESS_RE = re.compile(r"^/[A-Za-z0-9._/-]{1,255}$")
@@ -245,46 +250,117 @@ def do_export(sid, cwd, project, role):
     if not src:
         raise Fail("transcript 를 찾지 못했다: sid=%s" % sid, 1)
     size = os.path.getsize(src)
-    if size > MAX_BYTES:
-        log("export skip sid=%s size=%d > %d" % (sid, size, MAX_BYTES))
-        raise Fail("크기 상한 초과 %d > %d 바이트 — 전송하지 않는다(CONV_SHARE_MAX_BYTES 로 조정)" % (size, MAX_BYTES), 5)
-    counts, objs = {}, []
-    with open(src, "rb") as f:
-        for raw in f:
-            raw = raw.strip()
-            if not raw:
-                continue
-            try:
-                objs.append(mask_obj(json.loads(raw.decode("utf-8")), counts))
-            except (ValueError, UnicodeDecodeError):
-                counts["dropped_line"] = counts.get("dropped_line", 0) + 1
-    out_lines = [json.dumps(o, ensure_ascii=False, separators=(",", ":")) for o in objs]
-    for ln in out_lines:
-        json.loads(ln)  # 재검증
-    body = ("\n".join(out_lines) + "\n").encode("utf-8") if out_lines else b""
-    src_cwd = first_cwd(objs) or (cwd or "")
-    rl = role_lib()
-    if not project:
-        project = rl.project_slug(None, src_cwd) if (rl and src_cwd) else os.path.basename(src_cwd.rstrip("/")) or "root"
-    proj_key(project)
-    if role is None:
-        role = ""
-        if rl:
-            try:
-                role = rl.current_role(sid) or ""
-            except Exception:
-                role = ""
-    meta = {"v": 1, "sid": sid, "project": project.lower(), "role": role, "host": self_host(), "cwd": src_cwd,
-            "lines": len(out_lines), "bytes": len(body), "sha256": hashlib.sha256(body).hexdigest(),
-            "created": now_iso(), "masked": counts}
     sd = stage_dir()
-    atomic_write(os.path.join(sd, sid + ".jsonl.gz"), gzip.compress(body, mtime=0))
+    mkdir700(sd)
+    counts, lens, dropped = {}, array.array("q"), 0
+    # 원본 전체를 메모리에 올리지 않는다. 상한을 넘으면 최신 쪽 MAX_BYTES 만 줄 단위로 마스킹해 임시 파일에 쓰고,
+    # 메모리에는 줄 길이만 둔다.
+    tmp = tempfile.TemporaryFile(prefix=".cs-", dir=sd)
+    try:
+        with open(src, "rb") as f:
+            start = max(0, size - MAX_BYTES)
+            if start > 0:
+                left = start - 1
+                while left > 0:  # 시작점 앞 영역의 줄 수(1MB 조각)
+                    chunk = f.read(min(left, 1 << 20))
+                    if not chunk:
+                        break
+                    dropped += chunk.count(b"\n")
+                    left -= len(chunk)
+                f.seek(start - 1)
+                if f.read(1) == b"\n":
+                    dropped += 1  # 시작점이 줄 머리다
+                else:
+                    f.readline()  # 시작점에 걸친 줄은 끝까지 버린다(줄 중간에서 시작하지 않음)
+                    dropped += 1
+            for raw in f:
+                raw = raw.strip()
+                if not raw:
+                    continue
+                try:
+                    ln = json.dumps(mask_obj(json.loads(raw.decode("utf-8")), counts), ensure_ascii=False,
+                                    separators=(",", ":"))
+                    json.loads(ln)  # 재검증
+                except (ValueError, UnicodeDecodeError):
+                    counts["dropped_line"] = counts.get("dropped_line", 0) + 1
+                    continue
+                b = (ln + "\n").encode("utf-8")
+                tmp.write(b)
+                lens.append(len(b))
+        # 마스킹으로 늘어 상한을 넘으면 오래된 줄부터 더 버린다(연속 꼬리만 보낸다. 중간 줄 건너뛰기 없음).
+        total, skip = sum(lens), 0
+        while total > MAX_BYTES and skip < len(lens):
+            total -= lens[skip]
+            skip += 1
+        truncated = start > 0 or skip > 0
+        kept = len(lens) - skip
+        if truncated and kept == 0:
+            log("export fail sid=%s size=%d max=%d reason=last-line-too-big" % (sid, size, MAX_BYTES))
+            raise Fail("최신 줄 하나가 상한보다 크다 — 보낼 줄이 없다(%d 바이트 상한, CONV_SHARE_MAX_BYTES 로 조정)"
+                       % MAX_BYTES, 5)
+        dropped += skip
+        off = sum(lens[:skip])
+        src_cwd = ""
+        tmp.seek(off)
+        for ln in tmp:  # 남은 첫 cwd 줄만 찾고 멈춘다
+            try:
+                o = json.loads(ln.decode("utf-8"))
+            except ValueError:
+                continue
+            src_cwd = first_cwd([o])
+            if src_cwd:
+                break
+        src_cwd = src_cwd or (cwd or "")
+        rl = role_lib()
+        if not project:
+            project = rl.project_slug(None, src_cwd) if (rl and src_cwd) else os.path.basename(src_cwd.rstrip("/")) or "root"
+        proj_key(project)
+        if role is None:
+            role = ""
+            if rl:
+                try:
+                    role = rl.current_role(sid) or ""
+                except Exception:
+                    role = ""
+        # 본문 산출: 임시 파일 꼬리를 sha256·gzip 에 함께 흘린다. 같은 폴더 임시 파일 → rename.
+        h = hashlib.sha256()
+        gz_path = os.path.join(sd, sid + ".jsonl.gz")
+        fd, gtmp = tempfile.mkstemp(prefix=".cs-", dir=sd)
+        try:
+            with os.fdopen(fd, "wb") as gf:
+                with gzip.GzipFile(fileobj=gf, mode="wb", mtime=0) as g:
+                    tmp.seek(off)
+                    while True:
+                        chunk = tmp.read(1 << 20)
+                        if not chunk:
+                            break
+                        h.update(chunk)
+                        g.write(chunk)
+                gf.flush()
+                os.fsync(gf.fileno())
+            os.chmod(gtmp, 0o600)
+            os.replace(gtmp, gz_path)
+        except BaseException:
+            try:
+                os.unlink(gtmp)
+            except OSError:
+                pass
+            raise
+    finally:
+        tmp.close()
+    meta = {"v": 1, "sid": sid, "project": project.lower(), "role": role, "host": self_host(), "cwd": src_cwd,
+            "lines": kept, "bytes": total, "sha256": h.hexdigest(),
+            "created": now_iso(), "masked": counts, "truncated": truncated, "orig_bytes": size,
+            "dropped_lines": dropped}
     atomic_write(os.path.join(sd, sid + ".meta.json"), json.dumps(meta, ensure_ascii=False).encode("utf-8"))
-    total = sum(v for k, v in counts.items() if k != "dropped_line")
-    print("EXPORT sid=%s lines=%d bytes=%d masked=%d %s" % (sid, meta["lines"], meta["bytes"], total,
+    total_masked = sum(v for k, v in counts.items() if k != "dropped_line")
+    print("EXPORT sid=%s lines=%d bytes=%d masked=%d %s" % (sid, meta["lines"], meta["bytes"], total_masked,
                                                             json.dumps(counts, ensure_ascii=False)))
+    if truncated:
+        print("TRUNCATED orig_bytes=%d sent_bytes=%d dropped_lines=%d" % (size, total, dropped))
+        log("export truncate sid=%s orig=%d kept=%d dropped=%d" % (sid, size, total, dropped))
     log("export sid=%s project=%s lines=%d bytes=%d masked=%d" % (sid, meta["project"], meta["lines"],
-                                                                    meta["bytes"], total))
+                                                                    meta["bytes"], total_masked))
     return meta
 
 
@@ -646,6 +722,24 @@ def register_resume(project, meta, cwd):
         log("import resume_index fail sid=%s err=%s" % (meta["sid"], type(e).__name__))
 
 
+def tail_overlap(local, new_lines):
+    """잘린 판(창이 앞으로 밀림)이 로컬 기록의 꼬리를 이어받는지 본다.
+
+    새 판 첫 줄이 로컬 k 번째 줄과 같고 local[k:] 가 새 판의 접두이면 로컬 최신 부분이 새 판에 그대로 들어 있다.
+    새 줄이 있으면 "replace", 새 판이 로컬 꼬리와 똑같으면(새 줄 없음) 로컬을 줄이지 않도록 "same",
+    겹치지 않으면 "conflict"(로컬에서 이어 쓴 기록 보호).
+    """
+    first, k = new_lines[0], -1
+    while True:
+        try:
+            k = local.index(first, k + 1)
+        except ValueError:
+            return "conflict"
+        rest = len(local) - k
+        if rest <= len(new_lines) and local[k:] == new_lines[:rest]:
+            return "replace" if len(new_lines) > rest else "same"
+
+
 def cmd_import(a):
     pk = proj_key(a.project)
     cwd = os.path.abspath(a.cwd)
@@ -694,6 +788,8 @@ def cmd_import(a):
                     local = norm_lines(target)
                     if local == new_lines[:len(local)]:
                         kind = "extend" if len(new_lines) > len(local) else "same"
+                    elif meta.get("truncated") is True and new_lines:
+                        kind = tail_overlap(local, new_lines)
                     else:
                         kind = "conflict"
                 if kind == "conflict":
@@ -714,7 +810,7 @@ def cmd_import(a):
                     pass
                 rows.append((sid, kind, meta.get("role") or "-", meta.get("host", "")))
                 log("import sid=%s kind=%s lines=%d" % (sid, kind, len(new_lines)))
-    done = [r for r in rows if r[1] in ("new", "extend")]
+    done = [r for r in rows if r[1] in ("new", "extend", "replace")]
     print("IMPORTED %d" % len(done))
     for r in rows:
         print("ITEM\t%s\t%s\t%s\t%s" % r)
