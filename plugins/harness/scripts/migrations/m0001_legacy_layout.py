@@ -247,6 +247,14 @@ def run(h, a, dry_run=False):
     state["legacy_home"] = h
     state["m0001"] = {"rc_backups": merged, "at": prev_m.get("at") or _utc_iso()}
     _save_json(state_path, state)
+    # 비로그인 셸용 환경 파일을 새 home 값으로 갱신(출력은 키 이름만)
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
+        import harness_ai_root
+        res = harness_ai_root.write_env_file(new_home, a).split()
+        print("M0001 %s %s %s" % (res[0], res[1], res[-1]))  # 예: M0001 ENV WRITE keys=HARNESS_HOME,…
+    except ImportError:
+        print("M0001 NOTE 환경 파일은 엔진의 facade 단계가 기록한다")
     print("M0001 OK")
     return 0
 

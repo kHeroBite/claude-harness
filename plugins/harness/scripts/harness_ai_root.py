@@ -167,6 +167,97 @@ def plugin_active():
 
 MARKER_TEXT_HEAD = "# AI (하네스 facade)"
 
+# 비로그인 셸(env -i bash -c, ssh 원격 명령)용 환경 파일 — KEY=VALUE 줄만(따옴표·셸 확장 없음), 경로 값만 담는다
+ENV_KEYS = ("HARNESS_HOME", "HARNESS_AI_ROOT", "CLAUDE_PROJECT_ROOTS", "CLAUDE_PROFILES_ROOT")
+RC_BLOCK_BEGIN = "# >>> harness PATH"
+RC_BLOCK_END = "# <<< harness PATH"
+RC_FILES = (".bashrc", ".bash_profile", ".bash_login", ".profile")
+
+
+def env_file_path():
+    """환경 파일 경로(${XDG_CONFIG_HOME:-~/.config}/claude-harness/env)."""
+    return os.path.join(os.path.dirname(project_home_file()), "env")
+
+
+def rc_block_value(var):
+    """rc 표식 블록(# >>> harness PATH … # <<< harness PATH)의 'export VAR="값"' 값을 읽는다."""
+    for name in RC_FILES:
+        try:
+            with open(os.path.join(_home(), name), encoding="utf-8", errors="replace") as f:
+                lines = f.read().splitlines()
+        except OSError:
+            continue
+        inside, val = False, None
+        for s in lines:
+            if s == RC_BLOCK_BEGIN:
+                inside = True
+            elif s == RC_BLOCK_END:
+                inside = False
+            elif inside and s.startswith("export %s=" % var):
+                v = s.split("=", 1)[1].strip()
+                if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
+                    v = v[1:-1]
+                val = v
+        if val:
+            return val
+    return None
+
+
+def _clean_value(v):
+    """경로 값만 허용 — 줄바꿈·셸 확장 문자가 있으면 버린다."""
+    if not v or any(c in v for c in "\n\r$`\"'"):
+        return None
+    return v.strip() or None
+
+
+def env_values(harness_home=None, ai_root=None):
+    """환경 파일에 쓸 값. ensure 인자(지금 맞추는 home·AI 루트)가 가장 우선이고,
+    그다음 ① 현재 프로세스 환경 ② rc 표식 블록 ③ install.json·project_home 순이다. 빈 값은 뺀다."""
+    inst = {}
+    if harness_home:
+        try:
+            with open(os.path.join(harness_home, "install.json"), encoding="utf-8") as f:
+                inst = json.load(f)
+        except (OSError, ValueError):
+            inst = {}
+    fallback = {"HARNESS_HOME": inst.get("harness_home") or (harness_home if harness_home else None),
+                "HARNESS_AI_ROOT": inst.get("ai_root"),
+                "CLAUDE_PROJECT_ROOTS": inst.get("project_home") or read_project_home(),
+                "CLAUDE_PROFILES_ROOT": None}
+    first = {"HARNESS_HOME": _abs(harness_home) if harness_home else None,
+             "HARNESS_AI_ROOT": _abs(ai_root) if ai_root else None}
+    out = {}
+    for k in ENV_KEYS:
+        for v in (first.get(k), os.environ.get(k), rc_block_value(k), fallback.get(k)):
+            v = _clean_value(v)
+            if v:
+                out[k] = v
+                break
+    return out
+
+
+def write_env_file(harness_home=None, ai_root=None, dry_run=False):
+    """환경 파일을 원자적으로 기록·갱신한다. 다른 키 줄은 보존한다. 반환: 출력 1줄(키 이름만)."""
+    vals = env_values(harness_home, ai_root)
+    path = env_file_path()
+    old_lines = []
+    try:
+        with open(path, encoding="utf-8") as f:
+            old_lines = f.read().splitlines()
+    except OSError:
+        old_lines = []
+    kept = [l for l in old_lines if l.split("=", 1)[0] not in ENV_KEYS and l.strip()]
+    new_text = "".join("%s=%s\n" % (k, vals[k]) for k in ENV_KEYS if k in vals) + "".join(l + "\n" for l in kept)
+    if "\n".join(old_lines) + ("\n" if old_lines else "") == new_text:
+        return "ENV KEEP %s keys=%s" % (path, ",".join(k for k in ENV_KEYS if k in vals))
+    if not dry_run:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = "%s.tmp.%d" % (path, os.getpid())
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(new_text)
+        os.replace(tmp, path)
+    return "ENV WRITE %s keys=%s" % (path, ",".join(k for k in ENV_KEYS if k in vals))
+
 
 def _is_our_mcp(path, harness_home):
     """facade 가 만든 .mcp.json(oio command 가 이 HARNESS_HOME venv)인지 본다. 사용자 파일은 지우지 않는다."""
@@ -317,6 +408,7 @@ def ensure(harness_home, ai_root, plugin_is_active=None, dry_run=False):
             json.dump(data, f, ensure_ascii=False, indent=2)
             f.write("\n")
         os.replace(tmp, marker)
+    out.append(write_env_file(harness_home, ai_root, dry_run))
     out.append("ENSURE_OK %s" % ai_root)
     return RC_OK, out
 

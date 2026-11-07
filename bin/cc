@@ -14,6 +14,32 @@
 #       CC_MENU_PICK=토큰,토큰… 은 메뉴마다 1개씩 소비한다(번호 1부터·enter·q·항목 키). CC_ROLE_INPUT=입력,… 은 직접 입력마다 1개.
 set -euo pipefail
 
+# 환경 파일 폴백(맨 앞 — 프로파일 루트·롤 라이브러리 계산 전): 로그인 셸이 아니어서 rc 블록을 읽지 못한 경우를 위해
+#   ~/.config/claude-harness/env 의 KEY=VALUE 줄에서 비어 있는 변수만 채운다. 이미 설정된 환경변수가 항상 우선이다.
+#   source 하지 않고 줄 단위로 읽는다. 허용 키 4개, 값은 절대경로(CLAUDE_PROJECT_ROOTS 는 : 로 이은 절대경로)만.
+_harness_env_fallback() {
+    local f="${XDG_CONFIG_HOME:-$HOME/.config}/claude-harness/env" line k v p ok
+    local -a parts=()
+    [[ -f "$f" ]] || return 0
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line="${line%$'\r'}"
+        [[ "$line" =~ ^[[:space:]]*(export[[:space:]]+)?(HARNESS_HOME|HARNESS_AI_ROOT|CLAUDE_PROJECT_ROOTS|CLAUDE_PROFILES_ROOT)=(.*)$ ]] || continue
+        k="${BASH_REMATCH[2]}"; v="${BASH_REMATCH[3]}"
+        v="${v%"${v##*[![:space:]]}"}"
+        if [[ "$v" =~ ^\"(.*)\"$ || "$v" =~ ^\'(.*)\'$ ]]; then v="${BASH_REMATCH[1]}"; fi
+        [[ -n "$v" && -z "${!k:-}" ]] || continue
+        case "$v" in *'$'*|*'`'*|*'\'*) continue ;; esac
+        ok=1
+        IFS=':' read -r -a parts <<< "$v"
+        for p in "${parts[@]}"; do [[ "$p" == /* ]] || ok=0; done
+        [[ $ok -eq 1 ]] || continue
+        [[ "$k" == "CLAUDE_PROJECT_ROOTS" ]] || [[ "$v" != *:* ]] || continue
+        export "$k=$v"
+    done < "$f"
+    return 0
+}
+_harness_env_fallback
+
 # 롤 공용 CLI(role_lib). 시험·스테이징은 ROLE_LIB 로 바꾼다.
 ROLE_LIB="${ROLE_LIB:-${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/role_lib.py}"
 

@@ -816,7 +816,7 @@ def ensure_facade(home, ai_root, plugin_is_active=None):
         if plugin_is_active is None:
             plugin_is_active = _air.plugin_active()
         _frc, flines = _air.ensure(home, ai_root, plugin_is_active)
-        notes.extend(l for l in flines if not l.startswith("FACADE KEEP"))
+        notes.extend(l for l in flines if not l.startswith(("FACADE KEEP", "ENV KEEP")))
     cur_link = os.path.join(home, "current")
     if not os.path.lexists(cur_link):
         os.symlink(os.path.join(home, "active", PLUG), cur_link)

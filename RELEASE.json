@@ -1,10 +1,10 @@
 {
   "schema": 1,
-  "version": "1.3.0",
+  "version": "1.3.1",
   "source_commit": "0c7b298eeb2c3622a96feaee048fda2b222a8b8a",
-  "built_at": "2026-11-07T01:48:02Z",
-  "summary": "oUpdate 엔진·<프로젝트홈>/AI 단일 정본 레이아웃·install-online.sh 1줄 설치·cc/lcc 종료 자동 대화공유·codex 연결",
-  "breaking": true,
+  "built_at": "2026-11-07T02:06:11Z",
+  "summary": "cc·lcc 환경 파일(~/.config/claude-harness/env) 폴백 — rc 블록 없는 셸(ssh 비로그인)에서도 cc ai 동작, ensure·m0001 이 env 기록",
+  "breaking": false,
   "requires": [
     {
       "name": "git",
@@ -129,15 +129,22 @@
       "script": "plugins/harness/scripts/migrations/m0001_legacy_layout.py"
     }
   ],
-  "post_actions": [
+  "post_actions": [],
+  "history": [
     {
-      "kind": "new_shell",
-      "text": "새 셸을 열거나 exec $SHELL -l 로 PATH·HARNESS_HOME 반영"
-    },
-    {
-      "kind": "reload_plugin",
-      "text": "/reload-plugins 또는 다음 세션부터 플러그인 1.3.0 적용"
+      "version": "1.3.0",
+      "breaking": true,
+      "summary": "oUpdate 엔진·<프로젝트홈>/AI 단일 정본 레이아웃·install-online.sh 1줄 설치·cc/lcc 종료 자동 대화공유·codex 연결",
+      "post_actions": [
+        {
+          "kind": "new_shell",
+          "text": "새 셸을 열거나 exec $SHELL -l 로 PATH·HARNESS_HOME 반영"
+        },
+        {
+          "kind": "reload_plugin",
+          "text": "/reload-plugins 또는 다음 세션부터 플러그인 1.3.0 적용"
+        }
+      ]
     }
-  ],
-  "history": []
+  ]
 }

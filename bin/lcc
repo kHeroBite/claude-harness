@@ -17,6 +17,31 @@
 
 set -u
 
+# 환경 파일 폴백(맨 앞): rc 블록을 읽지 않은 셸이면 ~/.config/claude-harness/env 의 KEY=VALUE 줄로 비어 있는 변수만 채운다.
+#   이미 설정된 환경변수가 우선. source 하지 않고 줄 단위로 읽으며 허용 키 4개·절대경로 값만 받는다(cc 와 같은 규칙).
+_lcc_env_fallback() {
+    local f="${XDG_CONFIG_HOME:-$HOME/.config}/claude-harness/env" line k v p ok
+    local -a parts=()
+    [[ -f "$f" ]] || return 0
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line="${line%$'\r'}"
+        [[ "$line" =~ ^[[:space:]]*(export[[:space:]]+)?(HARNESS_HOME|HARNESS_AI_ROOT|CLAUDE_PROJECT_ROOTS|CLAUDE_PROFILES_ROOT)=(.*)$ ]] || continue
+        k="${BASH_REMATCH[2]}"; v="${BASH_REMATCH[3]}"
+        v="${v%"${v##*[![:space:]]}"}"
+        if [[ "$v" =~ ^\"(.*)\"$ || "$v" =~ ^\'(.*)\'$ ]]; then v="${BASH_REMATCH[1]}"; fi
+        [[ -n "$v" && -z "${!k:-}" ]] || continue
+        case "$v" in *'$'*|*'`'*|*'\'*) continue ;; esac
+        ok=1
+        IFS=':' read -r -a parts <<< "$v"
+        for p in "${parts[@]}"; do [[ "$p" == /* ]] || ok=0; done
+        [[ $ok -eq 1 ]] || continue
+        [[ "$k" == "CLAUDE_PROJECT_ROOTS" ]] || [[ "$v" != *:* ]] || continue
+        export "$k=$v"
+    done < "$f"
+    return 0
+}
+_lcc_env_fallback
+
 _lcc_host="${LCC_HOST:-pd-server}"
 _lcc_dir="${LCC_DIR:-}"
 case "${0##*/}" in
@@ -90,7 +115,7 @@ _lcc_local_dir() {
                 -*|*:*|*'#'*|*/*) continue ;;
             esac
             python3 -B "$_lcc_role_lib" norm "$_lld_a" >/dev/null 2>&1 && continue
-            [ -f "$HOME/.claude-profiles/$_lld_a/.credentials.json" ] && continue
+            [ -f "${CLAUDE_PROFILES_ROOT:-$HOME/.claude-profiles}/$_lld_a/.credentials.json" ] && continue
             if python3 -B "$_lcc_role_lib" project-dir "$_lld_a" >/dev/null 2>&1; then _lld_name="$_lld_a"; break; fi
         done
     fi
@@ -105,7 +130,7 @@ fi
 
 # 시험 모드: ssh 없이 해석 결과만 출력(cc 의 CC_ROLE_CHECK_ONLY 와 같은 약속)
 if [ "${CC_ROLE_CHECK_ONLY:-}" = "1" ]; then
-    echo "LCC_CHECK host=${_lcc_host} cmd=${_lcc_cmd} local_dir=${_lcc_dir_local} project=${_lcc_slug} remote=${_lcc_remote}"
+    echo "LCC_CHECK host=${_lcc_host} cmd=${_lcc_cmd} local_dir=${_lcc_dir_local} project=${_lcc_slug} roots=${CLAUDE_PROJECT_ROOTS:-} harness_home=${HARNESS_HOME:-} remote=${_lcc_remote}"
     exit 0
 fi
 
