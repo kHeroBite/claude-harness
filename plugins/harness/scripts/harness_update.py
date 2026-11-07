@@ -812,11 +812,24 @@ def ensure_facade(home, ai_root, plugin_is_active=None):
     notes = []
     if not os.path.islink(os.path.join(home, "active")):
         return notes
-    if ai_root and _air:
+    if ai_root:
         if plugin_is_active is None:
-            plugin_is_active = _air.plugin_active()
-        _frc, flines = _air.ensure(home, ai_root, plugin_is_active)
-        notes.extend(l for l in flines if not l.startswith(("FACADE KEEP", "ENV KEEP")))
+            plugin_is_active = _air.plugin_active() if _air else False
+        # 새 active 트리의 모듈로 실행한다(구판 엔진이 돌려도 신판 facade·env 규칙이 1회에 적용되게).
+        new_mod = os.path.join(home, "active", PLUG, "scripts", "harness_ai_root.py")
+        flines = None
+        if os.path.isfile(new_mod):
+            cmd = [sys.executable, "-B", new_mod, "ensure", "--harness-home", home, "--ai-root", ai_root,
+                   "--plugin-active" if plugin_is_active else "--no-plugin-active"]
+            try:
+                r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+                if r.returncode in (0, 3):
+                    flines = (r.stdout or "").splitlines()
+            except (OSError, subprocess.TimeoutExpired):
+                flines = None
+        if flines is None and _air:  # 새 트리에 모듈이 없거나(하향) 실행 실패 → 현재 모듈로 폴백
+            _frc, flines = _air.ensure(home, ai_root, plugin_is_active)
+        notes.extend(l for l in (flines or []) if not l.startswith(("FACADE KEEP", "ENV KEEP")))
     cur_link = os.path.join(home, "current")
     if not os.path.lexists(cur_link):
         os.symlink(os.path.join(home, "active", PLUG), cur_link)

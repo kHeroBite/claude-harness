@@ -108,11 +108,17 @@ mapfile -t PROFILES < <(
   | sort
 )
 
-# 0개: 에러 종료
+# 0개: 에러 종료. 단 시험·진단(CC_ROLE_CHECK_ONLY=1, 메뉴 주입 없음)은 프로젝트·롤·dir 해석까지 진행해 profile=NONE 으로 출력한다.
+_NO_PROFILE=0
 if [[ ${#PROFILES[@]} -eq 0 ]]; then
-    echo "❌ 등록된 프로파일이 없습니다."
-    echo "   다음 명령으로 만드세요: cas create <이름>"
-    exit 1
+    if [[ "${CC_ROLE_CHECK_ONLY:-}" == "1" && -z "${CC_MENU_PICK:-}" ]]; then
+        _NO_PROFILE=1
+    else
+        echo "❌ 등록된 프로파일이 없습니다(${PROFILES_ROOT})."
+        echo "   다음 할 일: cas create <이름> 으로 프로파일을 만들고, 이어 열리는 Claude 에서 /login 을 마친 뒤 cc 를 다시 실행하세요."
+        echo "   install-online 으로 막 설치했다면 설치 마지막에 나온 안내문(로그인·PATH)을 먼저 확인하세요."
+        exit 1
+    fi
 fi
 
 _is_profile() {
@@ -147,7 +153,7 @@ _reject() {
     # 기동 전 거부: 사유 + 롤 목록 + 프로파일 목록, rc=1
     echo "❌ $1" >&2
     [[ -n "${2:-}" ]] && printf '%s\n' "$2" >&2
-    echo "사용: cc [작업디렉터리|프로젝트] [계정] [롤[:영역]] [--project 프로젝트]  (예: cc back · cc --role front · cc back:결제 · cc ${PROFILES[0]} back · cc pd back)" >&2
+    echo "사용: cc [작업디렉터리|프로젝트] [계정] [롤[:영역]] [--project 프로젝트]  (예: cc back · cc --role front · cc back:결제 · cc ${PROFILES[0]:-<계정>} back · cc pd back)" >&2
     if [[ -f "$ROLE_LIB" ]]; then
         echo "롤 목록:" >&2
         python3 -B "$ROLE_LIB" list 2>/dev/null | grep -v '^  \[그룹\]' >&2 || true
@@ -389,6 +395,7 @@ _ask_agent_name() {
 # 시험 모드: 메뉴·cas 없이 해석 결과만 출력(CC_MENU_PICK 주입이 있으면 메뉴를 지난 뒤 cas 직전에 출력)
 if [[ "${CC_ROLE_CHECK_ONLY:-}" == "1" && -z "${CC_MENU_PICK:-}" ]]; then
     _chk_prof="${FORCED_PROFILE:-MENU}"
+    [[ $_NO_PROFILE -eq 1 ]] && _chk_prof="NONE"
     _apply_role "${FORCED_PROFILE:-}"
     echo "CC_CHECK profile=${_chk_prof} role=${ROLE_SET_VALUE} flag=${SESSION_ARGS[*]:-} sid=${NEW_SID:-${RESUME_SID:-}} default=${DEFAULT_PROFILE} dir=${WORK_DIR}"
     exit 0
@@ -1188,6 +1195,8 @@ _cc_conv_dir="${ROLE_HOME_BASE:-$HOME/.claude}/projects/${WORK_DIR//[^A-Za-z0-9]
 _cc_t0=""
 if [[ "${CC_AUTO_OSYNC:-1}" != "0" ]]; then
     _cc_t0="$(mktemp "${TMPDIR:-/tmp}/cc_t0.XXXXXX" 2>/dev/null || true)"
+    # 표식 mtime 을 1초 앞으로 당긴다: 대화 파일이 표식과 같은 시각 틱에 찍히면 -newer(엄격 초과)가 놓친다
+    [[ -n "$_cc_t0" ]] && touch -d "@$(( $(date +%s) - 1 ))" "$_cc_t0" 2>/dev/null || true
 fi
 _auto_osync() {
     local cs proj lib infra="" peer="" pcwd="" sid n rc=0 out
