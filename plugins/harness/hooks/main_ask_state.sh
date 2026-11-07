@@ -16,7 +16,7 @@
 #   라이브 이행(ask 때 + 사용자 입력 UserPromptSubmit 때 — 입력 턴당 1회, Stop·팀원 제외; 이미 같은 값이면 set 하지 않는다): (a) 해석된 set-titles-string 이 MAIN_TITLE_FMT 와 다르면(빈 값 포함) 자기 tmux 세션 옵션(-g 아님)으로 MAIN_TITLE_FMT 를 걸고,
 #                            세션 id 가 확보되면 항상 자기 세션에 status-interval 1 을 건다(깜빡임용, 원복 없음).
 #                        (b) 자기 pane 에 @main_border_ver 가 있고 현재 판본과 다르면 lib/main_pane_state.sh _main_pane_fmt 로 테두리만 재적용.
-# 탭 색(WT, 2026-11-05): 작업 중=빨강(on), 질문·승인 대기=파랑(ask), 종료(Stop)=회색(done) (lib/main_ask_fmt.sh MAIN_TAB_ON·ASK·DONE).
+# 탭 색(WT, 2026-11-05): 작업 중=빨강(on), 질문·승인 대기=파랑(ask), 종료(Stop)=머신별 아주 연한 색(done, linux 연빨강·wsl 연파랑) (lib/main_ask_fmt.sh MAIN_TAB_ON·ASK·DONE).
 #   창 제목 스피너도 같은 @tab_color==on 으로 그린다(lib/main_ask_fmt.sh MAIN_TITLE_FMT) — 빨강과 스피너는 한 판정으로 함께 켜지고 꺼진다.
 #   on = UserPromptSubmit, 대기 표식 해제(pre_other·post — 승인·답변 뒤 작업 재개), resume(회색 뒤 첫 도구 호출). ask = ask(질문·승인 대기). done = Stop.
 #   resume: 팀원 메시지·백그라운드 알림·Stop hook 재개로 열린 턴은 UserPromptSubmit 이 오지 않는다(2026-11-05 트랜스크립트 실측).

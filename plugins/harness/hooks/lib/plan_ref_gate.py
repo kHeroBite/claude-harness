@@ -85,7 +85,7 @@ def 정본참조_파싱(본문):
         if not m:
             # 들여쓴 이어짐 줄은 직전 반영 예정에 붙인다(여러 줄 허용)
             if 직전_키 == "반영예정" and 줄.startswith((" ", "\t")) and 줄.strip():
-                결과["반영예정"].extend(_경로들(줄))
+                결과["반영예정"].extend(p for p in _경로들(줄) if _문서경로(p))
             continue
         이름 = re.sub(r"\s+", "", m.group(1))
         값 = m.group(2).strip()
@@ -96,7 +96,7 @@ def 정본참조_파싱(본문):
         if 키 == "관련없음사유":
             결과[키] = 값
         elif 키 == "반영예정":
-            경로 = [] if _해당없음_시작(값) else _경로들(값)
+            경로 = [] if _해당없음_시작(값) else [p for p in _경로들(값) if _문서경로(p)]
             # '해당 없음' 은 사유가 앞뒤 공백 제외 10자 이상일 때만 인정한다(미달이면 줄 없음과 같게 None)
             if not 경로 and 해당없음_사유(값) is not None:
                 결과["반영예정_해당없음"] = 값
@@ -158,6 +158,17 @@ def _해당없음_시작(값):
 def _설명_앞(값):
     """'- 관련:' 값에서 첫 ' — ' 앞만 돌려준다. 그 뒤는 이유이므로 경로로 읽지 않는다."""
     return 값.split(" — ", 1)[0]
+
+
+def _문서경로(토큰):
+    """'반영 예정' 토큰이 문서 경로인가. 공백 없음 AND '-' 로 시작하지 않음 AND ('/' 포함 OR 끝이 .확장자(영숫자 1~8자)).
+    '--post-update' 같은 명령 토큰을 문서로 오인하지 않기 위함이다."""
+    if not 토큰 or any(c.isspace() for c in 토큰) or 토큰.startswith("-"):
+        return False
+    if "/" in 토큰:
+        return True
+    _앞, 점, 확장 = 토큰.rpartition(".")
+    return bool(점) and 확장.isalnum() and 1 <= len(확장) <= 8
 
 
 def _경로들(값, 첫토큰_허용=False):

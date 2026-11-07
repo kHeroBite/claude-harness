@@ -8,7 +8,12 @@
 #   peer_ssh_notify.sh read <프로젝트>                                자기 inbox 출력(데이터)
 #   peer_ssh_notify.sh new <프로젝트> <커서파일>                      커서 이후 신규 건(JSONL)만 출력하고 커서 갱신
 #   peer_ssh_notify.sh recv <프로젝트> <태그> <보낸호스트>  < 본문     (내부) 원격에서 실행되는 수신부
-#   peer_ssh_notify.sh outbox-take <프로젝트> | outbox-ack <프로젝트> <바이트>   (내부) pull 이 쓰는 원격 부분
+#   peer_ssh_notify.sh outbox-take <프로젝트> | outbox-ack <프로젝트> <바이트> [sha256]   (내부) pull 이 쓰는 원격 부분
+#   peer_ssh_notify.sh hosts-add <ssh별칭>                            자동 pull 대상 등록부(peer_hosts)에 별칭 추가(outbox 거부)
+#   peer_ssh_notify.sh hosts-list                                     등록부의 별칭을 줄마다 출력
+#   peer_ssh_notify.sh pull-all <ssh별칭>                             상대 outbox 전부를 ssh 1회로 가져와 프로젝트별 inbox 에 넣고 ack
+#   peer_ssh_notify.sh stale-check [--sec N]                          방치된 pull·outbox 점검(로컬만, 기본 PEER_STALE_SEC 또는 600초)
+#   peer_ssh_notify.sh outbox-take-all | outbox-ack-all <프로젝트> <바이트> <sha256>…   (내부) pull-all 이 쓰는 원격 부분
 #
 # 태그: 작업시작 · 작업종료 · 인계 · 인계결과 (이 넷만 허용)
 # 본문: 반드시 stdin 으로만 넘긴다(argv 금지). UTF-8, 4096 바이트 이하, 제어문자(줄바꿈·탭 제외)는 지운다.
@@ -29,7 +34,8 @@
 #   PEER_NOTIFY_REMOTE_HARNESS  원격의 HARNESS_HOME 절대경로(기본: 원격 PATH 의 peer_ssh_notify.sh,
 #                               없으면 원격 ${HARNESS_HOME:-$HOME/.harness}/current/scripts/)
 #   PEER_NOTIFY_TMUX=0          수신 시 tmux 상태줄 알림 끔
-#   PEER_NOTIFY_HOME            inbox·outbox 루트(기본 $HOME/.claude)
+#   PEER_NOTIFY_HOME            inbox·outbox·peer_hosts 루트(기본 $HOME/.claude)
+#   PEER_STALE_SEC              stale-check 기본 기준 초(기본 600)
 #
 # 종료 코드: 0 성공 · 1 실행 실패(ssh·파일) · 2 사용법·검증 실패(ssh 호출 전 거부)
 
@@ -46,14 +52,15 @@ readonly HARNESS_RE='^/[A-Za-z0-9._/-]{1,255}$'
 
 # 원격에서 수신부를 찾아 실행하는 고정 리터럴. 검증된 토큰만 위치 인자로 뒤에 붙는다.
 # shellcheck disable=SC2016
-readonly REMOTE_LAUNCH='h=$1; shift; if [ "$h" != - ]; then s=$h/current/scripts/peer_ssh_notify.sh; else s=$(command -v peer_ssh_notify.sh 2>/dev/null) || s=${HARNESS_HOME:-$HOME/.harness}/current/scripts/peer_ssh_notify.sh; fi; exec bash "$s" "$@"'
+readonly REMOTE_LAUNCH='h=$1; shift; if [ "$h" != - ]; then s=$h/current/scripts/peer_ssh_notify.sh; else s=; for c in "$(command -v peer_ssh_notify.sh 2>/dev/null)" "$HOME/.local/bin/peer_ssh_notify.sh" "${HARNESS_HOME:-$HOME/.harness}/current/scripts/peer_ssh_notify.sh" "'"${HARNESS_HOME:-$HOME/.harness}/current/scripts"'/peer_ssh_notify.sh"; do if [ -n "$c" ] && [ -f "$c" ]; then s=$c; break; fi; done; [ -n "$s" ] || s=${HARNESS_HOME:-$HOME/.harness}/current/scripts/peer_ssh_notify.sh; fi; exec bash "$s" "$@"'
 
 # JSON 기록·본문 정제·잠금을 맡는 python 도우미(flock = fcntl.flock). 본문 상한 4096 바이트.
 PY_HELPER=$(cat <<'PY'
-import sys, os, json, fcntl, re, time
+import sys, os, json, fcntl, re, time, hashlib
 MAX = 4096
 TAGS = {"작업시작", "작업종료", "인계", "인계결과"}
 TOK = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')
+STEM = re.compile(r'^[a-z0-9][a-z0-9._-]{0,63}$')
 
 def die(msg, rc=2):
     sys.stderr.write("peer_ssh_notify: " + msg + "\n")
@@ -88,6 +95,54 @@ def locked_append(path, lines):
             f.write(line + "\n")
         f.flush()
 
+def parse_frame(raw_all, project):
+    # 프레임 1개(원문 JSONL)를 ingest 규칙으로 검사해 (정상 기록 목록, 건너뛴 수)를 돌려준다.
+    # 줄 하나가 어떤 이유로든 깨져도(타입 위조 포함) 그 줄만 건너뛴다.
+    good, bad = [], 0
+    for raw in raw_all.splitlines():
+        try:
+            o = json.loads(raw.decode("utf-8"))
+            if not isinstance(o, dict):
+                raise ValueError
+            prj, tag, host, body = o.get("project"), o.get("tag"), o.get("from_host"), o.get("body")
+            if not isinstance(prj, str) or prj.lower() != project.lower():
+                raise ValueError
+            if not isinstance(tag, str) or tag not in TAGS or not isinstance(host, str) \
+                    or not TOK.match(host) or not isinstance(body, str):
+                raise ValueError
+            b = body.encode("utf-8")
+            if len(b) > MAX:
+                raise ValueError
+            ts = o.get("ts") if isinstance(o.get("ts"), str) and len(o.get("ts")) <= 40 else None
+            good.append(record(project, tag, host, clean_bytes(b), "pull", ts))
+        except Exception:
+            bad += 1
+    return good, bad
+
+def dedupe(path, good):
+    # ack 가 건너뛰어져 같은 줄을 다시 가져온 경우를 막는다: inbox 에 이미 같은 줄이 있으면 기록하지 않는다.
+    try:
+        with open(path, "rb") as f:
+            size = f.seek(0, 2)
+            f.seek(max(0, size - 4 * 1024 * 1024))
+            have = set(f.read().decode("utf-8", "replace").splitlines())
+    except OSError:
+        have = set()
+    keep = [g for g in good if g not in have]
+    return keep, len(good) - len(keep)
+
+def read_hosts(path):
+    out = []
+    try:
+        with open(path, encoding="utf-8") as f:
+            for ln in f.read().splitlines():
+                ln = ln.strip()
+                if TOK.match(ln) and ln != "outbox" and ln not in out:
+                    out.append(ln)
+    except (OSError, UnicodeDecodeError):
+        pass
+    return out
+
 mode = sys.argv[1]
 if mode == "sanitize":
     sys.stdout.write(clean_bytes(sys.stdin.buffer.read(MAX + 1)))
@@ -104,38 +159,28 @@ elif mode == "take":
             sys.stdout.buffer.write(f.read())
 elif mode == "ack":
     path, n = sys.argv[2], int(sys.argv[3])
+    sha = sys.argv[4] if len(sys.argv) > 4 else None
     if n <= 0 or not os.path.exists(path):
         sys.exit(0)
     with open(path, "r+b") as f:
         fcntl.flock(f, fcntl.LOCK_EX)
         data = f.read()
-        if n > len(data):
+        if sha is not None:
+            if n > len(data) or hashlib.sha256(data[:n]).hexdigest() != sha:
+                sys.stderr.write("peer_ssh_notify: 접두사 해시 불일치 — ack 건너뜀(다른 소비자가 먼저 가져감)\n")
+                sys.exit(0)
+        elif n > len(data):
             die("ack 바이트가 outbox 크기보다 크다", 1)
         f.seek(0)
         f.write(data[n:])
         f.truncate()
 elif mode == "ingest":
     path, project = sys.argv[2], sys.argv[3]
-    good, bad = [], 0
-    for raw in sys.stdin.buffer.read().splitlines():
-        try:
-            o = json.loads(raw.decode("utf-8"))
-            if not isinstance(o, dict) or not isinstance(o.get("project"), str) \
-                    or o.get("project").lower() != project.lower():
-                raise ValueError
-            tag, host, body = o.get("tag"), o.get("from_host"), o.get("body")
-            if tag not in TAGS or not isinstance(host, str) or not TOK.match(host) or not isinstance(body, str):
-                raise ValueError
-            b = body.encode("utf-8")
-            if len(b) > MAX:
-                raise ValueError
-            ts = o.get("ts") if isinstance(o.get("ts"), str) and len(o.get("ts")) <= 40 else None
-            good.append(record(project, tag, host, clean_bytes(b), "pull", ts))
-        except (ValueError, UnicodeDecodeError):
-            bad += 1
+    good, bad = parse_frame(sys.stdin.buffer.read(), project)
+    good, dup = dedupe(path, good)
     if good:
         locked_append(path, good)
-    sys.stdout.write("pulled=%d skipped=%d\n" % (len(good), bad))
+    sys.stdout.write("pulled=%d skipped=%d\n" % (len(good), bad + dup))
 elif mode == "new":
     path, cur_path = sys.argv[2], sys.argv[3]
     try:
@@ -162,13 +207,148 @@ elif mode == "new":
     with open(tmp, "w", encoding="ascii") as f:
         f.write(str(end))
     os.replace(tmp, cur_path)
+elif mode == "take_all":
+    d = sys.argv[2]
+    out = sys.stdout.buffer
+    try:
+        names = sorted(os.listdir(d))
+    except OSError:
+        names = []
+    for name in names:
+        stem = name[:-6]
+        p = os.path.join(d, name)
+        if not name.endswith(".jsonl") or not STEM.match(stem) or os.path.islink(p) or not os.path.isfile(p):
+            continue
+        with open(p, "rb") as f:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            data = f.read()
+        if data:
+            out.write(b"PSN1 " + stem.encode("ascii") + b" " + str(len(data)).encode("ascii") + b"\n" + data)
+    out.flush()
+elif mode == "ack_all":
+    d, rest = sys.argv[2], sys.argv[3:]
+    if len(rest) % 3:
+        die("ack 인자 3개 조(프로젝트 바이트 sha256)가 맞지 않는다")
+    for i in range(0, len(rest), 3):
+        if not STEM.match(rest[i]) or not re.match(r'^[0-9]{1,9}$', rest[i + 1]) \
+                or not re.match(r'^[0-9a-f]{64}$', rest[i + 2]):
+            die("ack 인자 검증 실패")
+    for i in range(0, len(rest), 3):
+        p, n, sha = os.path.join(d, rest[i] + ".jsonl"), int(rest[i + 1]), rest[i + 2]
+        if n <= 0 or not os.path.exists(p):
+            continue
+        with open(p, "r+b") as f:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            data = f.read()
+            if n > len(data) or hashlib.sha256(data[:n]).hexdigest() != sha:
+                sys.stderr.write("peer_ssh_notify: %s 접두사 해시 불일치 — ack 건너뜀(다른 소비자가 먼저 가져감)\n" % rest[i])
+                continue
+            f.seek(0)
+            f.write(data[n:])
+            f.truncate()
+elif mode == "ingest_all":
+    inbox = sys.argv[2]
+    data = sys.stdin.buffer.read()
+    pos, dirty = 0, False
+    while pos < len(data):
+        nl = data.find(b"\n", pos)
+        if nl < 0:
+            dirty = True
+            break
+        parts = data[pos:nl].split(b" ")
+        if len(parts) != 3 or parts[0] != b"PSN1" or not parts[2].isdigit() or len(parts[2]) > 9:
+            dirty = True
+            break
+        try:
+            proj = parts[1].decode("ascii")
+        except UnicodeDecodeError:
+            dirty = True
+            break
+        if not STEM.match(proj):
+            dirty = True
+            break
+        n, start = int(parts[2]), nl + 1
+        if n == 0 or start + n > len(data):
+            dirty = True
+            break
+        frame = data[start:start + n]
+        pos = start + n
+        path = os.path.join(inbox, proj + ".jsonl")
+        good, bad = parse_frame(frame, proj)
+        try:
+            good, dup = dedupe(path, good)
+            if good:
+                locked_append(path, good)
+        except OSError as e:
+            sys.stderr.write("peer_ssh_notify: %s inbox 기록 실패(ack 하지 않음): %s\n" % (proj, e))
+            dirty = True
+            continue
+        sys.stdout.write("ACK %s %d %d %d %s\n" % (proj, n, len(good), bad + dup, hashlib.sha256(frame).hexdigest()))
+    if dirty:
+        sys.stdout.write("BAD\n")
+elif mode == "hosts_add":
+    path, alias = sys.argv[2], sys.argv[3]
+    if not TOK.match(alias) or alias == "outbox":
+        die("별칭 검증 실패(outbox 는 등록할 수 없다)")
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    with os.fdopen(fd, "r+", encoding="utf-8") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        text = f.read()
+        if alias not in [x.strip() for x in text.splitlines()]:
+            f.write(("" if not text or text.endswith("\n") else "\n") + alias + "\n")
+            f.flush()
+elif mode == "hosts_list":
+    for a in read_hosts(sys.argv[2]):
+        sys.stdout.write(a + "\n")
+elif mode == "stale":
+    home, sec = sys.argv[2], int(sys.argv[3])
+    nowt = time.time()
+    hp = os.path.join(home, "peer_hosts")
+    try:
+        hm = os.path.getmtime(hp)
+    except OSError:
+        hm = nowt
+    for a in read_hosts(hp):
+        try:
+            base = os.path.getmtime(os.path.join(home, "peer_inbox", ".pullall_%s.ok" % a))
+        except OSError:
+            base = hm
+        age = int(nowt - base)
+        if age > sec:
+            sys.stdout.write("STALE pull %s %d\n" % (a, age))
+    od = os.path.join(home, "peer_outbox")
+    try:
+        names = sorted(os.listdir(od))
+    except OSError:
+        names = []
+    from datetime import datetime
+    for name in names:
+        stem, p = name[:-6], os.path.join(od, name)
+        if not name.endswith(".jsonl") or not STEM.match(stem) or not os.path.isfile(p):
+            continue
+        try:
+            with open(p, "rb") as f:
+                data = f.read()
+        except OSError:
+            continue
+        lines = [x for x in data.splitlines() if x.strip()]
+        if not lines:
+            continue
+        try:
+            base = datetime.strptime(json.loads(lines[0].decode("utf-8"))["ts"], "%Y-%m-%dT%H:%M:%S%z").timestamp()
+        except (ValueError, KeyError, TypeError, UnicodeDecodeError):
+            base = os.path.getmtime(p)
+        age = int(nowt - base)
+        if age > sec:
+            sys.stdout.write("STALE outbox %s %d %d\n" % (stem, len(lines), age))
 else:
     die("알 수 없는 도우미 모드")
 PY
 )
 
 usage() {
-    sed -n '4,34p' "$0" | sed 's/^# \{0,1\}//' >&2
+    sed -n '4,40p' "$0" | sed 's/^# \{0,1\}//' >&2
     exit 2
 }
 
@@ -279,15 +459,20 @@ cmd_outbox_take() {
 }
 
 cmd_outbox_ack() {
-    [ $# -eq 2 ] || usage
+    { [ $# -eq 2 ] || [ $# -eq 3 ]; } || usage
     need_token "프로젝트" "$1"
     [[ "$2" =~ ^[0-9]{1,9}$ ]] || { err "ack 바이트 수가 올바르지 않다"; exit 2; }
-    python3 -c "$PY_HELPER" ack "$(outbox_path "$1")" "$2"
+    if [ $# -eq 3 ]; then
+        [[ "$3" =~ ^[0-9a-f]{64}$ ]] || { err "ack sha256 형식이 올바르지 않다"; exit 2; }
+        python3 -c "$PY_HELPER" ack "$(outbox_path "$1")" "$2" "$3"
+    else
+        python3 -c "$PY_HELPER" ack "$(outbox_path "$1")" "$2"
+    fi
 }
 
 cmd_pull() {
     [ $# -eq 2 ] || usage
-    local alias="$1" project="$2" rh n rc
+    local alias="$1" project="$2" rh n rc sha
     need_token "ssh 별칭" "$alias"; need_token "프로젝트" "$project"
     rh=$(remote_harness) || exit 2
     need_alias "$alias"
@@ -297,12 +482,95 @@ cmd_pull() {
     [ $rc -eq 0 ] || { err "원격 outbox 읽기 실패 rc=$rc"; exit 1; }
     n=$(wc -c <"$_PSN_TMP" | tr -d ' ')
     if [ "$n" = 0 ]; then cleanup_tmp; echo "pulled=0 skipped=0"; return 0; fi
+    sha=$(sha256sum <"$_PSN_TMP" | cut -d' ' -f1)
     python3 -c "$PY_HELPER" ingest "$(inbox_path "$project")" "$project" <"$_PSN_TMP" || exit 1
     cleanup_tmp
-    # 로컬 기록이 끝난 뒤에만 원격에서 가져간 바이트만큼 지운다(그 사이 새로 쌓인 건 남는다).
-    ssh_run "$alias" "$rh" outbox-ack "$project" "$n" </dev/null
+    # 로컬 기록이 끝난 뒤에만, 가져간 바이트 접두사의 해시가 지금도 같을 때만 지운다(그 사이 새로 쌓이거나 다른 소비자가 가져간 건 보존).
+    ssh_run "$alias" "$rh" outbox-ack "$project" "$n" "$sha" </dev/null
     rc=$?
-    [ $rc -eq 0 ] || { err "원격 outbox 비우기 실패 rc=$rc (다음 pull 에서 중복될 수 있음)"; exit 1; }
+    if [ $rc -eq 2 ]; then err "원격 구판(outbox-ack sha256 인자 없음) — 상대 하네스를 갱신해야 한다"; exit 1; fi
+    [ $rc -eq 0 ] || { err "원격 outbox 비우기 실패 rc=$rc (다음 pull 에서 중복 기록은 막힌다)"; exit 1; }
+}
+
+cmd_hosts_add() {
+    [ $# -eq 1 ] || usage
+    need_token "ssh 별칭" "$1"
+    [ "$1" != outbox ] || { err "outbox 는 pull 대상 별칭이 아니다"; exit 2; }
+    python3 -c "$PY_HELPER" hosts_add "$(cfg_dir)/peer_hosts" "$1" || exit $?
+}
+
+cmd_hosts_list() {
+    [ $# -eq 0 ] || usage
+    python3 -c "$PY_HELPER" hosts_list "$(cfg_dir)/peer_hosts"
+}
+
+cmd_outbox_take_all() {
+    [ $# -eq 0 ] || usage
+    python3 -c "$PY_HELPER" take_all "$(cfg_dir)/peer_outbox"
+}
+
+cmd_outbox_ack_all() {
+    [ $# -ge 3 ] && [ $# -le 192 ] && [ $(( $# % 3 )) -eq 0 ] || usage
+    python3 -c "$PY_HELPER" ack_all "$(cfg_dir)/peer_outbox" "$@"
+}
+
+cmd_pull_all() {
+    [ $# -eq 1 ] || usage
+    local alias="$1" rh n rc res tag proj an ap as sha sum_p=0 sum_s=0 np=0 i total dirty=0
+    local -a acks=() chunk
+    need_token "ssh 별칭" "$alias"
+    rh=$(remote_harness) || exit 2
+    need_alias "$alias"
+    make_tmp
+    ssh_run "$alias" "$rh" outbox-take-all </dev/null >"$_PSN_TMP"
+    rc=$?
+    if [ $rc -ne 0 ]; then
+        if [ $rc -eq 2 ]; then err "원격 구판(outbox-take-all 없음) — 상대 하네스를 갱신해야 한다"
+        else err "원격 outbox 읽기 실패 rc=$rc"; fi
+        exit 1
+    fi
+    mkdir -p -- "$(cfg_dir)/peer_inbox"
+    n=$(wc -c <"$_PSN_TMP" | tr -d ' ')
+    if [ "$n" != 0 ]; then
+        res=$(python3 -c "$PY_HELPER" ingest_all "$(cfg_dir)/peer_inbox" <"$_PSN_TMP") || { err "로컬 기록 실패"; exit 1; }
+        while read -r tag proj an ap as sha; do
+            if [ "$tag" = BAD ]; then dirty=1; continue; fi
+            [ "$tag" = ACK ] || continue
+            acks+=("$proj" "$an" "$sha")
+            sum_p=$((sum_p + ap)); sum_s=$((sum_s + as)); np=$((np + 1))
+            if [ "$ap" -gt 0 ]; then notify_tmux "$proj" "새 통지 ${ap}건" "$alias"; fi
+        done <<<"$res"
+    fi
+    cleanup_tmp
+    # 로컬 기록이 끝난 프레임만, 접두사 해시가 지금도 같을 때만 원격에서 지운다(기록 실패 프레임은 다음 pull 에서 재시도).
+    total=${#acks[@]}; i=0
+    while [ $i -lt $total ]; do
+        chunk=("${acks[@]:i:192}")
+        ssh_run "$alias" "$rh" outbox-ack-all "${chunk[@]}" </dev/null
+        rc=$?
+        if [ $rc -eq 2 ]; then err "원격 구판(outbox-ack-all sha256 미지원) — 상대 하네스를 갱신해야 한다"; exit 1; fi
+        [ $rc -eq 0 ] || { err "원격 outbox 비우기 실패 rc=$rc (다음 pull 에서 중복 기록은 막힌다)"; exit 1; }
+        i=$((i + 192))
+    done
+    # 헤더 오류·로컬 기록 실패가 있었으면 .ok 를 갱신하지 않는다(방치 경고가 가려지지 않게).
+    if [ $dirty -eq 0 ]; then
+        : >"$(cfg_dir)/peer_inbox/.pullall_${alias}.ok"
+    else
+        err "일부 프레임을 처리하지 못했다(.pullall_${alias}.ok 미갱신)"
+    fi
+    echo "pulled=$sum_p skipped=$sum_s projects=$np"
+}
+
+cmd_stale_check() {
+    local sec="${PEER_STALE_SEC:-600}"
+    if [ "${1:-}" = "--sec" ]; then
+        [ $# -eq 2 ] || usage
+        sec="$2"; shift 2
+    fi
+    [ $# -eq 0 ] || usage
+    [[ "$sec" =~ ^[0-9]{1,9}$ ]] || { err "--sec 는 숫자여야 한다"; exit 2; }
+    python3 -c "$PY_HELPER" stale "$(cfg_dir)" "$sec" || true
+    return 0
 }
 
 main() {
@@ -316,6 +584,12 @@ main() {
         pull) cmd_pull "$@" ;;
         outbox-take) cmd_outbox_take "$@" ;;
         outbox-ack) cmd_outbox_ack "$@" ;;
+        hosts-add) cmd_hosts_add "$@" ;;
+        hosts-list) cmd_hosts_list "$@" ;;
+        pull-all) cmd_pull_all "$@" ;;
+        outbox-take-all) cmd_outbox_take_all "$@" ;;
+        outbox-ack-all) cmd_outbox_ack_all "$@" ;;
+        stale-check) cmd_stale_check "$@" ;;
         *) usage ;;
     esac
 }

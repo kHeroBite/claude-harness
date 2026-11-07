@@ -377,6 +377,16 @@ def 해당없음_사유(값):
     return s if len(s) >= 해당없음_사유_최소 else None
 
 
+def _문서경로형(토큰):
+    """자체 폴백 파서용 — plan_ref_gate._문서경로 와 같은 규칙(명령 토큰 제외)."""
+    if not 토큰 or any(c.isspace() for c in 토큰) or 토큰.startswith("-"):
+        return False
+    if "/" in 토큰:
+        return True
+    _앞, 점, 확장 = 토큰.rpartition(".")
+    return bool(점) and 확장.isalnum() and 1 <= len(확장) <= 8
+
+
 def 반영_예정_추출(계획서):
     """`## 정본 참조` 절의 `- 반영 예정:` 줄을 해석한다.
 
@@ -424,7 +434,7 @@ def 반영_예정_추출(계획서):
             p = 조각[i].strip()
             while p.startswith("./"):
                 p = p[2:]
-            if p and " " not in p:
+            if p and " " not in p and _문서경로형(p):
                 경로.append(p.rstrip("/"))
         if 경로:
             return ("paths", 경로)

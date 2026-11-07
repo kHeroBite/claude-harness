@@ -669,6 +669,178 @@ login_notes() {
 }
 
 # ── 플러그인 연결 ───────────────────────────────────────────────────────
+# 플러그인 활성 상태 판정 → stdout enabled|disabled|absent|unknown
+#   1순위 claude plugin list --json(python3 로 관대하게 해석), 2순위 텍스트 목록. 판정 불가는 unknown
+plugin_state() {
+    _psid="$1"
+    if have python3; then
+        _psj="$(run_to claude plugin list --json 2>/dev/null)" || _psj=""
+        if [ -n "$_psj" ]; then
+            _pss="$(printf '%s' "$_psj" | python3 -c '
+import json, sys
+t = sys.argv[1]
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    print("parse")
+    sys.exit(0)
+if isinstance(d, dict):
+    for k in ("plugins", "installed", "installedPlugins", "items"):
+        if isinstance(d.get(k), (list, dict)):
+            d = d[k]
+            break
+if isinstance(d, dict):
+    out = []
+    for k, v in d.items():
+        if isinstance(v, list):
+            v = v[0] if v and isinstance(v[0], dict) else {}
+        out.append(dict(v, id=k) if isinstance(v, dict) else {"id": k, "enabled": v})
+    d = out
+if not isinstance(d, list):
+    d = []
+found = []
+for it in d:
+    if isinstance(it, str):
+        if it == t:
+            found.append(("-", "unknown"))
+        continue
+    if not isinstance(it, dict):
+        continue
+    ids = [it.get(x) for x in ("id", "name", "plugin") if isinstance(it.get(x), str)]
+    if isinstance(it.get("name"), str) and isinstance(it.get("marketplace"), str):
+        ids.append(it["name"] + "@" + it["marketplace"])
+    if t not in ids:
+        continue
+    st = "unknown"
+    for k in ("enabled", "isEnabled"):
+        if isinstance(it.get(k), bool):
+            st = "enabled" if it[k] else "disabled"
+            break
+    else:
+        for k in ("status", "state"):
+            s = it.get(k)
+            if isinstance(s, str):
+                s = s.lower()
+                if "disabled" in s:
+                    st = "disabled"
+                    break
+                if "enabled" in s:
+                    st = "enabled"
+                    break
+    found.append((str(it.get("scope") or "-"), st))
+if not found:
+    print("nomatch")
+    sys.exit(0)
+# 같은 id 가 scope(user·project·local)별로 여러 번 나온다 — enable 이 다루는 user scope 를 우선한다
+use = [x for x in found if x[0] == "user"] or found
+sts = [x[1] for x in use]
+print("enabled" if "enabled" in sts else ("disabled" if "disabled" in sts else "unknown"))
+' "$_psid" 2>/dev/null)" || _pss=""
+            case "$_pss" in
+                enabled|disabled|unknown) printf '%s\n' "$_pss"; return 0 ;;
+            esac
+        fi
+    fi
+    # 텍스트 목록은 항목마다 "❯ <id>" 뒤에 Scope:·Status: 줄이 온다 → "<scope> <상태>" 줄로 바꾼다
+    _pst="$(run_to claude plugin list 2>/dev/null | awk -v t="$_psid" '
+        function emit() { print (sc == "" ? "-" : sc), (st == "" ? "unknown" : st); on = 0 }
+        { ln = $0; sub(/^[ \t]*(❯[ \t]*)?/, "", ln); sub(/[ \t].*$/, "", ln) }
+        ln == t { if (on) emit(); on = 1; sc = ""; st = ""; next }
+        on && /Scope:/ { sc = $2 }
+        on && /Status:/ { st = ($0 ~ /disabled|✘/) ? "disabled" : (($0 ~ /enabled|✔/) ? "enabled" : "unknown") }
+        on && NF == 0 { emit() }
+        END { if (on) emit() }')" || _pst=""
+    if [ -z "$_pst" ]; then
+        printf 'absent\n'
+        return 0
+    fi
+    _psu="$(printf '%s\n' "$_pst" | grep '^user ')" || _psu=""
+    [ -n "$_psu" ] || _psu="$_pst"
+    case "$_psu" in
+        *" enabled"*) printf 'enabled\n' ;;
+        *" disabled"*) printf 'disabled\n' ;;
+        *) printf 'unknown\n' ;;
+    esac
+    return 0
+}
+
+# disabled 일 때만 claude plugin enable(이미 활성이면 rc=1 이므로 호출 금지) — PEE_ENABLED=1 은 이번에 활성화했다는 뜻
+PEE_ENABLED=0
+plugin_enable_ensure() {
+    PEE_ENABLED=0
+    _peid="$1"
+    [ "$(plugin_state "$_peid")" = "disabled" ] || return 0
+    run_to claude plugin enable "$_peid" >/dev/null 2>&1
+    _perc=$?
+    case "$(plugin_state "$_peid")" in
+        enabled) PEE_ENABLED=1; return 0 ;;
+        disabled) return 1 ;;
+    esac
+    # 판정 불가(unknown·absent)면 enable 의 rc 로 판단한다
+    if [ "$_perc" -eq 0 ]; then
+        PEE_ENABLED=1
+        return 0
+    fi
+    return 1
+}
+
+# harness 플러그인이 disabled 로 남아 있으면 활성화한다(서버에서 ✘ disabled 로 보이던 원인)
+harness_enable_check() {
+    if [ "$NOPLUGIN" -eq 1 ] || ! have claude; then
+        say "POST harness skipped claude 없음 또는 --no-plugin"
+        return 0
+    fi
+    case "$(plugin_state harness@harness-marketplace)" in
+        absent) say "POST harness skipped 미설치" ;;
+        disabled)
+            if plugin_enable_ensure harness@harness-marketplace; then
+                say "POST harness ok 활성화"
+            else
+                say "POST harness failed 활성화 실패 — claude plugin enable harness@harness-marketplace"
+            fi ;;
+        *) say "POST harness ok 무동작" ;;
+    esac
+    return 0
+}
+
+# 비대화 ssh 의 PATH 에서도 통지 스크립트를 찾도록 ~/.local/bin 에 심링크한다(일반 파일은 건드리지 않음)
+peer_link_ensure() {
+    _plt="$1/active/plugins/harness/scripts/peer_ssh_notify.sh"
+    [ -f "$_plt" ] || _plt="$1/src/plugins/harness/scripts/peer_ssh_notify.sh"
+    if [ ! -f "$_plt" ]; then
+        say "POST peerlink skipped 통지 스크립트 없음"
+        return 0
+    fi
+    _pll="$HOME/.local/bin/peer_ssh_notify.sh"
+    if [ -L "$_pll" ] && [ "$(readlink "$_pll" 2>/dev/null)" = "$_plt" ]; then
+        say "POST peerlink ok 무동작"
+        return 0
+    fi
+    if [ -e "$_pll" ] && [ ! -L "$_pll" ]; then
+        say "POST peerlink skipped 일반 파일이 이미 있음($_pll)"
+        return 0
+    fi
+    # 기존 심링크는 따라가지 않도록 먼저 그 심링크만 지운다(디렉터리를 가리키면 ln -sfn 이 안쪽에 만들기 때문)
+    if mkdir -p "$HOME/.local/bin" && { [ ! -L "$_pll" ] || rm -f "$_pll"; } && ln -s "$_plt" "$_pll"; then
+        say "POST peerlink ok 생성"
+    else
+        say "POST peerlink failed 링크 실패($_pll)"
+    fi
+    return 0
+}
+
+# codex 로그인 상태만 안내한다(로그인 자체는 하지 않음)
+codex_login_note() {
+    if ! have codex; then
+        say "POST codexlogin skipped codex CLI 없음"
+    elif run_to codex login status >/dev/null 2>&1; then
+        say "POST codexlogin ok"
+    else
+        say "POST codexlogin warn 미로그인 — codex login --device-auth(브라우저 없는 서버) 또는 codex login"
+    fi
+    return 0
+}
+
 codex_plugin_connect() {
     CPC_STATE=skipped
     if [ "$NOPLUGIN" -eq 1 ] || ! have claude; then
@@ -697,13 +869,18 @@ codex_plugin_connect() {
         fi
     fi
     if [ "$_ok" -eq 1 ]; then
+        plugin_enable_ensure codex@openai-codex || _ok=0
+    fi
+    if [ "$_ok" -eq 1 ]; then
         CPC_STATE=unchanged
+        [ "$PEE_ENABLED" -eq 1 ] && CPC_STATE=enabled
         [ "$_chg" -eq 1 ] && CPC_STATE=connected
         say "codex 플러그인 연결 완료"
     else
         CPC_STATE=failed
         warn "codex 플러그인 연결 실패(로그인 전이면 실패할 수 있다) — 로그인 뒤 아래 명령을 다시 실행하라"
         say "codex 플러그인 재실행 명령: $CODEX_PLUGIN_RERUN"
+        say "비활성이면: claude plugin enable codex@openai-codex"
     fi
     return 0
 }
@@ -856,10 +1033,13 @@ else:
     return 0
 }
 
-post_update() {
-    _puh="$1"
-    post_marketplace "$_puh"
-    if [ "$NOPLUGIN" -eq 1 ] || ! have claude; then
+# 신규·기존·레거시·--post-update 가 같이 쓰는 공통 후처리(멱등, rc 불변)
+#   post_common <H> [install] — install 모드는 설치 경로의 기존 동작(codex CLI 유무와 무관하게 연결 시도)을 유지한다
+post_common() {
+    harness_enable_check
+    if [ "${2:-}" = "install" ]; then
+        codex_plugin_connect
+    elif [ "$NOPLUGIN" -eq 1 ] || ! have claude; then
         say "POST codex skipped claude 없음 또는 --no-plugin"
     elif ! have codex; then
         say "POST codex skipped codex CLI 없음 — requires 사다리 소관"
@@ -868,9 +1048,18 @@ post_update() {
         case "$CPC_STATE" in
             unchanged) say "POST codex ok 무동작(이미 연결)" ;;
             connected) say "POST codex ok 연결" ;;
+            enabled) say "POST codex ok 활성화" ;;
             *) say "POST codex failed 연결 실패" ;;
         esac
     fi
+    peer_link_ensure "$1"
+    codex_login_note
+    return 0
+}
+
+post_update() {
+    post_marketplace "$1"
+    post_common "$1"
     return 0
 }
 
@@ -947,7 +1136,7 @@ if [ -f "$H/update_state.json" ]; then
     pre_deps_interactive "$H/src"
     apply_update "$H" "$_up"
     _grc=$?
-    [ "$_grc" -eq 0 ] && codex_plugin_connect
+    [ "$_grc" -eq 0 ] && post_common "$H" install
     exit "$_grc"
 fi
 _lh="${HARNESS_HOME:-}"
@@ -971,7 +1160,7 @@ if [ "$_lh" != "$H" ] && [ -d "$_lh/src/.git" ] && [ -L "$_lh/current" ]; then
     apply_update "$_lh" "$_bt/harness_update.py"
     _urc=$?
     rm -rf "$_bt"
-    [ "$_urc" -eq 0 ] && codex_plugin_connect
+    [ "$_urc" -eq 0 ] && post_common "$_lh" install
     exit "$_urc"
 fi
 
@@ -1064,7 +1253,7 @@ PYEOF
 # 9. 플러그인(선택)
 HPLUG_OK=0
 harness_plugin_connect "$H"
-codex_plugin_connect
+post_common "$H" install
 # 플러그인이 생긴 뒤 facade 재정리(멱등) — apply 때는 플러그인이 없어 .mcp.json·CLAUDE.md 가 플러그인 없는 상태로 만들어졌다
 if [ "$HPLUG_OK" -eq 1 ]; then
     _air="$H/active/plugins/harness/scripts/harness_ai_root.py"

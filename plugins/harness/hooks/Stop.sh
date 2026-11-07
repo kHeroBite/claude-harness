@@ -18,6 +18,8 @@ declare -F _mirror_file >/dev/null 2>&1 || _mirror_file() { :; }
 INPUT=$(cat 2>/dev/null)
 SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // empty' 2>/dev/null)
 [ -z "$SESSION_ID" ] && exit 0
+# peer 통지 주기 pull-all 을 백그라운드로 기동한다(입력 없이도 수신, 실패해도 세션을 막지 않음)
+bash "$(dirname "${BASH_SOURCE[0]}")/lib/peer_autopull.sh" "${CLAUDE_PROJECT_DIR:-$(echo "$INPUT" | jq -r '.cwd // "-"' 2>/dev/null)}" >/dev/null 2>&1 </dev/null || true
 
 UUID="$SESSION_ID"
 # 사이클47 — $HOME 단독 하드코딩 제거 (계획 §1-3).

@@ -28,6 +28,9 @@ INPUT=$(timeout 5 cat 2>/dev/null) || INPUT=""
 CWD=$(echo "$INPUT" | jq -r '.cwd // empty' 2>/dev/null || echo "")
 [[ -z "$CWD" ]] && CWD=$(pwd 2>/dev/null || echo "")
 
+# 머신 간 peer 통지 주기 pull 트리거 (비차단·백그라운드, 실패해도 무시)
+bash "$(dirname "${BASH_SOURCE[0]}")/lib/peer_autopull.sh" "${CWD:--}" >/dev/null 2>&1 </dev/null || true
+
 # git 루트 우선
 GIT_ROOT=$(git -C "$CWD" rev-parse --show-toplevel 2>/dev/null || echo "")
 PROJECT_PATH="${GIT_ROOT:-$CWD}"

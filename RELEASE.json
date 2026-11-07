@@ -1,9 +1,9 @@
 {
   "schema": 1,
-  "version": "1.3.5",
-  "source_commit": "95c3062cf7b410529c123c3a0817082945932b22",
-  "built_at": "2026-11-07T12:17:41Z",
-  "summary": "oUpdate 후처리 자동화(설치기 사본 교체·codex 연결·marketplace 경로 재등록, install_harness.sh --post-update), statusline 계정 라벨 고정·프로필 미대응 계정은 시작 프로필명 표시, 재개 메뉴 받은 대화 보존, lccc 상태줄 정리, 탭 색 머신 구분(리눅스 빨강·WSL 파랑), skill 접두사(harness:) 정규화로 ointaug 교착 해소",
+  "version": "1.3.6",
+  "source_commit": "257daf23765a9da3b2d7f26cd86327f4702f9300",
+  "built_at": "2026-11-07T14:28:30Z",
+  "summary": "peer 통지 재발방지(머신 단위 pull-all·입력 없는 주기 수신·ack sha256 검증), 설치기가 codex·harness 플러그인 disabled 를 감지해 enable·peer_ssh_notify 링크·codex device-auth 안내, 문서 게이트 명령 토큰 오인 수정, 탭 종료색 머신 구분",
   "breaking": false,
   "requires": [
     {
@@ -131,12 +131,12 @@
   ],
   "post_actions": [
     {
-      "kind": "note",
-      "text": "이번 갱신을 옛 oUpdate 로 받았다면 /oUpdate 를 한 번 더 실행하세요(새 엔진이 설치기 교체·codex 연결·marketplace 경로 재등록을 수행)."
+      "kind": "restart_cc",
+      "text": "cc 를 재시작해 새 hook(주기 통지 수신)을 적용한다"
     },
     {
-      "kind": "restart_cc",
-      "text": "hook·실행기(cc·lcc·claude-as) 변경 반영을 위해 실행 중인 cc 세션을 다시 시작하세요."
+      "kind": "note",
+      "text": "양쪽 머신 모두 v1.3.6 이어야 머신 간 통지 pull 이 동작한다(ack 형식 변경)"
     }
   ],
   "history": [
@@ -181,6 +181,21 @@
         {
           "kind": "new_shell",
           "text": "새 셸을 열어 바뀐 cc·lcc 실행기를 쓴다"
+        }
+      ]
+    },
+    {
+      "version": "1.3.5",
+      "breaking": false,
+      "summary": "oUpdate 후처리 자동화(설치기 사본 교체·codex 연결·marketplace 경로 재등록, install_harness.sh --post-update), statusline 계정 라벨 고정·프로필 미대응 계정은 시작 프로필명 표시, 재개 메뉴 받은 대화 보존, lccc 상태줄 정리, 탭 색 머신 구분(리눅스 빨강·WSL 파랑), skill 접두사(harness:) 정규화로 ointaug 교착 해소",
+      "post_actions": [
+        {
+          "kind": "note",
+          "text": "이번 갱신을 옛 oUpdate 로 받았다면 /oUpdate 를 한 번 더 실행하세요(새 엔진이 설치기 교체·codex 연결·marketplace 경로 재등록을 수행)."
+        },
+        {
+          "kind": "restart_cc",
+          "text": "hook·실행기(cc·lcc·claude-as) 변경 반영을 위해 실행 중인 cc 세션을 다시 시작하세요."
         }
       ]
     }

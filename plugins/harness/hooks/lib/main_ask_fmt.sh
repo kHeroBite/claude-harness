@@ -43,7 +43,7 @@ MAIN_TAB_STATE_FMT="#{?${MAIN_ASK_COND},ask,#{?${MAIN_RUN_COND},on,done}}"
 #   Pf·Pb 는 WT 색 테이블 번호다(15=밝은 흰색 글자, 88=xterm 256색 #870000 어두운 빨강 탭, 흰 글자 대비 약 10:1).
 #   2026-11-05 탐침(WT 1.24.12741.0): tmux 안·밖 모두 탭 색 변경 확인, OSC 4(263/264)는 효과 없음.
 #   프로필·명령에 --tabColor 가 지정된 탭은 바뀌지 않을 수 있다(미실측).
-MAIN_TAB_DONE='2;15;240'
+MAIN_TAB_DONE='2;15;240'   # 기본값 — 아래 main_host_kind 판정 뒤 머신별 아주 연한 색으로 덮는다(2026-11-07)
 MAIN_TAB_ASK='2;15;12'   # 호환용 상수 — 사용처 없음(2026-11-07 파랑 고정 ask 색 폐기, main_tab_ask_arg 로 대체)
 # main_host_kind — 이 머신이 wsl 인지 linux 인지 stdout 으로 낸다(host_label.py 와 같은 규칙, 매초 호출되므로 python 기동 금지).
 #   CLAUDE_HOST_TAG(wsl|linux) → WSL_DISTRO_NAME 있으면 wsl → /proc/version 에 microsoft 가 있으면 wsl → 그 밖은 linux.
@@ -58,9 +58,12 @@ main_host_kind() {
   printf linux
 }
 # 작업 중 탭 색 — 머신별(2026-11-07 사용자 지시): linux=빨강 88(현행 유지, 흰 글자 대비 약 10:1) / wsl=파랑 계열 25(#005faf, 흰 글자 대비는 육안 확인 항목).
-case "$(main_host_kind)" in wsl) MAIN_TAB_ON='2;15;25';; *) MAIN_TAB_ON='2;15;88';; esac
+# 종료(Stop·세션 종료 뒤 남는) 탭 색 — 머신별 아주 연한 색(2026-11-07 사용자 지시: 종전 회색 240 은 머신 구분이 안 됨).
+#   linux=아주 연한 빨강 224(#ffd7d7) / wsl=아주 연한 파랑 153(#afd7ff). 글자색은 WT 가 배경 밝기로 흑/백을 자동 선택한다(Pf 는 탭에 쓰이지 않음 — WT Tab.cpp _ApplyTabColorOnUIThread).
+#   WT 는 같은 색 하나로 선택 탭=100%, 비선택 탭=30% 불투명도로 그린다(같은 소스). 선택·비선택 진하기를 따로 보낼 수단은 없다.
+case "$(main_host_kind)" in wsl) MAIN_TAB_ON='2;15;25'; MAIN_TAB_DONE='2;15;153';; *) MAIN_TAB_ON='2;15;88'; MAIN_TAB_DONE='2;15;224';; esac
 # main_tab_ask_arg — 질문·승인 대기 탭 색 인자를 stdout 으로 낸다. 제목 교대(#{e|%%:%s,2})와 같은 박자로
-#   짝수 초=제목이 보이는 구간=그 머신 작업색(MAIN_TAB_ON), 홀수 초='?' 구간=기본 회색(MAIN_TAB_DONE). 한계: 제목(tmux %s)과 색(job 의 현재 초)은 최대 1초 어긋날 수 있다.
+#   짝수 초=제목이 보이는 구간=그 머신 작업색(MAIN_TAB_ON), 홀수 초='?' 구간=그 머신 종료색(MAIN_TAB_DONE, 아주 연한 색). 한계: 제목(tmux %s)과 색(job 의 현재 초)은 최대 1초 어긋날 수 있다.
 main_tab_ask_arg() {
   local t
   printf -v t '%(%s)T' -1 2>/dev/null || t=$(date +%s)
@@ -82,4 +85,4 @@ main_tab_send_wrap() {
     printf '\033Ptmux;\033\033[%s,|\033\\' "$1"
   fi
 }
-# 3상태 요약 — ON=작업 중(linux 빨강 88 / wsl 파랑 25) / ASK=질문·승인 대기(짝수 초 작업색·홀수 초 회색 교대, main_tab_ask_arg) / DONE=Stop 회색(240=#585858, 대비 약 7.1:1. 육안 확인 항목).
+# 3상태 요약 — ON=작업 중(linux 빨강 88 / wsl 파랑 25) / ASK=질문·승인 대기(짝수 초 작업색·홀수 초 종료색 교대, main_tab_ask_arg) / DONE=Stop·종료 아주 연한 색(linux 224 #ffd7d7 / wsl 153 #afd7ff, 글자색은 WT 자동. 육안 확인 항목).
