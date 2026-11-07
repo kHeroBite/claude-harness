@@ -74,38 +74,86 @@ claude
   일반 Linux 에서는 WSL 전용 기능(`oss` 스크린샷, Windows 알림, `clip.exe` 클립보드)이 비활성입니다.
 - `settings.json` 에 `skipDangerousModePermissionPrompt: true` 가 없으면 추가됩니다(기존 키는 덮어쓰지 않고 원본은 `settings.json.bak.<시각>` 으로 백업).
 - 설치 시 `~/.bashrc`·로그인 셸 파일(`~/.bash_profile` 또는 `~/.profile`)·`~/.tmux.conf` 의 표식 블록,
-  `~/.local/bin`, `$HARNESS_HOME`(기본 `~/.harness`), `$HARNESS_PROFILES_ROOT`(기본 `~/.claude-profiles`),
-  `~/.claude/rules` 를 생성·수정합니다.
-- `install.sh` 는 **sudo·apt 를 쓰지 않습니다.** tmux·python3 가 없으면 안내만 하고 설치는 하지 않습니다.
+  `~/.local/bin`, `<프로젝트홈>/AI` 와 그 안의 `.harness`(= `$HARNESS_HOME`), `$HARNESS_PROFILES_ROOT`(기본 `~/.claude-profiles`),
+  `~/.config/claude-harness/project_home`, `~/.claude/rules` 를 생성·수정합니다.
+- `install.sh` 는 **sudo·apt 를 쓰지 않습니다.** 도구 설치는 `install-online.sh` 가 맡습니다.
+  sudo 는 사용자 공간 설치로 안 될 때만, 대화 모드에서 명령을 보여 주고 y/N 동의를 받은 뒤에만 씁니다(`--no-sudo` 면 아예 쓰지 않음).
 
 ---
 
 ## 전제 조건
 
+필요한 도구는 설치 스크립트(`install-online.sh`)가 점검하고, 없으면 설치를 제안합니다(배포 repo 루트 `requires.txt` 가 목록의 정본입니다).
+
 | 항목 | 요구사항 | 비고 |
 |---|---|---|
 | OS | **WSL2 또는 일반 Linux** | 일반 Linux 에서는 Windows 연동 기능만 비활성 |
-| tmux | **필수** | 팀에이전트가 tmux pane 에 spawn 됨. 미리 설치되어 있어야 함(`install.sh` 는 설치하지 않음) |
-| python3 + venv | 필수 | `oio` MCP 서버 구동용. `python3-venv` 가 없으면 사용자 공간 `virtualenv` 로 대체 시도 |
 | git | 필수 | 배포본 clone / 갱신 |
-| Claude Code | 최신 버전 권장 | 플러그인·팀에이전트 기능 사용 |
+| python3 + venv | 필수 (3.10 이상) | `oio` MCP 서버 구동용. 3.10 미만이면 설치가 rc=4 로 멈춥니다 |
+| tmux · jq · curl 또는 wget | 필수 | 팀에이전트가 tmux pane 에 spawn 됩니다 |
+| Claude Code (`claude`) | 필수 | 없으면 공식 네이티브 설치(`curl -fsSL https://claude.ai/install.sh \| bash`)를 제안합니다 |
+| Node.js | 필수 (18.18 이상) | codex 플러그인 companion 실행용. 없거나 낮으면 nodejs.org 공식 바이너리를 `~/.local/share/node` 에 받습니다 |
+| Codex CLI (`codex`) | 필수 | 없으면 공식 설치(`curl -fsSL https://chatgpt.com/codex/install.sh \| sh`)를 제안합니다 |
 
 ---
 
 ## 설치
 
-### 방법 1. git clone + install.sh (권장)
+### 새 머신 — 1줄 설치 (권장)
+
+셋 중 하나만 실행하면 됩니다. 처음에 프로젝트 홈 폴더를 한 번 묻습니다(기본 `$HOME/Project`). 그 아래 `AI` 폴더가 하네스의 정본 자리가 됩니다.
+
+**curl**
 
 ```bash
-git clone <배포 repo URL> ~/claude-harness
-cd ~/claude-harness
-bash install.sh
-source ~/.bashrc
+curl -fsSL https://raw.githubusercontent.com/kHeroBite/claude-harness/master/install-online.sh | sh
 ```
 
-`install.sh` 는 **멱등**합니다. 몇 번 실행해도 안전합니다.
+**wget** (curl 이 없을 때)
 
-### 방법 2. 마켓플레이스 등록 (플러그인만)
+```bash
+wget -qO- https://raw.githubusercontent.com/kHeroBite/claude-harness/master/install-online.sh | sh
+```
+
+**clone 후 실행** (스크립트를 먼저 읽어 보고 싶을 때)
+
+```bash
+git clone https://github.com/kHeroBite/claude-harness.git /tmp/ch && sh /tmp/ch/install-online.sh
+```
+
+- 파이프로 실행해도 폴더 질문은 터미널(`/dev/tty`)에서 받습니다. 터미널이 없으면 비대화로 진행합니다.
+- 주요 인자: `--home <프로젝트홈>`(질문 생략), `--non-interactive`, `--yes`(동의 질문에 자동 예), `--no-sudo`(sudo 를 전혀 쓰지 않음), `--no-plugin`, `--no-rc`, `--repo-url <URL>`. 인자는 `sh -s -- --home ~/Project --yes --no-sudo` 처럼 넘깁니다.
+- 이미 설치된 머신에서 다시 실행하면 새로 설치하지 않고 `oUpdate` 갱신으로 처리합니다.
+
+설치 스크립트가 하는 일은 다음과 같습니다.
+
+1. **도구 점검·설치** — 시스템에 있으면 그대로 씁니다. 없으면 sudo 없이 사용자 공간 설치를 먼저 시도하고, 그래도 안 되면 패키지 관리자 명령을 보여 주고 y/N 으로 묻습니다. 비대화 모드는 sudo 를 시도하지 않고 누락 목록과 명령만 출력합니다(rc=3). 결과표에 도구별로 `system | user | sudo | missing` 를 표시합니다.
+   - **Claude Code·Codex·Node.js 도 자동 설치 대상**입니다. 외부 설치 스크립트를 실행하므로 대화 모드는 y/N 동의를 받고, 비대화 모드는 `--yes` 가 있을 때만 실행합니다.
+2. 배포 repo 를 `<프로젝트홈>/AI/.harness/src` 에 clone 하고, `oUpdate` 로 첫 판을 `releases/` 에 풀어 `active` 링크를 겁니다.
+3. `oio` venv 를 만들고 `install.sh` 를 실행합니다(아래 "install.sh 가 하는 일").
+4. **플러그인 연결** — `claude` 가 있으면 하네스 플러그인(`harness@harness-marketplace`)과 codex 플러그인(`codex@openai-codex`, 마켓플레이스 `openai/codex-plugin-cc`)을 등록합니다. 이미 있으면 건너뜁니다. 실패하거나 `--no-plugin` 이면 다시 실행할 명령을 출력합니다.
+
+```bash
+claude plugin marketplace add openai/codex-plugin-cc && claude plugin install codex@openai-codex
+```
+
+### 로그인은 직접 해야 합니다
+
+계정 인증은 자동화하지 않습니다(자동화할 수 없습니다). 설치가 끝나면 아래를 직접 실행하세요.
+
+1. 새 셸을 열거나 `exec $SHELL -l` 을 실행합니다. 이미 열린 셸에는 PATH 가 바로 반영되지 않습니다.
+2. `claude` 를 실행한 뒤 `/login` 으로 로그인합니다.
+3. `codex login` 으로 Codex 에 로그인합니다(ChatGPT 계정 또는 API 키).
+4. Claude Code 안에서 `/codex:setup` 으로 codex 연결 상태를 확인합니다.
+5. `cas create default` 로 프로필을 만들고 `cc` 로 시작합니다.
+
+### AI 정본 폴더와 ocopy
+
+- `<프로젝트홈>/AI` 가 이 머신의 하네스 정본 자리입니다. `cc ai` 로 열립니다. 스킬·hook·scripts 는 `.harness/active` 를 가리키는 링크라 직접 고치지 않습니다.
+- 새 프로젝트에 하네스 공용 파일을 연결하려면 그 프로젝트에서 `/ocopy` 를 씁니다. 링크는 AI 정본 폴더를 가리킵니다.
+- 프로젝트 홈은 `~/.config/claude-harness/project_home` 에 1줄로 기록됩니다. `cc <이름>` 은 `<프로젝트홈>/<이름>` 을 엽니다(대소문자 무시).
+
+### 수동 설치 — 플러그인만 (참고)
 
 Claude Code 안에서 실행합니다.
 
@@ -114,14 +162,17 @@ Claude Code 안에서 실행합니다.
 /plugin install harness
 ```
 
-> 방법 2 만으로는 `bin` 3종(`cc`/`ccc`/`cas`)과 `oio` venv 가 설치되지 않습니다.
-> **두 방법을 모두 수행하는 것이 정식 설치입니다.**
+> 이 방법만으로는 `bin`(`cc`/`ccc`/`lcc`/`lccc`/`cas`)과 `oio` venv 가 설치되지 않습니다.
+> 1줄 설치가 정식 설치입니다.
 
 ### install.sh 옵션과 환경변수
 
 | 이름 | 기본값 | 용도 |
 |---|---|---|
-| `HARNESS_HOME` | `~/.harness` | 하네스 설치 루트(`bin`·`venv`·`current` 링크) |
+| `HARNESS_HOME` | rc 표식 블록 값 → `~/.harness` | 하네스 내부 루트(1줄 설치는 `<프로젝트홈>/AI/.harness`) |
+| `HARNESS_AI_ROOT` | rc 표식 블록 값 → `HARNESS_HOME` 의 부모(`<AI>/.harness` 꼴일 때) | AI 정본 폴더 |
+| `CLAUDE_PROJECT_ROOTS` | rc 표식 블록 값 → `project_home` 파일 첫 줄 | 프로젝트 홈(`cc <이름>` 해석) |
+| `--no-rc` | — | 셸 rc 파일을 고치지 않음 |
 | `HARNESS_PROFILES_ROOT` | `~/.claude-profiles` | `cc`/`cas` 프로필 루트. 셸에는 `CLAUDE_PROFILES_ROOT` 로 기록됨 |
 | `HARNESS_PROJECT_ROOTS` | (자동 판별) | `oio` 허용 프로젝트 루트(아래 "프로젝트 경로 설정") |
 | `--non-interactive` | — | 질문 없이 진행(표준입력이 터미널이 아니어도 자동 적용) |
@@ -130,9 +181,14 @@ Claude Code 안에서 실행합니다.
 `install.sh` 가 하는 일은 다음과 같습니다(모두 멱등).
 
 - `$HARNESS_HOME/current` → 설치된 플러그인 루트 링크(이후 갱신은 SessionStart hook 이 맡음)
-- `cc`/`ccc`/`claude-as`/`cas` 를 `$HARNESS_HOME/bin` 과 `~/.local/bin` 에 링크
-- `~/.bashrc` 와 로그인 셸 파일에 `# >>> harness PATH` 표식 블록 기록:
-  `export HARNESS_HOME=…`, `export CLAUDE_PROFILES_ROOT=…`, PATH 추가(재실행 시 블록을 교체)
+- `cc`/`ccc`/`lcc`/`lccc`/`claude-as`/`cas` 를 `$HARNESS_HOME/bin` 과 `~/.local/bin` 에 링크.
+  `$HARNESS_HOME/active/bin` 이 있으면 그곳을 가리킵니다(`oUpdate` 가 active 만 바꾸면 새 판이 적용됨).
+  `~/.local/bin` 에 다른 프로그램이 둔 파일·링크가 있으면 덮어쓰지 않고 SKIP 으로 표시합니다
+- `~/.bashrc` 와 로그인 셸 파일에 `# >>> harness PATH` 표식 블록 기록(원본은 `.bak.<시각>` 백업):
+  `export HARNESS_HOME=…`, `export CLAUDE_PROFILES_ROOT=…`, `export HARNESS_AI_ROOT=…`, `export CLAUDE_PROJECT_ROOTS=…`,
+  PATH 추가(`~/.local/bin` 줄은 PATH 에 없을 때만, 재실행 시 블록을 교체)
+- AI 정본 폴더를 `harness_ai_root.py ensure` 로 맞춤(빈 폴더이거나 하네스 표식이 있을 때만. 배포자의 실제 정본 폴더는 건드리지 않음)
+- 끝에 항목별 결과표(✅ 성공 · ⏭️ 건너뜀 · ❌ 실패)와 `exec $SHELL -l` 안내를 출력
 - `~/.tmux.conf` 에 `# >>> harness tmux` 표식 블록으로 `source-file "$HARNESS_HOME/current/tmux/tmux.conf"` 1줄 연결(기존 내용 보존)
 - `oio` venv 를 `$HARNESS_HOME/venv/oio` 에 생성. `HARNESS_HOME` 이 기본값이 아니면 플러그인 `.mcp.json` 이 가리키는
   `~/.harness/venv` → `$HARNESS_HOME/venv` 호환 링크를 만듦
@@ -141,7 +197,8 @@ Claude Code 안에서 실행합니다.
 
 ### 일반 Linux 서버 설치 (사용자 공간, sudo 없음)
 
-공용 서버처럼 root 권한이 없는 계정에서도 설치할 수 있습니다. tmux·python3·git 은 미리 있어야 합니다.
+공용 서버처럼 root 권한이 없는 계정에서는 1줄 설치에 `--no-sudo` 를 붙이는 것이 기본입니다(예: `curl -fsSL …/install-online.sh | sh -s -- --home /data/me/Project --yes --no-sudo`).
+아래는 예전(레거시) 수동 설치 절차입니다. 이렇게 설치한 머신은 첫 `/oUpdate` 때 새 레이아웃(`<프로젝트홈>/AI/.harness`)으로 옮겨집니다. tmux·python3·git 은 미리 있어야 합니다.
 
 ```bash
 # 1) Claude Code 설치 (공식 설치 스크립트 — 사용자 홈에 설치됨)
@@ -211,24 +268,36 @@ cc
 
 ## 업데이트
 
-갱신 경로가 **두 축으로 분리**되어 있습니다. 이 구분이 중요합니다.
-
-| 대상 | 갱신 방식 |
-|---|---|
-| 플러그인 본체 (스킬 / hook / `rules/harness.md` / `oio` MCP) | **마켓플레이스가 자동갱신** (최대 10분 내 전파). 즉시 반영은 `/reload-plugins` |
-| 플러그인 바깥 (`bin` 3종, `install.sh`) | **자동갱신되지 않음** → `/oDownload` 스킬 실행 |
+설치된 머신은 Claude Code 안에서 **`/oUpdate`** 를 실행합니다(`/oDownload` 는 같은 일을 하는 옛 이름입니다).
 
 ```
-/oDownload
+/oUpdate
 ```
 
-`oDownload` 는 `git pull` → `bin` 심볼릭링크 재생성 → `install.sh` 재실행을 수행합니다.
+`oUpdate` 는 먼저 `status` 로 새 판이 있는지 보고, `apply` 로 적용합니다. 새 판을 임시 폴더에 풀어 검사한 뒤
+`releases/<판>` 에 두고 `active` 링크 하나를 원자적으로 바꿉니다. 판을 여러 개 건너뛰어도 사이의 변경을 한 번에 적용합니다.
+문제가 생기면 `rollback` 으로 직전 판에 돌아갑니다.
 
-> ⚠️ **`cc` / `ccc` / `cas` 갱신분은 다음 실행부터 적용됩니다.**
-> 지금 도는 Claude Code 는 구(舊) 런처가 띄운 프로세스이기 때문입니다.
-> 종료 후 `cc` 를 다시 실행하세요.
+결과 상태는 다음과 같습니다.
 
-배포자는 `/oUpload` 로 publish 합니다 (자격증명 스캔 게이트 + `plugin.json` version 범프 포함).
+| 상태 | 뜻 | 할 일 |
+|---|---|---|
+| `OK` / `UP_TO_DATE` | 적용 완료 / 이미 최신 | 없음 |
+| `NEEDS` (rc=6) | 새 판에 필요한 도구(claude·node·codex 등)가 없음. 현행 유지 | 출력된 설치 명령을 실행하거나 `apply --yes` 로 다시 실행 |
+| `BREAKING` (rc=7) | 큰 변경이 있어 확인이 필요함. 비대화 실행은 여기서 멈춤 | 요약을 읽고 동의하면 `apply --accept-breaking` |
+| `PARTIAL` (rc=5) | 하네스는 갱신됐지만 플러그인 쪽 일부가 남음 | 출력된 안내대로 플러그인 갱신 |
+| `REFUSE` (rc=3) | 이 머신이 정본(배포자) 머신이거나 실디렉터리를 덮으려 함 | 정본 머신은 `/oUpload` 를 씀 |
+
+- **post_actions** — 판마다 갱신 뒤 할 일(새 셸 열기, `cc` 다시 시작, 플러그인 다시 불러오기 등)을 `해야 할 일:` 로 출력합니다. oUpdate 는 안내만 하고 자동으로 실행하지 않습니다.
+- 실행 중인 세션은 건드리지 않습니다. `cc`·`ccc`·`lcc`·`cas` 와 rc 블록 변경은 **새로 여는 셸·세션부터** 적용됩니다.
+
+> ⚠️ 지금 도는 Claude Code 는 구(舊) 런처가 띄운 프로세스입니다. 종료 후 `cc` 를 다시 실행하세요.
+
+### 정본(배포자) 머신
+
+AI 정본 저장소가 있는 배포자 머신에서는 `oUpdate` 를 쓰지 않습니다(REFUSE). 배포는 **`/oUpload`** 로 합니다.
+`/oUpload` 는 배포본 빌드 → 자격증명 스캔 게이트 → `plugin.json`·`marketplace.json` version 범프 → `RELEASE.json` 작성·검사 → 커밋·태그 → push 까지 진행합니다.
+다른 머신은 그다음 `/oUpdate`(이미 설치된 머신) 또는 1줄 설치(새 머신)로 받습니다.
 
 ---
 
@@ -250,7 +319,7 @@ cc
 | 필요한 것 | 이것을 요구하는 스킬 | 미설치 시 |
 |---|---|---|
 | MySQL MCP | `domain-database`, `otest_make` | 해당 스킬만 미동작 |
-| Codex MCP | `oplan_consult`, `oplan_debate` | `oplan_deep` 으로 대체 사용 |
+| Codex CLI + codex 플러그인 | `oplan_consult`, `oplan_debate`, `oguard`, `codex:adversarial-review` 를 쓰는 단계 | 1줄 설치가 함께 설치·연결합니다. 빠지면 해당 단계만 미동작(`oplan_deep` 으로 대체) |
 | context7 MCP | `domain-context7` | 해당 스킬만 미동작 |
 | ADB | `otest_mobile` | 해당 스킬만 미동작 |
 

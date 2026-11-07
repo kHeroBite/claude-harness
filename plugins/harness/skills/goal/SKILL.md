@@ -315,7 +315,7 @@ Phase_D_저장:
   - 잘못된 형식: 로그 출력 후 계속 (Step_1 진행 우선)
 ```
 
-## §5.1 게이트 작성 규칙 (auto_script 5항)
+## §5.1 게이트 작성 규칙 (auto_script 6항)
 
 ```yaml
 1_착수_전_1회_실행:
@@ -356,6 +356,13 @@ Phase_D_저장:
   물리강제: PreToolUse_goal_autoscript_guard.sh 의 F-GOALAS-4 가 위반 계약의 기록을 차단한다
         (locked 여부와 무관). 실행부(공용 CLI)는 GOAL_SESSION_DIR·GOAL_UUID 를 넘기며,
         판정불가(UNDET)와 lib 부재(127)는 PASS 가 아니라 미통과로 처리한다.
+
+6_긴_항목은_timeout_sec_선언:
+  규칙: auto_script 가 시험 스크립트를 직접 실행하는 등 5초를 넘을 수 있는 항목은 계약 작성(잠금 전) 때
+        timeout_sec + cache_inputs(§3.1) 를 짝으로 선언한다. 1항의 1회 실행 때 소요 시간을 함께 재서 판단한다.
+  이유: 공용 실행기 기본 제한은 5초이고 초과하면 UNDET(rc=3)이다. 잠긴 계약에는 나중에 넣을 수 없어
+        판정기 쪽 우회 장치를 따로 만들어야 한다.
+  근거: conv_179398000000 D-9 — A2·A4 가 시험을 직접 돌려 7.7s·6.7s 로 UNDET 이 됐다(L-1514).
 
 권장_구현_형태:
   판정 로직은 별도 스크립트 파일로 분리하고 auto_script 는

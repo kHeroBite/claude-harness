@@ -6,10 +6,12 @@
   conv_share.py export --sid <S> [--cwd <작업폴더>] [--project <이름>] [--role <값>]
   conv_share.py send   --sid <S> (<ssh별칭> | --outbox) [--project <이름>]
   conv_share.py push   --sid <S> (<ssh별칭> | --outbox) [--cwd ..] [--project ..] [--role ..]   export 후 send
+                       [--place [--peer-cwd <상대 작업폴더>]]   ssh 일 때 상대 쪽 재개 위치까지 배치(recv-import)
   conv_share.py pull   <ssh별칭> --project <이름> [--timeout 10]     상대 outbox 를 가져와 수신함에 넣기
   conv_share.py import --project <이름> --cwd <작업폴더>              수신함 항목을 로컬 재개 위치에 넣기
   conv_share.py is-imported --sid <S> --project <이름>                가져온 대화면 rc 0(재개 때 --fork-session)
   conv_share.py recv <프로젝트>                                       (내부) 원격 수신부, stdin = 묶음
+  conv_share.py recv-import <프로젝트> [<작업폴더>]                   (내부) recv 후 그 머신에서 import(상대 세션 불필요)
   conv_share.py outbox-take <프로젝트> | outbox-ack <프로젝트> <sid:sha>...   (내부) pull 이 쓰는 원격 부분
 
 위치(머신당 한 곳, CLAUDE_CONFIG_DIR 비사용 — peer_ssh_notify.sh 와 같은 이유):
@@ -411,7 +413,7 @@ def remote_harness():
 
 def ssh_call(alias, args, stdin=b"", timeout=5, total=60):
     for a in args:
-        if not TOK_RE.match(a) and not re.match(r"^[0-9a-f-]{36}:[0-9a-f]{64}$", a):
+        if not TOK_RE.match(a) and not re.match(r"^[0-9a-f-]{36}:[0-9a-f]{64}$", a) and not HARNESS_RE.match(a):
             raise Fail("원격 인자 검증 실패", 2)
     cmd = ssh_base(alias, timeout) + ["bash -c '%s' _ %s %s" % (REMOTE_LAUNCH, remote_harness(), " ".join(args))]
     try:
@@ -437,7 +439,7 @@ def staged(sid):
     return meta, gz
 
 
-def do_send(sid, target, project=None):
+def do_send(sid, target, project=None, place=False, peer_cwd=""):
     need_sid(sid)
     meta, gz = staged(sid)
     project = project or meta["project"]
@@ -447,6 +449,22 @@ def do_send(sid, target, project=None):
         print("SENT outbox sid=%s" % sid)
         log("send outbox sid=%s project=%s" % (sid, proj_key(project)))
         return
+    if peer_cwd and not HARNESS_RE.match(peer_cwd):
+        raise Fail("--peer-cwd 형식 오류(절대경로, 영문·숫자·._/- 만)", 2)
+    if place:
+        # 상대 머신에 세션이 없어도 재개 목록에 보이도록 수신 직후 상대 쪽에서 import 까지 한다.
+        # 상대 배포본이 구판이라 recv-import 를 모르면(rc≠0, ssh 단절 제외) 수신함 저장(recv)으로 물러난다.
+        args = ["recv-import", proj_key(project)] + ([peer_cwd] if peer_cwd else [])
+        try:
+            out = ssh_call(target, args, stdin=pack(meta, gz), timeout=5, total=120)
+            print("SENT %s sid=%s %s" % (target, sid, out.decode("utf-8", "replace").strip()))
+            log("send ssh=%s sid=%s project=%s place=1" % (target, sid, proj_key(project)))
+            return
+        except Fail as e:
+            if e.rc == 3:
+                raise
+            print("PLACE fallback reason=remote-old")
+            log("send place fallback ssh=%s sid=%s err=%s" % (target, sid, e))
     out = ssh_call(target, ["recv", proj_key(project)], stdin=pack(meta, gz), timeout=5, total=120)
     print("SENT %s sid=%s %s" % (target, sid, out.decode("utf-8", "replace").strip()))
     log("send ssh=%s sid=%s project=%s" % (target, sid, proj_key(project)))
@@ -457,6 +475,53 @@ def cmd_recv(a):
     got, bad = ingest(data, a.project)
     print("RECV %d rejected %d" % (len(got), bad))
     return 4 if bad else 0
+
+
+def local_project_dir(project):
+    """수신 머신에서 프로젝트 이름 → 작업폴더(role_lib project-dir 과 같은 규칙, 출력 없음). 없거나 모호하면 ''."""
+    rl = role_lib()
+    if not rl or not hasattr(rl, "project_roots"):
+        return ""
+    low = project.lower()
+    for r in rl.project_roots():
+        try:
+            ents = sorted(os.listdir(r))
+        except OSError:
+            continue
+        if project in ents and os.path.isdir(os.path.join(r, project)):
+            return os.path.join(r, project)
+        hits = [e for e in ents if e.lower() == low and os.path.isdir(os.path.join(r, e))]
+        if len(hits) == 1:
+            return os.path.join(r, hits[0])
+        if len(hits) > 1:
+            return ""
+    return ""
+
+
+def cmd_recv_import(a):
+    """(내부) 원격 수신부 + 재개 위치 배치. 상대 머신에 세션이 없어도 다음 cc·ccc·claude --resume 에 보이게 한다.
+
+    배치하지 못해도 수신함 저장은 성공으로 본다(rc 0, PLACE none). 나중에 ccc 가 import 한다.
+    재개 위치(<홈>/projects)가 아직 없으면 만들지 않는다(그 머신에서 Claude 를 한 번도 실행하지 않은 상태).
+    """
+    data = sys.stdin.buffer.read(MAX_BYTES * 2 + 1)
+    got, bad = ingest(data, a.project)
+    print("RECV %d rejected %d" % (len(got), bad))
+    if not got:
+        return 4 if bad else 0
+    cwd = a.cwd or local_project_dir(a.project)
+    if not cwd or not cwd.startswith("/") or not os.path.isdir(cwd):
+        print("PLACE none reason=no-cwd project=%s" % proj_key(a.project))
+        log("recv-import no-cwd project=%s" % proj_key(a.project))
+        return 4 if bad else 0
+    if not os.path.isdir(os.path.join(home_base(), "projects")):
+        print("PLACE none reason=no-home home=%s" % home_base())
+        log("recv-import no-home project=%s" % proj_key(a.project))
+        return 4 if bad else 0
+    rc = cmd_import(argparse.Namespace(project=a.project, cwd=cwd))
+    print("PLACE ok cwd=%s dir=%s" % (cwd, os.path.join(home_base(), "projects", enc(os.path.abspath(cwd)))))
+    log("recv-import place project=%s rc=%d" % (proj_key(a.project), rc))
+    return 4 if (bad or rc) else 0
 
 
 def cmd_outbox_take(a):
@@ -675,6 +740,8 @@ def main(argv=None):
         q.add_argument("--role", default=None)
         if name == "push":
             q.add_argument("target")
+            q.add_argument("--place", action="store_true")
+            q.add_argument("--peer-cwd", default="")
     q = sp.add_parser("send")
     q.add_argument("--sid", required=True)
     q.add_argument("--project", default="")
@@ -691,6 +758,9 @@ def main(argv=None):
     q.add_argument("--project", required=True)
     q = sp.add_parser("recv")
     q.add_argument("project")
+    q = sp.add_parser("recv-import")
+    q.add_argument("project")
+    q.add_argument("cwd", nargs="?", default="")
     q = sp.add_parser("outbox-take")
     q.add_argument("project")
     q = sp.add_parser("outbox-ack")
@@ -711,12 +781,13 @@ def main(argv=None):
             return 0
         if a.cmd == "push":
             meta = do_export(a.sid, a.cwd, a.project, a.role)
-            do_send(a.sid, a.target, meta["project"])
+            do_send(a.sid, a.target, meta["project"], a.place, a.peer_cwd)
             return 0
         if a.cmd == "send":
             do_send(a.sid, a.target, a.project or None)
             return 0
         return {"pull": cmd_pull, "import": cmd_import, "is-imported": cmd_is_imported, "recv": cmd_recv,
+                "recv-import": cmd_recv_import,
                 "outbox-take": cmd_outbox_take, "outbox-ack": cmd_outbox_ack}[a.cmd](a)
     except Fail as e:
         sys.stderr.write("conv_share: %s\n" % e)

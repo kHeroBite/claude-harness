@@ -3,10 +3,10 @@
 # Windows Terminal 타이틀바 갱신 헬퍼 — tmux rename-window 경유.
 # state_write() 등 state 변경 지점에서 호출하여 즉시성 보장.
 #
-# 포맷: "{호스트이모지}{프로젝트} [🎭롤] [{아이콘}{현재 남은%}] {state이모지} {state} 👤 {계정명}" (값이 없는 칸은 생략, 👤 는 항상 계정명 바로 앞)
-# 예시: "🖥️AI ⚡74% 🧍 idle 👤 rio", /oagent 이름이 있으면 "🖥️AI 🎭back#철수 74% 🧍 idle 👤 rio", 리눅스 서버는 "🗄️Pd …"
+# 포맷: "{호스트이모지}{프로젝트} [🎭롤] {state이모지} [{아이콘}{현재 남은%}] 👤 {계정명}" (값이 없는 칸은 생략, 👤 는 항상 계정명 바로 앞)
+# 예시: "🖥️AI 🧍 ⚡74% 👤 rio", /oagent 이름이 있으면 "🖥️AI 🎭back#철수 🧍 74% 👤 rio", 리눅스 서버는 "🗄️Pd …"
 # 바깥 창 제목 맨 앞의 스피너(◜◝◞◟, 메인 pane 작업 중일 때만)는 tmux set-titles-string 이 붙인다.
-# 호스트 이모지는 host_label.py(statusline.py 와 공용 규칙)가 정한다. tier 를 모르므로 단계 칸은 다음 statusline 갱신 때 "🏃 ok:o4 dev" 가 된다.
+# 호스트 이모지는 host_label.py(statusline.py 와 공용 규칙)가 정한다. tier·단계 텍스트는 타이틀에 넣지 않는다(statusline.py 와 같은 형식).
 #
 # 의존: tmux·TMUX_PANE (없으면 silent skip), CLAUDE_PROFILE_NAME 또는 USER 환경변수
 #       사용량 표기 캐시: ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.weekly_remaining_cache (statusline.py가 갱신)
@@ -70,7 +70,7 @@ set_terminal_title() {
   # state lowercase + 이모지 매핑
   # 화이트리스트만 허용 — 미지정 state(예: 옛 캐시 hook이 보낸 "WAIT")는 IDLE 폴백.
   # 이유: ❔ wait 같은 잔재 표시 차단 (LESSONS L-NEW-D)
-  local STATE_UPPER STATE_LOWER STATE_EMOJI
+  local STATE_UPPER STATE_EMOJI
   STATE_UPPER=$(echo "$STATE_VALUE" | tr '[:lower:]' '[:upper:]')
   case "$STATE_UPPER" in
     IDLE)        STATE_EMOJI="🧍" ;;
@@ -88,7 +88,6 @@ set_terminal_title() {
       STATE_EMOJI="🧍"
       ;;
   esac
-  STATE_LOWER=$(echo "$STATE_UPPER" | tr '[:upper:]' '[:lower:]')
 
   # 사용량 칸 — statusline.py 가 자기 제목에 쓴 표기(아이콘=예상 잔량, 숫자=현재 잔량)를 그대로 읽어 두 경로의 값이 오가지 않게 한다
   local WEEKLY_CACHE="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.weekly_remaining_cache"
@@ -126,7 +125,8 @@ set_terminal_title() {
   fi
 
   # 이모지와 프로젝트 사이는 공백 없음(🖥️AI) — wt_title_watch.project_of() 가 첫 공백 토큰을 프로젝트 키로 쓴다
-  local TITLE="${HOST_EMOJI}${PROJECT}${ROLE_PART}${PCT_PART} ${STATE_EMOJI} ${STATE_LOWER} 👤 ${ID_PART}"
+  # 단계 칸은 state 이모지 하나만 쓰고 용량 앞에 둔다(tier·단계 텍스트 없음, 2026-11-07 사용자 요청)
+  local TITLE="${HOST_EMOJI}${PROJECT}${ROLE_PART} ${STATE_EMOJI}${PCT_PART} 👤 ${ID_PART}"
   # rename-window 이름은 tmux 형식 문자열로 확장되므로 에이전트명(front#이름)의 '#' 은 '##' 로 이스케이프한다
   TITLE="${TITLE//#/##}"
 

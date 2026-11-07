@@ -425,6 +425,8 @@ spawn_직전 (진입 기반 — L-030 절대 생략 금지):
      - push 는 wt_lib push 단일 경로로만 한다(odone_git·opush·ofinish 소관). 결과의 live_applied 가 false 면 원본은 옛 코드이므로 warnings 를 보고한다.
      - isolation=worktree 팀원은 호출 결과가 알려 준 worktree 경로만 믿는다. 변경 없이 끝난 팀원의 worktree 는 자동 삭제되므로 후속 지시 전 `git worktree list` 로 실재를 확인한다. 없는 경로에 mkdir 하지 않는다(껍데기 폴더는 커밋되지 않는다). 후속 작업은 새 spawn 으로 한다.
      - 착수 전 `python3 <hooks>/lib/wt_lib.py audit --repo <저장소>` 로 잔류 worktree 의 미커밋(tracked·untracked)·unique_commits·shells 를 확인한다. 값이 있으면 보고만 하고 지우지 않는다.
+  3. 배정표 점검 (팀원 간 협업 — 팀원 spawn 직전 1회): `python3 <AI>/.claude/scripts/collab_board.py assign-lint --assign $HOME/.claude/session-env/${UUID}/file_assignment.json`
+     - rc=1(FAIL)이면 소유자 중복·빈 배정·디렉터리 표기·파일 수 상한 위반이 있다. 배정표를 고친 뒤(version +1) 다시 돌리고 spawn 한다.
 
 실행: Agent(subagent_type="general-purpose", team_name="{팀명}", name="odev-{N}", model="sonnet", mode="bypassPermissions", prompt="...")
 # ⚠️ 필수: team_name= 파라미터 반드시 포함. 누락 시 hook 차단됨. 팀은 첫 Agent 호출 시 자동 생성되며 소멸하지 않으므로 별도 사전 생성 불필요.
@@ -524,6 +526,8 @@ sprint_contract (odev spawn 전 필수 — N1):
 
 odev 완료 후:
   0. checkpoint_기록_odev_완료: mcp__oio__bash_exec(command='bash ${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/checkpoint_write.sh "${UUID}" "DEV_AGENT_DONE" "DEV" "" "odev-{N}" "완료"')
+  0.5. 배정 범위 대조 (팀원 완료 보고 수신 후): `git -C <작업 폴더> diff --name-only <rollback_hash> | python3 <AI>/.claude/scripts/collab_board.py scope-check --assign $HOME/.claude/session-env/${UUID}/file_assignment.json --changed - [--agent odev-{N}]`
+     - 미추적 신규 파일은 `git ls-files --others --exclude-standard` 결과를 함께 넘긴다. rc=1(FAIL)이면 배정 밖·중복 소유·다른 팀원 파일 변경이다. 해당 팀원에게 원인을 묻고 배정표를 고치거나 되돌린 뒤 otest 로 넘긴다.
   1. 각 odev에 shutdown_with_verify 실행 (ok/references/SHUTDOWN_PROTOCOL.md "shutdown_with_verify 절차" 참조 — ok SKILL.md "shutdown_with_verify"에도 동일 정의)
   2. shutdown_sent 플래그 기록: 각 odev 에이전트 파일에 echo "shutdown_sent=true" >> $HOME/.claude/session-env/${UUID}/agents/odev-{N}
   2.7. pane 소멸 확인 + kill escalation (★ 필수 — L-362 — 2026-04-11):

@@ -17,6 +17,18 @@ set -euo pipefail
 # 롤 공용 CLI(role_lib). 시험·스테이징은 ROLE_LIB 로 바꾼다.
 ROLE_LIB="${ROLE_LIB:-${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/role_lib.py}"
 
+# 프로젝트홈 폴백: CLAUDE_PROJECT_ROOTS 가 비었으면 설치 때 기록한 ~/.config/claude-harness/project_home 첫 줄을 루트로 쓴다
+#   (cc ai = <홈>/AI, cc <이름> = <홈>/<이름> — 대소문자 무시는 role_lib project-dir 규칙 그대로)
+_cc_project_home_fallback() {
+    local f="$HOME/.config/claude-harness/project_home" ph=""
+    [[ -z "${CLAUDE_PROJECT_ROOTS:-}" && -f "$f" ]] || return 0
+    IFS= read -r ph < "$f" || true
+    ph="${ph%$'\r'}"; ph="${ph%"${ph##*[![:space:]]}"}"
+    [[ -n "$ph" ]] && export CLAUDE_PROJECT_ROOTS="$ph"
+    return 0
+}
+_cc_project_home_fallback
+
 # 인수 파싱: 플래그 + 위치 인수(디렉터리·계정·롤은 아래에서 판정)
 WORK_DIR=""
 CONTINUE_FLAG=""
@@ -1141,5 +1153,68 @@ _CAS_FILTER='grep -v -E "^\[claude-as\] (정보|profile=)"'
 _MODEL_ARG=$(python3 -c 'import json,os;print(json.load(open(os.path.expanduser("'"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/"'settings.json"))).get("model") or "default")' 2>/dev/null || true)
 [ -z "$_MODEL_ARG" ] && _MODEL_ARG="default"
 cd "$WORK_DIR"
-cas "$SELECTED" "${SESSION_ARGS[@]}" --model "$_MODEL_ARG" --dangerously-skip-permissions 2> >(eval "$_CAS_FILTER" >&2)
-exit $?
+
+# 종료 자동 대화공유(_auto_osync): 이번 실행에서 바뀐 대화(jsonl)가 정확히 1개면 /osync 와 같은 경로로 상대 머신에 보낸다.
+#   대상은 WORK_DIR 의 INFRA.md INFRA-FIELDS peer_ssh(비면 조용히 종료). ssh 별칭 → push --place, outbox → push --outbox.
+#   끄기 CC_AUTO_OSYNC=0. 상한 timeout ${CC_AUTO_OSYNC_TIMEOUT:-45}초. 실패해도 cc 종료코드는 cas 의 것을 그대로 쓴다.
+#   한계: cas 가 tmux 에서 분리돼 돌아온 시점까지만 보낸다(이후 대화는 다음 cc 종료 때).
+_cc_conv_dir="${ROLE_HOME_BASE:-$HOME/.claude}/projects/${WORK_DIR//[^A-Za-z0-9]/-}"
+_cc_t0=""
+if [[ "${CC_AUTO_OSYNC:-1}" != "0" ]]; then
+    _cc_t0="$(mktemp "${TMPDIR:-/tmp}/cc_t0.XXXXXX" 2>/dev/null || true)"
+fi
+_auto_osync() {
+    local cs proj lib infra="" peer="" pcwd="" sid n rc=0 out
+    local -a changed=() args=()
+    [[ -n "$_cc_t0" && -f "$_cc_t0" ]] || return 0
+    cs="$(_conv_share_path)" || return 0
+    [[ -f "$ROLE_LIB" ]] || return 0
+    lib="$(dirname "$ROLE_LIB")/infra_path.sh"
+    [[ -f "$lib" ]] || return 0
+    # shellcheck source=/dev/null
+    source "$lib"
+    infra="$(infra_md_path "$WORK_DIR" || true)"
+    [[ -n "$infra" ]] && peer="$(infra_field "$infra" peer_ssh || true)"
+    [[ -n "$peer" ]] || return 0
+    [[ -d "$_cc_conv_dir" ]] && mapfile -t changed < <(find "$_cc_conv_dir" -maxdepth 1 -type f -name '*.jsonl' -newer "$_cc_t0" 2>/dev/null | sort)
+    n=${#changed[@]}
+    if [[ -n "$RESUME_SID" && " ${SESSION_ARGS[*]} " != *" --fork-session "* ]]; then
+        # 재개(fork 아님)는 그 대화 파일이 바뀌었을 때만 보낸다
+        if [[ -f "$_cc_conv_dir/$RESUME_SID.jsonl" && "$_cc_conv_dir/$RESUME_SID.jsonl" -nt "$_cc_t0" ]]; then
+            sid="$RESUME_SID"
+        else
+            echo "ℹ️  대화 자동 공유 생략: 재개한 대화($RESUME_SID)가 바뀌지 않았습니다"
+            return 0
+        fi
+    elif [[ $n -eq 1 ]]; then
+        sid="$(basename "${changed[0]}" .jsonl)"
+    else
+        echo "ℹ️  대화 자동 공유 생략: 이번에 바뀐 대화가 ${n}개입니다(1개일 때만 자동). 필요하면 세션 안에서 /osync"
+        return 0
+    fi
+    proj="$(python3 -B "$ROLE_LIB" project-slug --cwd "$WORK_DIR" 2>/dev/null || true)"
+    [[ -n "$proj" ]] || return 0
+    if [[ "$peer" == "outbox" ]]; then
+        args=(push --sid "$sid" --project "$proj" --outbox)
+    else
+        pcwd="$(infra_field "$infra" peer_cwd || true)"
+        args=(push --sid "$sid" --project "$proj" --place)
+        [[ -n "$pcwd" ]] && args+=(--peer-cwd "$pcwd")
+        args+=("$peer")
+    fi
+    out="$(timeout "${CC_AUTO_OSYNC_TIMEOUT:-45}" python3 -B "$cs" "${args[@]}" 2>&1)" || rc=$?
+    if [[ $rc -eq 0 ]]; then
+        echo "🔄 대화 자동 공유 완료 → ${peer} (${sid:0:8}…)"
+    elif [[ $rc -eq 124 ]]; then
+        echo "⚠️  대화 자동 공유 시간 초과(${CC_AUTO_OSYNC_TIMEOUT:-45}초) → ${peer} — 세션 안에서 /osync 로 다시 보낼 수 있습니다" >&2
+    else
+        echo "⚠️  대화 자동 공유 실패 rc=$rc → ${peer}${out:+ — $(printf '%s\n' "$out" | tail -n 1)}" >&2
+    fi
+    return 0
+}
+
+_cc_rc=0
+cas "$SELECTED" "${SESSION_ARGS[@]}" --model "$_MODEL_ARG" --dangerously-skip-permissions 2> >(eval "$_CAS_FILTER" >&2) || _cc_rc=$?
+_auto_osync || true
+[[ -n "$_cc_t0" ]] && rm -f "$_cc_t0"
+exit $_cc_rc

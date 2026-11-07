@@ -3,28 +3,36 @@
 set -uo pipefail
 
 # ── 사용법
-#   bash install.sh [--non-interactive] [--link-skills]
+#   bash install.sh [--non-interactive] [--link-skills] [--no-rc]
+#   보통은 install-online.sh 가 이 스크립트를 부른다. 직접 실행해도 된다.
 #   환경변수 (모두 선택)
 #     HARNESS_HOME           하네스 설치 루트 (없으면 기존 rc 하네스 블록 값, 그다음 ~/.harness)
+#     HARNESS_AI_ROOT        AI 정본 폴더 (없으면 rc 블록 → HARNESS_HOME 이 <AI>/.harness 꼴이면 그 부모)
+#     CLAUDE_PROJECT_ROOTS   프로젝트홈 (없으면 rc 블록 → ~/.config/claude-harness/project_home 첫 줄)
 #     HARNESS_PROFILES_ROOT  cc/cas 프로필 루트 (없으면 CLAUDE_PROFILES_ROOT → 기존 rc 블록 → ~/.claude-profiles)
 #     HARNESS_PROJECT_ROOTS  oio 파일 I/O 허용 프로젝트 루트 (콤마 구분)
 #     CLAUDE_CONFIG_DIR      Claude Code 설정 디렉터리 (기본 ~/.claude)
+#   --no-rc  셸 rc 파일(~/.bashrc 등)을 고치지 않는다
+#   ~/.local/bin 의 cc·ccc·lcc·lccc·claude-as·cas 는 <HARNESS_HOME>/active/bin 을 가리키는 링크로 건다.
+#   다른 프로그램이 둔 파일·링크는 건드리지 않고 SKIP 한다.
 #   예 (서버):
-#     HARNESS_HOME=/data/pd/claude/harness HARNESS_PROFILES_ROOT=/data/pd/claude/profiles \
-#       bash install.sh --non-interactive
+#     HARNESS_HOME=/data/pd/Project/AI/.harness HARNESS_AI_ROOT=/data/pd/Project/AI \
+#       CLAUDE_PROJECT_ROOTS=/data/pd/Project bash install.sh --non-interactive
 
 NON_INTERACTIVE=0
 LINK_SKILLS=0
+NO_RC=0
 for _arg in "$@"; do
     case "$_arg" in
         --non-interactive) NON_INTERACTIVE=1 ;;
         --link-skills) LINK_SKILLS=1 ;;
+        --no-rc) NO_RC=1 ;;
         -h|--help)
-            sed -n '4,14p' "$0" | sed 's/^# \{0,1\}//'
+            sed -n '4,21p' "$0" | sed 's/^# \{0,1\}//'
             exit 0
             ;;
         *)
-            echo "알 수 없는 옵션: $_arg (사용 가능: --non-interactive, --link-skills)"
+            echo "알 수 없는 옵션: $_arg (사용 가능: --non-interactive, --link-skills, --no-rc)"
             exit 2
             ;;
     esac
@@ -62,12 +70,36 @@ else
     PROFILES_ROOT="$HOME/.claude-profiles"; _profiles_src="기본값"
 fi
 PROFILES_ROOT="${PROFILES_ROOT%/}"
+# AI 정본 폴더 승계 순서: HARNESS_AI_ROOT → 기존 rc 하네스 블록 → HARNESS_HOME 이 <AI>/.harness 꼴이면 그 부모
+if [ -z "${HARNESS_AI_ROOT:-}" ]; then
+    HARNESS_AI_ROOT="$(_rc_block_value HARNESS_AI_ROOT || true)"
+fi
+if [ -z "${HARNESS_AI_ROOT:-}" ] && [ "${HARNESS_HOME##*/}" = ".harness" ] && [ "$HARNESS_HOME" != "${HOME}/.harness" ]; then
+    HARNESS_AI_ROOT="${HARNESS_HOME%/.harness}"
+fi
+HARNESS_AI_ROOT="${HARNESS_AI_ROOT%/}"
+# 프로젝트홈 승계 순서: CLAUDE_PROJECT_ROOTS → 기존 rc 하네스 블록 → ~/.config/claude-harness/project_home 첫 줄
+_project_home_file="${HOME}/.config/claude-harness/project_home"
+if [ -z "${CLAUDE_PROJECT_ROOTS:-}" ]; then
+    CLAUDE_PROJECT_ROOTS="$(_rc_block_value CLAUDE_PROJECT_ROOTS || true)"
+fi
+if [ -z "${CLAUDE_PROJECT_ROOTS:-}" ] && [ -f "$_project_home_file" ]; then
+    CLAUDE_PROJECT_ROOTS="$(head -n 1 "$_project_home_file" | sed 's/[[:space:]]*$//')"
+fi
 CFG_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 BIN_SRC="${HARNESS_DIR}/bin"
 BIN_DST="${HARNESS_HOME}/bin"
 LOCAL_BIN="${HOME}/.local/bin"
+# 링크가 가리킬 bin. oUpdate 레이아웃(active → releases/<판>)이 있으면 active 를 거친다.
+# 그래야 oUpdate 가 active 하나만 바꿔도 cc 등이 새 판을 쓴다. 없으면(레거시) 이 저장소 bin 을 쓴다.
+if [ -d "${HARNESS_HOME}/active/bin" ]; then
+    LINK_BIN="${HARNESS_HOME}/active/bin"
+else
+    LINK_BIN="$BIN_SRC"
+fi
 VENV_DIR="${HARNESS_HOME}/venv/oio"
 REPO_PLUGIN_ROOT="${HARNESS_DIR}/plugins/harness"
+[ -d "${HARNESS_HOME}/active/plugins/harness" ] && REPO_PLUGIN_ROOT="${HARNESS_HOME}/active/plugins/harness"
 OIO_REQ="${REPO_PLUGIN_ROOT}/mcp-servers/oio/requirements.txt"
 TS="$(date +%Y%m%d-%H%M%S)"
 
@@ -122,6 +154,9 @@ if [ -n "$_prev_profiles_root" ] && [ "$_prev_profiles_root" != "$PROFILES_ROOT"
     echo "  ⚠ CLAUDE_PROFILES_ROOT 변경: 기존 ${_prev_profiles_root} → ${PROFILES_ROOT} (출처: ${_profiles_src})"
 fi
 echo "  CLAUDE_CONFIG_DIR     = ${CFG_DIR}"
+echo "  HARNESS_AI_ROOT       = ${HARNESS_AI_ROOT:-(없음 — 레거시 레이아웃)}"
+echo "  CLAUDE_PROJECT_ROOTS  = ${CLAUDE_PROJECT_ROOTS:-(없음)}"
+echo "  bin 링크 대상         = ${LINK_BIN}"
 echo ""
 
 # ── 0) 플랫폼 판별 (WSL2 / 일반 Linux)
@@ -143,6 +178,16 @@ fi
 
 # ── 1) python3 확인 (venv·settings 병합 전제)
 echo "[1/10] python3 확인"
+# ~/.local/bin PATH 줄 필요 여부는 PATH 를 바꾸기 전 원래 값으로 판정한다(4단계에서 사용)
+case ":${PATH}:" in
+    *":${LOCAL_BIN}:"*) _orig_has_local=1 ;;
+    *) _orig_has_local=0 ;;
+esac
+# python3 가 사용자 공간(~/.local/bin)에만 있으면 이 스크립트 안에서만 PATH 앞에 붙인다
+if ! command -v python3 >/dev/null 2>&1 && [ -x "${LOCAL_BIN}/python3" ]; then
+    PATH="${LOCAL_BIN}:${PATH}"
+    export PATH
+fi
 if command -v python3 >/dev/null 2>&1; then
     record "python3" "성공" "$(python3 --version 2>&1)"
 else
@@ -171,36 +216,65 @@ else
         || record "current 링크" "실패" "ln 실패"
 fi
 
-# ── 3) bin 링크 (cc/ccc/claude-as/cas) — HARNESS_HOME/bin + ~/.local/bin
+# ── 3) bin 링크 (cc/ccc/lcc/lccc/claude-as/cas) — HARNESS_HOME/bin + ~/.local/bin
+#    ~/.local/bin 은 다른 프로그램도 쓰는 공용 폴더다. 하네스가 만든 링크만 다시 건다.
 echo "[3/10] bin 링크 생성"
-mkdir -p "$LOCAL_BIN"
+mkdir -p "$LOCAL_BIN" "$BIN_DST"
+# 하네스 소유 링크인가. 링크이고, 대상이 이 HARNESS_HOME·이 저장소 안이거나
+# 대상 폴더 옆에 plugins/harness 가 있는 하네스 트리(레거시 설치 포함)이면 소유로 본다.
+_harness_owned_link() {
+    local _t _d
+    [ -L "$1" ] || return 1
+    _t="$(readlink "$1")"
+    case "$_t" in
+        "$HARNESS_HOME"/*|"$HARNESS_DIR"/*|*/.harness/*) return 0 ;;
+    esac
+    _d="$(dirname "$(dirname "$_t")")"
+    [ -d "${_d}/plugins/harness" ]
+}
 _link_ok=1
-for _b in cc ccc claude-as; do
-    if [ -f "${BIN_SRC}/${_b}" ]; then
-        chmod +x "${BIN_SRC}/${_b}" 2>/dev/null
-        ln -sfn "${BIN_SRC}/${_b}" "${BIN_DST}/${_b}" || _link_ok=0
-        ln -sfn "${BIN_SRC}/${_b}" "${LOCAL_BIN}/${_b}" || _link_ok=0
+_local_n=0
+_local_skip=""
+for _b in cc ccc lcc lccc claude-as cas; do
+    _src="${LINK_BIN}/${_b}"
+    # 옛 판에 cas 가 없으면 claude-as 를 쓴다
+    if [ "$_b" = "cas" ] && [ ! -e "$_src" ]; then
+        _src="${LINK_BIN}/claude-as"
+    fi
+    if [ ! -e "$_src" ]; then
+        echo "  ⚠ ${_src} 없음 — ${_b} 링크 건너뜀"
+        record "bin 링크 ${_b}" "건너뜀" "원본 없음: ${_src}"
+        continue
+    fi
+    [ -L "$_src" ] || chmod +x "$_src" 2>/dev/null
+    ln -sfn "$_src" "${BIN_DST}/${_b}" || _link_ok=0
+    _dst="${LOCAL_BIN}/${_b}"
+    if [ -e "$_dst" ] || [ -L "$_dst" ]; then
+        if ! _harness_owned_link "$_dst"; then
+            # 하네스가 만든 것이 아닌 파일·링크 — 덮어쓰지 않는다
+            _local_skip="${_local_skip} ${_b}"
+            record "~/.local/bin/${_b}" "건너뜀" "SKIP 남의 파일 ($(readlink "$_dst" 2>/dev/null || echo 실파일))"
+            continue
+        fi
+    fi
+    if ln -sfn "$_src" "$_dst"; then
+        _local_n=$((_local_n + 1))
+        record "~/.local/bin/${_b}" "성공" "→ ${_src}"
     else
-        echo "  ⚠ ${BIN_SRC}/${_b} 없음"
         _link_ok=0
+        record "~/.local/bin/${_b}" "실패" "ln 실패"
     fi
 done
-# cas 는 claude-as 의 별칭 (원본 구조와 동일)
-ln -sfn "${BIN_SRC}/claude-as" "${BIN_DST}/cas" || _link_ok=0
-ln -sfn "${BIN_SRC}/claude-as" "${LOCAL_BIN}/cas" || _link_ok=0
 if [ "$_link_ok" = "1" ]; then
-    record "bin 링크(cc/ccc/claude-as/cas)" "성공" "${BIN_DST}, ${LOCAL_BIN}"
+    record "bin 링크(HARNESS_HOME/bin)" "성공" "${BIN_DST} → ${LINK_BIN}"
 else
-    record "bin 링크(cc/ccc/claude-as/cas)" "실패" "일부 링크 실패"
+    record "bin 링크(HARNESS_HOME/bin)" "실패" "일부 링크 실패"
 fi
+[ -n "$_local_skip" ] && echo "  ℹ️  ~/.local/bin 에 다른 프로그램 파일이 있어 건너뜀:${_local_skip} (지우거나 이름을 바꾼 뒤 재실행하면 연결된다)"
 
 # ── 4) 셸 환경 표식 블록 (PATH + HARNESS_HOME + CLAUDE_PROFILES_ROOT)
 #    ~/.bashrc 는 비대화 셸에서 앞부분 가드로 끝나는 배포판이 많아 로그인 셸 파일에도 같은 블록을 둔다.
 echo "[4/10] 셸 환경 등록"
-_env_body="export HARNESS_HOME=\"${HARNESS_HOME}\"
-export CLAUDE_PROFILES_ROOT=\"${PROFILES_ROOT}\"
-case \":\$PATH:\" in *\":${BIN_DST}:\"*) ;; *) export PATH=\"${BIN_DST}:\$PATH\" ;; esac
-case \":\$PATH:\" in *\":\$HOME/.local/bin:\"*) ;; *) export PATH=\"\$HOME/.local/bin:\$PATH\" ;; esac"
 _bashrc="${HOME}/.bashrc"
 if [ -f "${HOME}/.bash_profile" ]; then
     _login_rc="${HOME}/.bash_profile"
@@ -209,17 +283,45 @@ elif [ -f "${HOME}/.bash_login" ]; then
 else
     _login_rc="${HOME}/.profile"
 fi
-_env_ok=1
+# ~/.local/bin PATH 줄은 지금 PATH 에 없을 때만 넣는다.
+# 단, 이전 설치가 표식 블록에 이미 넣어 둔 줄은 유지한다(그 줄 덕에 PATH 에 들어와 있을 수 있다).
+_need_local_path=0
+[ "$_orig_has_local" = "1" ] || _need_local_path=1
 for _rc in "$_bashrc" "$_login_rc"; do
-    [ -f "$_rc" ] && cp -p "$_rc" "${_rc}.bak.${TS}" 2>/dev/null
-    replace_block "$_rc" '# >>> harness PATH' '# <<< harness PATH' "$_env_body" || _env_ok=0
+    [ -f "$_rc" ] || continue
+    if sed -n '/^# >>> harness PATH$/,/^# <<< harness PATH$/p' "$_rc" | grep -q '\.local/bin'; then
+        _need_local_path=1
+    fi
 done
-if [ "$_env_ok" = "1" ]; then
-    record "셸 환경 등록" "성공" "${_bashrc}, ${_login_rc} (표식 블록 갱신)"
+_env_body="export HARNESS_HOME=\"${HARNESS_HOME}\"
+export CLAUDE_PROFILES_ROOT=\"${PROFILES_ROOT}\""
+[ -n "$HARNESS_AI_ROOT" ] && _env_body="${_env_body}
+export HARNESS_AI_ROOT=\"${HARNESS_AI_ROOT}\""
+[ -n "${CLAUDE_PROJECT_ROOTS:-}" ] && _env_body="${_env_body}
+export CLAUDE_PROJECT_ROOTS=\"${CLAUDE_PROJECT_ROOTS}\""
+_env_body="${_env_body}
+case \":\$PATH:\" in *\":${BIN_DST}:\"*) ;; *) export PATH=\"${BIN_DST}:\$PATH\" ;; esac"
+[ "$_need_local_path" = "1" ] && _env_body="${_env_body}
+case \":\$PATH:\" in *\":\$HOME/.local/bin:\"*) ;; *) export PATH=\"\$HOME/.local/bin:\$PATH\" ;; esac"
+if [ "$NO_RC" = "1" ]; then
+    record "셸 환경 등록" "건너뜀" "--no-rc — rc 파일 무변경"
 else
-    record "셸 환경 등록" "실패" "표식 블록 기록 실패"
+    _env_ok=1
+    for _rc in "$_bashrc" "$_login_rc"; do
+        [ -f "$_rc" ] && cp -p "$_rc" "${_rc}.bak.${TS}" 2>/dev/null
+        replace_block "$_rc" '# >>> harness PATH' '# <<< harness PATH' "$_env_body" || _env_ok=0
+    done
+    if [ "$_env_ok" = "1" ]; then
+        _pnote="~/.local/bin PATH 줄 없음(이미 PATH 에 있음)"
+        [ "$_need_local_path" = "1" ] && _pnote="~/.local/bin PATH 줄 포함"
+        record "셸 환경 등록" "성공" "${_bashrc}, ${_login_rc} (표식 블록 갱신, 백업 .bak.${TS}, ${_pnote})"
+    else
+        record "셸 환경 등록" "실패" "표식 블록 기록 실패"
+    fi
 fi
 export HARNESS_HOME CLAUDE_PROFILES_ROOT="$PROFILES_ROOT"
+[ -n "$HARNESS_AI_ROOT" ] && export HARNESS_AI_ROOT
+[ -n "${CLAUDE_PROJECT_ROOTS:-}" ] && export CLAUDE_PROJECT_ROOTS
 
 # ── 5) tmux 확인 + 설정 연결 (설치 시도는 하지 않는다)
 echo "[5/10] tmux 확인"
@@ -281,7 +383,10 @@ else
     record "oio venv + fastmcp" "실패" "venv 생성 실패 (python3-venv 또는 virtualenv 필요)"
 fi
 # .mcp.json 은 venv 를 ${HOME}/.harness/venv/oio 로 가리킨다.
-# HARNESS_HOME 이 기본값이 아니면 ~/.harness/venv → $HARNESS_HOME/venv 호환 링크를 만든다.
+# HARNESS_HOME 이 기본값이 아니면 호환 링크를 만든다(venv·pip·호환 링크는 이 스크립트가 단독으로 맡는다).
+#   ~/.harness/venv 가 없거나 링크   → ~/.harness/venv → $HARNESS_HOME/venv
+#   ~/.harness/venv 가 실디렉터리     → 그 안의 oio 만 본다. 없거나 링크면 oio → $HARNESS_HOME/venv/oio
+#   ~/.harness/venv/oio 도 실디렉터리 → 레거시 venv 로 보고 그대로 둔다(유지)
 if [ "$HARNESS_HOME" != "${HOME}/.harness" ]; then
     _compat="${HOME}/.harness/venv"
     mkdir -p "${HOME}/.harness"
@@ -289,8 +394,12 @@ if [ "$HARNESS_HOME" != "${HOME}/.harness" ]; then
         ln -sfn "${HARNESS_HOME}/venv" "$_compat" \
             && record "venv 호환 링크" "성공" "${_compat} → ${HARNESS_HOME}/venv" \
             || record "venv 호환 링크" "실패" "ln 실패"
+    elif [ -L "${_compat}/oio" ] || [ ! -e "${_compat}/oio" ]; then
+        ln -sfn "$VENV_DIR" "${_compat}/oio" \
+            && record "venv 호환 링크" "성공" "${_compat}/oio → ${VENV_DIR} (${_compat} 는 실디렉터리라 유지)" \
+            || record "venv 호환 링크" "실패" "ln 실패"
     else
-        record "venv 호환 링크" "실패" "${_compat} 가 실제 디렉터리 — 손대지 않음(.mcp.json 경로 확인 필요)"
+        record "venv 호환 링크" "유지" "${_compat}/oio 가 기존 venv 실디렉터리 — 손대지 않음(.mcp.json 은 이 venv 를 씀)"
     fi
 fi
 
@@ -365,7 +474,9 @@ fi
 #    oio 의 파일 I/O 허용 루트다. 미선언이면 CLAUDE_PROJECT_DIR / cwd 로 자동 판별한다.
 echo "[9/10] 프로젝트 루트 선언 (선택)"
 _marker='# >>> harness project roots'
-if grep -q "$_marker" "$_bashrc" 2>/dev/null; then
+if [ "$NO_RC" = "1" ]; then
+    record "프로젝트 루트 선언" "건너뜀" "--no-rc — rc 파일 무변경"
+elif grep -q "$_marker" "$_bashrc" 2>/dev/null; then
     record "프로젝트 루트 선언" "성공" "이미 선언됨 (중복 추가 안 함)"
 elif [ -n "${HARNESS_PROJECT_ROOTS:-}" ]; then
     replace_block "$_bashrc" "$_marker" '# <<< harness project roots' "export HARNESS_PROJECT_ROOTS=\"${HARNESS_PROJECT_ROOTS}\""
@@ -396,7 +507,29 @@ else
 fi
 
 # ── 10) rules 디렉터리 + (선택) 스킬 무접두 링크
-echo "[10/10] rules 디렉터리 / 스킬 링크"
+echo "[10/10] AI 정본 폴더 / rules 디렉터리 / 스킬 링크"
+# AI 정본 폴더(<프로젝트홈>/AI)를 harness_ai_root.py ensure 로 맞춘다.
+# 빈 폴더이거나 하네스 표식(.harness_ai_root.json)이 있을 때만 손대고, 정본 머신의 실디렉터리는 건드리지 않는다(rc=3).
+_ai_py=""
+for _c in "${HARNESS_HOME}/active/plugins/harness/scripts/harness_ai_root.py" "${HARNESS_DIR}/plugins/harness/scripts/harness_ai_root.py"; do
+    if [ -f "$_c" ]; then
+        _ai_py="$_c"
+        break
+    fi
+done
+if [ -z "$HARNESS_AI_ROOT" ]; then
+    record "AI 정본 폴더" "건너뜀" "HARNESS_AI_ROOT 없음(레거시 레이아웃) — oUpdate 가 이전한다"
+elif [ -z "$_ai_py" ]; then
+    record "AI 정본 폴더" "건너뜀" "harness_ai_root.py 없음(옛 판) — oUpdate 뒤 재실행"
+else
+    python3 -B "$_ai_py" ensure --harness-home "$HARNESS_HOME" --ai-root "$HARNESS_AI_ROOT"
+    _ai_rc=$?
+    case "$_ai_rc" in
+        0) record "AI 정본 폴더" "성공" "${HARNESS_AI_ROOT}" ;;
+        3) record "AI 정본 폴더" "건너뜀" "${HARNESS_AI_ROOT} 는 실제 정본(배포자) 폴더 — 손대지 않음" ;;
+        *) record "AI 정본 폴더" "실패" "harness_ai_root.py ensure rc=${_ai_rc}" ;;
+    esac
+fi
 mkdir -p "${CFG_DIR}/rules"
 if [ -d "${CFG_DIR}/rules" ]; then
     record "rules 디렉터리" "성공" "${CFG_DIR}/rules"
@@ -430,6 +563,10 @@ printf '%s' "$RESULTS" | while IFS='|' read -r _item _status _note; do
     [ -z "$_item" ] && continue
     if [ "$_status" = "성공" ]; then
         printf "  ✅ %-34s %s\n" "$_item" "$_note"
+    elif [ "$_status" = "건너뜀" ]; then
+        printf "  ⏭️  %-34s %s\n" "$_item" "$_note"
+    elif [ "$_status" = "유지" ]; then
+        printf "  ℹ️  %-34s %s\n" "$_item" "$_note"
     else
         printf "  ❌ %-34s %s\n" "$_item" "$_note"
     fi
@@ -445,9 +582,10 @@ fi
 
 echo ""
 echo "다음 단계:"
-echo "  1) source ${_bashrc}       (또는 새 로그인 셸)"
+echo "  1) 새 셸을 열거나 exec \$SHELL -l 을 실행하면 cc 를 바로 쓸 수 있다"
+echo "     (이미 열린 셸에는 PATH 가 바로 반영되지 않는다 — 설치 스크립트는 자식 프로세스라 부모 셸을 바꿀 수 없다)"
 echo "  2) cas create default        (프로필이 없다면 — 로그인은 직접 진행)"
-echo "  3) cc                        (하네스 진입)"
+echo "  3) cc                        (하네스 진입, cc ai = AI 정본 폴더)"
 echo ""
 echo "ℹ️  oio MCP 가 연결되지 않는 경우:"
 echo "   .mcp.json 의 \${HOME} 전개는 공식 보장 대상이 아닙니다."

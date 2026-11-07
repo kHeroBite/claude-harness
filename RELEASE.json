@@ -1,0 +1,143 @@
+{
+  "schema": 1,
+  "version": "1.3.0",
+  "source_commit": "0c7b298eeb2c3622a96feaee048fda2b222a8b8a",
+  "built_at": "2026-11-07T01:48:02Z",
+  "summary": "oUpdate 엔진·<프로젝트홈>/AI 단일 정본 레이아웃·install-online.sh 1줄 설치·cc/lcc 종료 자동 대화공유·codex 연결",
+  "breaking": true,
+  "requires": [
+    {
+      "name": "git",
+      "min": "2.0",
+      "need": "required",
+      "install": {
+        "apt": "git",
+        "dnf": "git",
+        "yum": "git",
+        "zypper": "git",
+        "pacman": "git",
+        "apk": "git",
+        "brew": "git"
+      }
+    },
+    {
+      "name": "python3",
+      "min": "3.10",
+      "need": "required",
+      "install": {
+        "apt": "python3",
+        "dnf": "python3",
+        "yum": "python3",
+        "zypper": "python3",
+        "pacman": "python",
+        "apk": "python3",
+        "brew": "python@3"
+      }
+    },
+    {
+      "name": "venv",
+      "min": "",
+      "need": "required",
+      "install": {
+        "apt": "python3-venv",
+        "dnf": "python3",
+        "yum": "python3",
+        "zypper": "python3",
+        "pacman": "python",
+        "apk": "python3"
+      }
+    },
+    {
+      "name": "tmux",
+      "min": "",
+      "need": "required",
+      "install": {
+        "apt": "tmux",
+        "dnf": "tmux",
+        "yum": "tmux",
+        "zypper": "tmux",
+        "pacman": "tmux",
+        "apk": "tmux",
+        "brew": "tmux"
+      }
+    },
+    {
+      "name": "jq",
+      "min": "",
+      "need": "required",
+      "install": {
+        "apt": "jq",
+        "dnf": "jq",
+        "yum": "jq",
+        "zypper": "jq",
+        "pacman": "jq",
+        "apk": "jq",
+        "brew": "jq"
+      }
+    },
+    {
+      "name": "curl/wget",
+      "min": "",
+      "need": "required",
+      "install": {
+        "apt": "curl",
+        "dnf": "curl",
+        "yum": "curl",
+        "zypper": "curl",
+        "pacman": "curl",
+        "apk": "curl",
+        "brew": "curl"
+      }
+    },
+    {
+      "name": "node",
+      "min": "18.18",
+      "need": "required",
+      "install": {
+        "apt": "nodejs",
+        "dnf": "nodejs",
+        "yum": "nodejs",
+        "zypper": "nodejs",
+        "pacman": "nodejs",
+        "apk": "nodejs",
+        "brew": "node",
+        "user": "builtin"
+      }
+    },
+    {
+      "name": "claude",
+      "min": "",
+      "need": "required",
+      "install": {
+        "user": "builtin"
+      }
+    },
+    {
+      "name": "codex",
+      "min": "",
+      "need": "required",
+      "install": {
+        "user": "builtin"
+      }
+    }
+  ],
+  "migrations": [
+    {
+      "id": "m0001_legacy_layout",
+      "since": "1.3.0",
+      "phase": "pre",
+      "script": "plugins/harness/scripts/migrations/m0001_legacy_layout.py"
+    }
+  ],
+  "post_actions": [
+    {
+      "kind": "new_shell",
+      "text": "새 셸을 열거나 exec $SHELL -l 로 PATH·HARNESS_HOME 반영"
+    },
+    {
+      "kind": "reload_plugin",
+      "text": "/reload-plugins 또는 다음 세션부터 플러그인 1.3.0 적용"
+    }
+  ],
+  "history": []
+}

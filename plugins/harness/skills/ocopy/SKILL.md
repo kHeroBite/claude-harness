@@ -21,12 +21,12 @@ AI 프로젝트 원본의 공용 파일/폴더를 대상 프로젝트에 심볼�
 
 ```yaml
 슬래시_커맨드:
-  - /ocopy tmuxMon           # 프로젝트명 → /mnt/c/DATA/Project/tmuxMon
-  - /ocopy /mnt/c/DATA/Project/tmuxMon  # 절대경로 직접 지정
+  - /ocopy tmuxMon             # 프로젝트명 → <프로젝트 루트>/tmuxMon
+  - /ocopy <절대경로>          # 절대경로 직접 지정
 
 자연어:
   - "tmuxMon 프로젝트에 기본환경 구축해줘"
-  - "/mnt/c/DATA/Project/tmuxMon 에 기본환경 구축해줘"
+  - "<절대경로> 에 기본환경 구축해줘"
 ```
 
 ---
@@ -36,90 +36,104 @@ AI 프로젝트 원본의 공용 파일/폴더를 대상 프로젝트에 심볼�
 ```yaml
 규칙:
   1. 절대경로 (/로 시작): 그대로 사용
-  2. 프로젝트명 (단어): /mnt/c/DATA/Project/{프로젝트명} 으로 변환
+  2. 프로젝트명 (단어): <프로젝트 루트>/{프로젝트명} 으로 변환. 정확히 일치하는 폴더가 없으면 대소문자 무시로 1건만 찾는다
   3. 인자 없음: 사용자에게 프로젝트명 질문
 ```
 
 ---
 
-## AI 원본 경로
+## AI 루트·프로젝트 루트 해석
+
+경로는 스킬 문서에 박지 않는다. 링크 실행기 `ocopy_link.py` 가 공용 해석 모듈 `harness_ai_root.py` 로 정한다.
 
 ```yaml
-원본: ${HARNESS_HOME:-$HOME/.harness}/current/   # 대문자 AI — 링크 경로 표기 대문자로 통일
+AI_루트 (링크 원본, 대문자 AI):
+  순서: --ai-root 인자 > HARNESS_AI_ROOT 환경변수 > ${CLAUDE_CONFIG_DIR:-~/.claude}/harness_ai_root 파일
+        > ~/.config/claude-harness/project_home 첫 줄 + /AI > realpath(${HARNESS_HOME:-$HOME/.harness}/current/hooks) 가 <X>/.claude/hooks 이고 <X>/CLAUDE.md 가 있으면 <X>
+  정본_머신: 기존 정본 AI 폴더(실디렉터리)로 풀린다
+  설치_머신: <프로젝트홈>/AI facade 로 풀린다(install-online.sh·oUpdate 가 만든 폴더)
+
+프로젝트_루트 (프로젝트명 인자의 부모):
+  순서: --projects-root 인자 > CLAUDE_PROJECT_ROOTS 첫 항목 > ~/.config/claude-harness/project_home
+        > AI 루트 INFRA.md INFRA-FIELDS 의 projects_root > AI 루트의 부모
 ```
+
+> 실제 값은 `--dry-run` 출력의 JSON 요약(`ai_root`·`target`)으로 확인한다.
+
+---
+
+## 링크 실행기 찾기
+
+다음 순서로 처음 찾은 파일을 쓴다. 경로를 추정하지 말고 실제로 있는지 확인한다.
+
+1. `<AI 루트>/.claude/scripts/ocopy_link.py`
+2. `${HARNESS_HOME}/active/plugins/harness/scripts/ocopy_link.py`
+3. `${HARNESS_HOME:-$HOME/.harness}/current/scripts/ocopy_link.py`
+
+```bash
+bash -c 'A="${HARNESS_AI_ROOT:-}"; H="${HARNESS_HOME:-$HOME/.harness}";
+  for f in ${A:+"$A/.claude/scripts/ocopy_link.py"} "$H/active/plugins/harness/scripts/ocopy_link.py" "${HARNESS_HOME:-$HOME/.harness}/current/scripts/ocopy_link.py"; do
+    [ -f "$f" ] && { echo "OCOPY_LINK=$f"; exit 0; }; done; echo OCOPY_LINK_NOT_FOUND; exit 2'
+```
+
+`OCOPY_LINK_NOT_FOUND` 이면 중단하고 사용자에게 보고한다(하네스 설치·갱신 필요 — `/oUpdate`).
 
 ---
 
 ## 링크 대상
 
-### 심볼릭링크 (전체 — ln -s, 절대경로)
+### 심볼릭링크 (전체 — 절대경로)
 
 | 원본 | 대상 | 링크 값(절대경로) |
 |------|------|----------|
-| `AI/CLAUDE.md` | `{대상}/CLAUDE.md` | `${HARNESS_HOME:-$HOME/.harness}/current/CLAUDE.md` |
-| `AI/CLAUDE.md` | `{대상}/AGENTS.md` | `${HARNESS_HOME:-$HOME/.harness}/current/CLAUDE.md` |
-| `AI/.mcp.json` | `{대상}/.mcp.json` | `${HARNESS_HOME:-$HOME/.harness}/current/.mcp.json` |
-| `AI/.claude/settings.json` | `{대상}/.claude/settings.json` | `${HARNESS_HOME:-$HOME/.harness}/current/.claude/settings.json` |
-| `AI/.claude/settings.local.json` | `{대상}/.claude/settings.local.json` | `${HARNESS_HOME:-$HOME/.harness}/current/.claude/settings.local.json` |
-| `AI/.claude/commands` | `{대상}/.claude/commands` | `${HARNESS_HOME:-$HOME/.harness}/current/.claude/commands` |
-| `AI/.claude/skills` | `{대상}/.claude/skills` | `${HARNESS_HOME:-$HOME/.harness}/current/skills` |
-| `${HARNESS_HOME:-$HOME/.harness}/current/hooks` | `{대상}/.claude/hooks` | `${HARNESS_HOME:-$HOME/.harness}/current/hooks` |
+| `AI/CLAUDE.md` | `{대상}/CLAUDE.md` | `<AI 루트>/CLAUDE.md` |
+| `AI/CLAUDE.md` | `{대상}/AGENTS.md` | `<AI 루트>/CLAUDE.md` |
+| `AI/.mcp.json` | `{대상}/.mcp.json` | `<AI 루트>/.mcp.json` |
+| `AI/.claude/settings.json` | `{대상}/.claude/settings.json` | `<AI 루트>/.claude/settings.json` |
+| `AI/.claude/settings.local.json` | `{대상}/.claude/settings.local.json` | `<AI 루트>/.claude/settings.local.json` |
+| `AI/.claude/commands` | `{대상}/.claude/commands` | `<AI 루트>/.claude/commands` |
+| `AI/.claude/skills` | `{대상}/.claude/skills` | `<AI 루트>/.claude/skills` |
+| `${HARNESS_HOME:-$HOME/.harness}/current/hooks` | `{대상}/.claude/hooks` | `${HARNESS_HOME:-$HOME/.harness}/current/hooks` (없으면 `<AI 루트>/.claude/hooks`) |
 
 > **모든 공용 파일을 심볼릭링크로 통일**: AI 원본 수정 시 전체 프로젝트에 즉시 반영.
-> **ext4 정본 절대경로 사용 (2026-10-28 정정)**: 대상 프로젝트는 `/mnt/c/DATA/Project/` 아래에 있으므로 상대경로 `../AI/...` 는 `/mnt/c/DATA/Project/AI`(갱신이 멈춘 NTFS 옛 사본)로 풀린다. 정본은 ext4 `${HARNESS_HOME:-$HOME/.harness}/current` 이므로 반드시 절대경로로 건다. 기존 프로젝트(Mars 등) 실측도 절대경로다. 대문자 `AI` 통일 필수.
+> **해석된 AI 루트 절대경로 사용 (2026-10-28 정정)**: 대상 프로젝트가 AI 와 다른 파일시스템(예: Windows 쪽 프로젝트 폴더)에 있으면 상대경로 `../AI/...` 는 그 옆의 옛 AI 사본으로 풀릴 수 있다. 그래서 링크 값은 항상 해석된 AI 루트의 절대경로다. 대문자 `AI` 통일 필수.
 > **hooks는 절대경로 symlink 필수** (2026-05-02): settings.json hook command가 매크로(`$CLAUDE_PROJECT_DIR/...`)에서 절대경로로 전환된 후, 활성 세션이 옛 매크로 캐시를 들고 호출하면 프로젝트 로컬 `.claude/hooks/`로 fallback됨. symlink가 없으면 22일간 6개 프로젝트 1,122회 silent fail 같은 사고 재발. (출처: settings_changelog.md 2026-05-02)
+> **원본이 없는 항목은 건너뛴다**: 설치 머신의 AI facade 에는 `.mcp.json`·`settings.local.json` 이 없을 수 있다(플러그인이 oio 를 제공). 이때 `SKIP_NOSRC` 로 보고된다.
+> **스킬 이중 표시**: 플러그인이 설치된 머신에서는 같은 스킬이 `harness:oplan` 과 `oplan` 두 이름으로 보일 수 있다. 플러그인 스킬과 프로젝트 `.claude/skills` 링크가 함께 읽히기 때문이며, 둘 다 같은 원본이므로 그대로 둔다.
 
 ---
 
 ## 실행 절차
 
-### Step 1: 대상 경로 결정
-
-```yaml
-입력: 사용자 인자 (프로젝트명 또는 절대경로)
-출력: TARGET_PATH (절대경로)
-변환: 프로젝트명이면 /mnt/c/DATA/Project/{프로젝트명}
-```
-
-### Step 2: 디렉토리 준비
+### Step 1: 대상 경로 결정 (dry-run)
 
 ```bash
-# 프로젝트 루트
-mkdir -p "{TARGET_PATH}"
-
-# .claude 디렉토리 (skills는 심볼릭링크로 생성되므로 mkdir 불필요)
-mkdir -p "{TARGET_PATH}/.claude"
+bash -c 'python3 -B "<OCOPY_LINK 경로>" "<프로젝트명 또는 절대경로>" --dry-run; echo "RC=$?"'
 ```
 
-### Step 3: 심볼릭링크 생성 (일괄)
+- 출력 마지막 줄 JSON 의 `target` 이 대상 절대경로(TARGET_PATH), `ai_root` 가 링크 원본이다. 사용자에게 함께 보여 준다.
+- `ERR` 줄이 있거나 rc≠0 이면 중단하고 보고한다. 대상이 AI 루트 자신이거나 그 안이면 `ERR` 로 거부된다.
+- 프로젝트 루트·AI 루트를 바꿔야 하면 `--projects-root`·`--ai-root` 를 붙인다.
+
+### Step 2~3: 디렉토리 준비 + 심볼릭링크 생성
 
 ```bash
-cd "{TARGET_PATH}"
-
-# 프로젝트 루트 파일 (ext4 정본 절대경로, 대문자 AI)
-[ -L CLAUDE.md ] || ln -s ${HARNESS_HOME:-$HOME/.harness}/current/CLAUDE.md CLAUDE.md
-[ -L AGENTS.md ] || ln -s ${HARNESS_HOME:-$HOME/.harness}/current/CLAUDE.md AGENTS.md
-[ -L .mcp.json ] || ln -s ${HARNESS_HOME:-$HOME/.harness}/current/.mcp.json .mcp.json
-
-# .claude 내부 파일 (ext4 정본 절대경로, 대문자 AI)
-[ -L .claude/settings.json ] || ln -s ${HARNESS_HOME:-$HOME/.harness}/current/.claude/settings.json .claude/settings.json
-[ -L .claude/settings.local.json ] || ln -s ${HARNESS_HOME:-$HOME/.harness}/current/.claude/settings.local.json .claude/settings.local.json
-
-# .claude 내부 폴더 (ext4 정본 절대경로, 대문자 AI)
-[ -L .claude/commands ] || ln -s ${HARNESS_HOME:-$HOME/.harness}/current/.claude/commands .claude/commands
-[ -L .claude/skills ] || ln -s ${HARNESS_HOME:-$HOME/.harness}/current/skills .claude/skills
-
-# .claude/hooks symlink (절대경로 — 2026-05-02 hook 캐시 fallback 사고 재발방지)
-[ -L .claude/hooks ] || ln -sfn ${HARNESS_HOME:-$HOME/.harness}/current/hooks .claude/hooks
-
-# .claude/locks 디렉토리 생성 (모든 프로젝트 공통)
-mkdir -p .claude/locks
+bash -c 'python3 -B "<OCOPY_LINK 경로>" "<프로젝트명 또는 절대경로>"; echo "RC=$?"'
 ```
 
-> 이미 심볼릭링크면 스킵.
-> **hooks는 절대경로 symlink 필수**: settings.json hook 캐시 fallback이 프로젝트 로컬 .claude/hooks/로 가는 사고를 방지 (2026-05-02 1,122회 silent fail 종식 조치).
-> `locks/`는 파이프라인 잠금 파일 저장소 — 항상 실제 디렉토리로 생성.
-> **oio bash_exec 실행 주의 (2026-10-28 실측)**: bash_exec 는 최상위 `&&` 구간을 별도 셸로 실행하므로 `T=... && cd "$T"` 처럼 앞 구간 변수를 뒤 구간에서 쓰면 빈 값이 되어 F-DESTROY-2 가 차단한다. `mkdir -p`·`cd` 는 **절대경로 리터럴**로 쓰고 명령은 `;`·개행으로 잇는다. 셸은 dash 이므로 `[[ ]]`·배열도 쓰지 않는다.
+출력 코드는 다음과 같다.
+
+| 코드 | 뜻 |
+|---|---|
+| `MKDIR` | 대상 폴더·`.claude`·`.claude/locks` 생성 |
+| `LINK_OK` | 링크 생성(dry-run 이면 끝에 `(dry-run)`) |
+| `SKIP_EXISTS` | 이미 있음 — 덮어쓰지 않음 |
+| `SKIP_NOSRC` | 원본 없음 — 건너뜀 |
+| `ERR` | 실패 — rc=1 |
+
+> 이미 있는 파일·폴더·링크는 덮어쓰지 않는다.
+> `locks/`는 파이프라인 잠금 파일 저장소 — 항상 실제 디렉토리로 생성된다.
+> 마지막 줄 JSON 요약의 `counts` 를 결과 보고에 쓴다.
 
 ### Step 5.5: INFRA.md·문서지도·정본 골격 생성
 
@@ -221,7 +235,7 @@ bash -ic 'type {이름}; {이름}; pwd' 2>&1 | grep -v -e 'job control' -e 'proc
 ### Step 6: 검증
 
 ```bash
-# 심볼릭링크 확인 (전체 7개)
+# 심볼릭링크 확인 (원본 없는 SKIP_NOSRC 항목은 없어도 정상)
 for f in CLAUDE.md AGENTS.md .mcp.json; do
   ls -la "{TARGET_PATH}/$f"
 done
@@ -242,8 +256,8 @@ fi
 # 읽기 테스트
 head -1 "{TARGET_PATH}/CLAUDE.md"
 
-# 링크가 ext4 정본을 가리키는지 확인 (/mnt/c/DATA/Project/AI 로 풀리면 실패)
-readlink -f "{TARGET_PATH}/CLAUDE.md"   # 기대: ${HARNESS_HOME:-$HOME/.harness}/current/CLAUDE.md
+# 링크가 해석된 AI 루트를 가리키는지 확인 (다른 AI 사본으로 풀리면 실패)
+readlink "{TARGET_PATH}/CLAUDE.md"   # 기대: <AI 루트>/CLAUDE.md (Step 1 JSON 의 ai_root)
 ls -la "{TARGET_PATH}/.claude/hooks"
 
 # 이동 alias 확인 (Step 5.7)
@@ -256,7 +270,7 @@ bash -ic 'type {이름}' 2>&1 | tail -1
 출력_형식:
   완료_요약:
     - "✅ {TARGET_PATH} 기본 환경 구축 완료"
-    - 심볼릭링크 8개 (CLAUDE.md, AGENTS.md, .mcp.json, settings.json, settings.local.json, commands, skills, hooks)
+    - 심볼릭링크 최대 8개 (CLAUDE.md, AGENTS.md, .mcp.json, settings.json, settings.local.json, commands, skills, hooks) — ocopy_link.py JSON 요약 counts 의 LINK_OK·SKIP_EXISTS·SKIP_NOSRC 수를 함께 적는다
     - 실제 디렉토리 1개 (.claude/locks)
     - "✅ 이동 alias: {이름} → cd {TARGET_PATH} (~/.bashrc) — 열려 있는 터미널은 source ~/.bashrc 또는 새 터미널"
 
@@ -313,6 +327,7 @@ bash -ic 'type {이름}' 2>&1 | tail -1
   - 대상 프로젝트의 기존 파일 덮어쓰기
   - AI 원본 파일 수정
   - 링크 경로에 소문자 ai 사용 (대문자 AI로 통일)
-  - 상대경로 ../AI/... 링크 (NTFS 옛 사본 /mnt/c/DATA/Project/AI 로 풀림 — ext4 정본 절대경로만)
+  - 상대경로 ../AI/... 링크 (다른 파일시스템의 옛 AI 사본으로 풀릴 수 있음 — 해석된 AI 루트 절대경로만)
+  - ocopy_link.py 를 거치지 않고 ln 으로 직접 링크 (덮어쓰기·경로 해석 규칙이 어긋남)
   - ~/.bashrc 의 기존 alias·다른 줄 수정 (이동 alias 1줄 추가만 허용)
 ```

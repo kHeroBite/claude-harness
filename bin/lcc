@@ -1,0 +1,145 @@
+#!/usr/bin/env bash
+# WSL 에서 원격 서버(pd-server)로 ssh 접속해 cc(lccc 로 부르면 ccc)를 실행하는 래퍼
+#
+# 사용법: lcc [cc 인자...]   /   lccc [ccc 인자...]
+#   예) lcc pd          → 원격에서 'cc pd' (프로젝트 해석은 서버 cc 가 서버 루트 기준으로 한다)
+#       lcc             → 원격 접속 폴더(서버 홈)에서 'cc'
+#   LCC_HOST  원격 ssh 별칭 (기본 pd-server)
+#   LCC_DIR   원격 작업 폴더 (기본 없음 — 설정했을 때만 cd 한다)
+#   LCC_TITLE 로컬 tmux 안에서 쓸 window 이름 꼬리 (기본 호스트 별칭 → "⇄pd-server")
+#   LCC_RESTORE_TITLE 종료 후 복원할 터미널 제목 (기본 현재 폴더 이름)
+# 제목 처리:
+#   - 로컬 tmux 밖: 원격 tmux 의 set-titles 가 보낸 OSC 제목이 그대로 터미널(WT) 탭까지 간다.
+#     종료 때 OSC 0 으로 로컬 제목을 되돌린다.
+#   - 로컬 tmux 안: 원격 제목은 로컬 tmux 가 pane_title 로 흡수하므로, 로컬 window 이름을
+#     "⇄<호스트 별칭>" 으로 바꾸고 종료 때 이전 이름과 automatic-rename 설정을 되돌린다.
+# tmux 중첩: 원격 tmux 에 prefix 를 보내려면 C-b C-b 를 누른다(기본 send-prefix).
+
+set -u
+
+_lcc_host="${LCC_HOST:-pd-server}"
+_lcc_dir="${LCC_DIR:-}"
+case "${0##*/}" in
+    lccc) _lcc_cmd="ccc" ;;
+    *)    _lcc_cmd="cc" ;;
+esac
+
+_lcc_in_tmux=0
+_lcc_old_name=""
+_lcc_old_auto=""
+if [ -n "${TMUX:-}" ] && [ -n "${TMUX_PANE:-}" ] && command -v tmux >/dev/null 2>&1; then
+    _lcc_in_tmux=1
+    _lcc_old_name="$(tmux display-message -p -t "$TMUX_PANE" '#{window_name}' 2>/dev/null)"
+    # window 단위 지정값(비어 있으면 상속 상태)
+    _lcc_old_auto="$(tmux show-options -wv -t "$TMUX_PANE" automatic-rename 2>/dev/null)"
+    tmux rename-window -t "$TMUX_PANE" "⇄${LCC_TITLE:-$_lcc_host}" 2>/dev/null || true
+fi
+
+_lcc_restore() {
+    if [ "$_lcc_in_tmux" = "1" ]; then
+        [ -n "$_lcc_old_name" ] && tmux rename-window -t "$TMUX_PANE" "$_lcc_old_name" 2>/dev/null
+        # rename-window 는 automatic-rename 을 끄므로 원래 상태로 되돌린다
+        if [ -n "$_lcc_old_auto" ]; then
+            tmux set-option -w -t "$TMUX_PANE" automatic-rename "$_lcc_old_auto" 2>/dev/null
+        else
+            tmux set-option -wu -t "$TMUX_PANE" automatic-rename 2>/dev/null
+        fi
+    elif [ -t 1 ]; then
+        printf '\033]0;%s\007' "${LCC_RESTORE_TITLE:-${PWD##*/}}"
+    fi
+}
+trap _lcc_restore EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM HUP
+
+# 원격 명령 조립 — 인자·경로는 printf %q 로 인용, COLORTERM 만 env 로 넘긴다(TERM·LANG 은 ssh 가 전달)
+# LCC_DIR 이 비어 있으면 cd 구간 자체를 넣지 않는다(cd '' 조립 금지)
+_lcc_args=""
+[ "$#" -gt 0 ] && _lcc_args="$(printf '%q ' "$@")"
+_lcc_cd=""
+[ -n "$_lcc_dir" ] && _lcc_cd="cd $(printf %q "$_lcc_dir") && "
+_lcc_remote="${_lcc_cd}exec env COLORTERM=$(printf %q "${COLORTERM:-truecolor}") bash -lc $(printf %q "$_lcc_cmd $_lcc_args")"
+
+# 프로젝트홈 폴백(로컬 해석 전용): CLAUDE_PROJECT_ROOTS 가 비었으면 ~/.config/claude-harness/project_home 첫 줄을 쓴다.
+#   원격 명령에는 넘기지 않는다(서버 cc 는 서버 쪽 루트·project_home 으로 해석한다).
+if [ -z "${CLAUDE_PROJECT_ROOTS:-}" ] && [ -f "$HOME/.config/claude-harness/project_home" ]; then
+    _lcc_ph=""
+    IFS= read -r _lcc_ph < "$HOME/.config/claude-harness/project_home" || true
+    _lcc_ph="$(printf '%s' "$_lcc_ph" | tr -d '\r' | sed 's/[[:space:]]*$//')"
+    [ -n "$_lcc_ph" ] && export CLAUDE_PROJECT_ROOTS="$_lcc_ph"
+fi
+
+_lcc_role_lib="${ROLE_LIB:-${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/role_lib.py}"
+# 로컬 대응 폴더: --project 값, 없으면 롤·영역·옵션이 아닌 첫 인자를 role_lib project-dir 로 해석한다(못 찾으면 빈 값)
+_lcc_local_dir() {
+    _lld_next=0
+    _lld_name=""
+    [ -f "$_lcc_role_lib" ] || return 0
+    for _lld_a in "$@"; do
+        if [ "$_lld_next" = "1" ]; then _lld_name="$_lld_a"; break; fi
+        case "$_lld_a" in
+            --project) _lld_next=1 ;;
+        esac
+    done
+    if [ -z "$_lld_name" ]; then
+        _lld_skip=0
+        for _lld_a in "$@"; do
+            if [ "$_lld_skip" = "1" ]; then _lld_skip=0; continue; fi
+            case "$_lld_a" in
+                --role|--profile|--resume|--profile-default) _lld_skip=1; continue ;;
+                -*|*:*|*'#'*|*/*) continue ;;
+            esac
+            python3 -B "$_lcc_role_lib" norm "$_lld_a" >/dev/null 2>&1 && continue
+            [ -f "$HOME/.claude-profiles/$_lld_a/.credentials.json" ] && continue
+            if python3 -B "$_lcc_role_lib" project-dir "$_lld_a" >/dev/null 2>&1; then _lld_name="$_lld_a"; break; fi
+        done
+    fi
+    [ -n "$_lld_name" ] || return 0
+    python3 -B "$_lcc_role_lib" project-dir "$_lld_name" 2>/dev/null || true
+}
+_lcc_dir_local="$(_lcc_local_dir "$@")"
+_lcc_slug=""
+if [ -n "$_lcc_dir_local" ]; then
+    _lcc_slug="$(python3 -B "$_lcc_role_lib" project-slug --cwd "$_lcc_dir_local" 2>/dev/null || true)"
+fi
+
+# 시험 모드: ssh 없이 해석 결과만 출력(cc 의 CC_ROLE_CHECK_ONLY 와 같은 약속)
+if [ "${CC_ROLE_CHECK_ONLY:-}" = "1" ]; then
+    echo "LCC_CHECK host=${_lcc_host} cmd=${_lcc_cmd} local_dir=${_lcc_dir_local} project=${_lcc_slug} remote=${_lcc_remote}"
+    exit 0
+fi
+
+# 접속 종료 자동 대화수신(_lcc_auto_pull): 원격은 exec … bash -lc "cc …" 라 ssh 반환 = 서버 cc 의 자동 공유가 끝난 뒤다.
+#   → conv_share.py pull <호스트> --project <slug> → import --project <slug> --cwd <로컬 폴더>(is-imported 로 중복 방지).
+#   끄기 LCC_AUTO_OSYNC=0 또는 CC_AUTO_OSYNC=0. 기본은 터미널(대화형)일 때만, LCC_AUTO_OSYNC=1 이면 항상.
+_lcc_auto_pull() {
+    _lap_cs=""
+    [ "${CC_AUTO_OSYNC:-1}" = "0" ] && return 0
+    case "${LCC_AUTO_OSYNC:-}" in
+        0) return 0 ;;
+        1) ;;
+        *) [ -t 0 ] || return 0 ;;
+    esac
+    [ -n "$_lcc_slug" ] && [ -n "$_lcc_dir_local" ] || return 0
+    for _lap_c in "${CONV_SHARE:-}" "${HARNESS_HOME:-$HOME/.harness}/current/scripts/conv_share.py" "${HARNESS_HOME:-$HOME/.harness}/current/scripts/conv_share.py"; do
+        if [ -n "$_lap_c" ] && [ -f "$_lap_c" ]; then _lap_cs="$_lap_c"; break; fi
+    done
+    [ -n "$_lap_cs" ] || return 0
+    _lap_rc=0
+    _lap_out="$(timeout "${CC_AUTO_OSYNC_TIMEOUT:-45}" python3 -B "$_lap_cs" pull "$_lcc_host" --project "$_lcc_slug" --timeout 10 2>&1)" || _lap_rc=$?
+    if [ "$_lap_rc" -ne 0 ]; then
+        echo "⚠️  대화 수신(pull $_lcc_host) 실패 rc=$_lap_rc — 다음 접속 때 다시 가져옵니다" >&2
+        return 0
+    fi
+    _lap_rc=0
+    _lap_out="$(python3 -B "$_lap_cs" import --project "$_lcc_slug" --cwd "$_lcc_dir_local" 2>&1)" || _lap_rc=$?
+    [ "$_lap_rc" -ne 0 ] && echo "⚠️  대화 가져오기(import) 일부 실패 rc=$_lap_rc" >&2
+    _lap_n="$(printf '%s\n' "$_lap_out" | sed -n '1s/^IMPORTED \([0-9][0-9]*\).*/\1/p')"
+    if [ -n "$_lap_n" ] && [ "$_lap_n" -gt 0 ]; then echo "📥 서버 대화 ${_lap_n}건 수신 — 로컬에서 ccc ${_lcc_slug} 로 재개할 수 있습니다"; fi
+    return 0
+}
+
+_lcc_rc=0
+ssh -t "$_lcc_host" "$_lcc_remote" || _lcc_rc=$?
+_lcc_auto_pull || true
+exit $_lcc_rc

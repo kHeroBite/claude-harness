@@ -1398,9 +1398,9 @@ def save_title_field(session_id, filename, name):
 
 
 # ── Windows Terminal 타이틀바 갱신 ──────────────────
-# 포맷: "{프로젝트[-세션접미]} [표시이름] [🎭롤] [{아이콘}{남은%}] {state이모지} {단계} 👤 {ID}" (값이 없는 칸은 생략)
+# 포맷: "{호스트이모지}{프로젝트} [🎭롤] {state이모지} [{아이콘}{남은%}] 👤 {ID}" (값이 없는 칸은 생략, tier·단계 텍스트 없음)
 # 아이콘=리셋 시점 예상잔량 기준, 숫자=현재 남은 주간%
-# 예시: "AI-ba ⚡35% 🧍 idle 👤 rio" / 롤 지정 시 "AI-ba 🎭back ⚡35% 🏃 ok:o4 dev 👤 rio", /oagent 이름 지정 시 "AI 🎭back#철수 ⚡35% 🧍 idle 👤 rio" (남은 용량은 단계 앞, 👤 는 계정명 바로 앞)
+# 예시: "🖥️AI 🤔 56% 👤 common" / 롤 지정 시 "🖥️AI 🎭back 🏃 ⚡35% 👤 rio", /oagent 이름 지정 시 "🖥️AI 🎭back#철수 🧍 ⚡35% 👤 rio" (👤 는 계정명 바로 앞)
 # 바깥 창 제목 맨 앞에는 tmux set-titles-string 이 메인 pane 작업 중일 때 스피너(◜◝◞◟)+공백을 넣는다.
 # tmux rename-window 경유 — tmux가 #W 변경 감지해 OSC 2 자동 송출
 def _save_usage_badge(badge):
@@ -1455,14 +1455,8 @@ def load_host_label():
 def _update_terminal_title(project, state, rem_proj_pct,
                             account_email=None, entry_tier=None, tier=None, status=None,
                             is_team_agent=False, rem_now_pct=None, role='', host_emoji=''):
-    """tmux 안: rename-window. statusline 본문과 동일한 display_tier 사용.
-
-    포맷 매트릭스 (color_pipeline_display와 동일):
-      - state=IDLE 단독          : "🧍 idle"
-      - entry_tier=OK + tier=OK   : "{이모지} ok {state}"
-      - entry_tier=OK + tier=O{N} : "{이모지} ok:o{N} {state}"
-      - entry_tier=None + tier=O{N}: "{이모지} o{N} {state}"
-      - status 있음              : "... {state} {status}"
+    """tmux 안: rename-window. 단계 칸은 state 이모지 하나만 쓴다(tier·단계·status 텍스트 없음, 2026-11-07).
+    entry_tier·tier·status 인자는 호출부 호환을 위해 남긴다.
 
     rem_proj_pct: 리셋 시점 예상잔량 (100-projected). 아이콘 판정 전용 ≤0→⛔ / ≤10→⚠ / ≤20→⚡ / else→없음
     rem_now_pct: 현재 남은 주간 % (100-used, 주간 없으면 5h). 표시 숫자용. None이면 rem_proj_pct 숫자 사용
@@ -1493,7 +1487,6 @@ def _update_terminal_title(project, state, rem_proj_pct,
         state_upper = (state or 'IDLE').upper()
         if state_upper not in state_emojis:
             state_upper = 'IDLE'
-        state_lower = state_upper.lower()
         emoji = state_emojis[state_upper]
         if rem_proj_pct is not None:
             v = rem_proj_pct
@@ -1516,35 +1509,12 @@ def _update_terminal_title(project, state, rem_proj_pct,
         id_part = f"👤 {profile_id}"  # 👤 는 계정명 바로 앞. 남은 용량은 에이전트명 뒤·단계 앞(2026-11-04 사용자 요청)
         badge_part = f" {rem_badge}" if rem_badge else ""
 
-        # display_tier 계산 — color_pipeline_display와 동일 매트릭스
-        if state_upper == 'IDLE':
-            stage_part = f"{emoji} idle"
-        else:
-            if entry_tier == 'OK' and tier == 'OK':
-                display_tier = 'ok'
-            elif entry_tier == 'OK' and tier and tier.startswith('O') and len(tier) >= 2:
-                display_tier = f'ok:{tier.lower()}'
-            elif entry_tier is None and tier and tier != 'OK':
-                display_tier = tier.lower()
-            elif entry_tier is None and tier == 'OK':
-                display_tier = 'ok'
-            elif entry_tier == 'OK' and tier is None:
-                display_tier = 'ok'
-            else:
-                display_tier = '?'
-            stage_part = f"{emoji} {display_tier} {state_lower}"
-            if status:
-                tokens = [t.strip().lower() for t in status.upper().split('|') if t.strip()]
-                # ROOF-COMPAT(deprecation window 1주기 — 구 RALPH/oralph_active 인식 제거 예정): ralph→roof 정규화(중복 1회)
-                tokens = list(dict.fromkeys('roof' if t == 'ralph' else t for t in tokens))
-                if tokens:
-                    stage_part += f" {'|'.join(tokens)}"
-
-        # 순서: 호스트 이모지+프로젝트 → 에이전트명(🎭롤) → 남은 용량 → 단계 → 👤 계정명(2026-11-04 사용자 요청). 값이 없으면 빈 문자열이라 공백이 겹치지 않는다.
+        # 순서: 호스트 이모지+프로젝트 → 에이전트명(🎭롤) → state 이모지 → 남은 용량 → 👤 계정명(2026-11-07 사용자 요청). 값이 없으면 빈 문자열이라 공백이 겹치지 않는다.
+        # tier·단계 텍스트(ok:o5 plan 등)는 타이틀에서 뺀다(2026-11-07 사용자 요청). 하단 statusline 본문의 파이프라인 표시는 그대로다.
         # 이모지와 프로젝트 사이는 공백 없음(🖥️AI) — wt_title_watch.project_of() 가 첫 공백 토큰을 프로젝트 키로 쓴다.
         # 세션 표시 이름(AI-8c 류)은 타이틀에 넣지 않는다(2026-11-06 사용자 지시). /oagent 이름은 🎭롤#이름 으로 남는다.
         role_part = f" 🎭{role}" if role else ""  # 무공백 — set_terminal_title.sh 의 ROLE_PART 와 동일
-        title = f"{host_emoji}{project}{role_part}{badge_part} {stage_part} {id_part}"
+        title = f"{host_emoji}{project}{role_part} {emoji}{badge_part} {id_part}"
         # tmux 안: rename-window(내부 #W) + DCS passthrough(외부 WT 탭)
         # cas가 tmux 자동 spawn하므로 사용자 화면은 항상 tmux 안 보장.
         # 대상 없는 tmux 명령은 가장 최근 세션에 적용돼 다른 세션 제목을 바꾼다. 자기 pane 을 모르면 쓰지 않는다.

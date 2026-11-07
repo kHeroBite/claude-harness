@@ -824,6 +824,84 @@ PYEOF_CREDPULL
     esac
 } || true
 
+# stale 세션 자격증명 공유 — 프로필 계정이 /login 으로 바뀐 뒤 남은 옛 계정 세션끼리 계정별 저장소로 맞춘다
+#   stale 세션은 프로필(새 계정)에 push·pull 할 수 없어, 같은 갱신 토큰을 쥔 세션들이 각자 갱신하다 충돌한다.
+#   늦게 갱신한 쪽은 "Login expired · Please run /login" 으로 멈춘다(2026-11-07 사고, L-1408 과 같은 기전).
+#   공유 채널: ${CAS_ACCT_STORE_DIR:-~/.claude-as/acct_creds}/<계정uuid>/.credentials.json (폴더 700·파일 600).
+#   저장소 잠금(flock -w 2) 안에서 만료시각이 더 늦은 쪽으로 맞추고, tmp 가 무효(비워짐)이면 저장소 유효본으로 치유한다.
+#   rc: 0=tmp→저장소 push, 3=저장소→tmp pull, 1=할 일 없음·stale 아님, 2=잠금 대기 실패(다음 주기 재시도). 값은 출력하지 않는다.
+_cas_stale_sync() {
+    local tmp_dir="$1"
+    local prof_dir="$2"
+    local tmp_f="${tmp_dir}/.credentials.json"
+    local su sd sf rc
+    [[ -f "${tmp_f}" ]] || return 1
+    [[ "$(_cas_acct_state "${tmp_dir}" "${prof_dir}")" == "stale" ]] || return 1
+    su="$(_cas_sess_uuid "${tmp_dir}")"
+    # 계정 uuid 는 경로 성분이 되므로 안전 문자만 허용한다
+    [[ "${su}" =~ ^[A-Za-z0-9-]{1,64}$ ]] || return 1
+    sd="${CAS_ACCT_STORE_DIR:-${HOME}/.claude-as/acct_creds}/${su}"
+    ( umask 077; mkdir -p "${sd}" ) 2>/dev/null || return 1
+    chmod 700 "${sd}" 2>/dev/null || return 1
+    sf="${sd}/.credentials.json"
+    (
+        flock -w 2 8 || exit 2
+        python3 - "${tmp_f}" "${sf}" >/dev/null 2>&1 <<'PYEOF_STALESYNC'
+import json, sys
+
+def load(p):
+    try:
+        with open(p, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+def oauth(d):
+    o = d.get("claudeAiOauth") if isinstance(d, dict) else None
+    return o if isinstance(o, dict) else None
+
+def tok_ok(d):
+    o = oauth(d)
+    t = o.get("accessToken") if o else None
+    return isinstance(t, str) and bool(t.strip())
+
+def expires(d):
+    o = oauth(d)
+    v = o.get("expiresAt") if o else None
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return -1
+    return v
+
+t, s = load(sys.argv[1]), load(sys.argv[2])
+tv, sv = tok_ok(t), tok_ok(s)
+if tv and not sv:
+    sys.exit(0)
+if not tv:
+    sys.exit(3 if sv else 1)
+te, se = expires(t), expires(s)
+if te > se:
+    sys.exit(0)
+if se > te:
+    sys.exit(3)
+sys.exit(1)
+PYEOF_STALESYNC
+        prc=$?
+        case "${prc}" in
+            0) src="${tmp_f}"; dst="${sf}" ;;
+            3) src="${sf}"; dst="${tmp_f}" ;;
+            *) exit 1 ;;
+        esac
+        part="${dst}.stale.${BASHPID}"
+        if cp -p "${src}" "${part}" 2>/dev/null && chmod 600 "${part}" 2>/dev/null \
+           && mv -f "${part}" "${dst}" 2>/dev/null; then
+            exit "${prc}"
+        fi
+        rm -f "${part}" 2>/dev/null
+        exit 1
+    ) 8>"${sd}/.credentials.json.lock" 2>/dev/null && rc=0 || rc=$?
+    return "${rc}"
+} || true
+
 # R12: .credentials.json flock 획득 (30s timeout, fail-soft)
 _r12_acquire_flock() {
     # 단일원본 .credentials.json.lock 파일로 flock 보호 (fd 9)
@@ -916,6 +994,7 @@ _r7_spawn_daemon() {
             local tmp_f="${tmp_dir}/.credentials.json"
             local prof_f="${profile_dir}/.credentials.json"
             local sig last_sig pull_sig last_pull_sig cj_f cj_sig last_cj_sig cur_u last_u trig
+            local st_f st_sig last_st_sig=""
             cj_f="${tmp_dir}/.claude.json"
             last_sig="$(stat -c '%y %s %i' "${tmp_f}" 2>/dev/null)"
             last_cj_sig="$(stat -c '%y %s %i' "${cj_f}" 2>/dev/null)"
@@ -964,6 +1043,25 @@ _r7_spawn_daemon() {
                                 ;;
                             2) ;;
                             *) last_pull_sig="${pull_sig}" ;;
+                        esac
+                    fi
+                fi
+                # stale 세션(프로필 계정이 바뀐 뒤의 옛 계정 세션)끼리 계정별 저장소로 자격증명을 맞춘다
+                # 저장소·프로필·tmp stat 서명이 지난 판정과 같으면 건너뛴다. rc=2(잠금 대기 실패)는 다음 주기에 재시도한다
+                if [[ -n "${sig}" && -n "${last_u}" ]]; then
+                    st_f="${CAS_ACCT_STORE_DIR:-${HOME}/.claude-as/acct_creds}/${last_u}/.credentials.json"
+                    st_sig="$(stat -c '%y %s %i' "${st_f}" 2>/dev/null)|$(stat -c '%y %s %i' "${prof_f}" 2>/dev/null)|${sig}"
+                    if [[ "${st_sig}" != "${last_st_sig}" ]]; then
+                        _cas_stale_sync "${tmp_dir}" "${profile_dir}"
+                        case "$?" in
+                            0|3)
+                                _cas_log R7S "stale 세션: 계정별 저장소와 자격증명 맞춤 size=$(stat -c '%s' "${tmp_f}" 2>/dev/null)"
+                                sig="$(stat -c '%y %s %i' "${tmp_f}" 2>/dev/null)"
+                                last_sig="${sig}"
+                                last_st_sig="$(stat -c '%y %s %i' "${st_f}" 2>/dev/null)|$(stat -c '%y %s %i' "${prof_f}" 2>/dev/null)|${sig}"
+                                ;;
+                            2) ;;
+                            *) last_st_sig="${st_sig}" ;;
                         esac
                     fi
                 fi
