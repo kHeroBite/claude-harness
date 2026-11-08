@@ -18,6 +18,7 @@
 
 승인은 메인 트랜스크립트 원본만 근거로 삼는다. 판별·소비 헬퍼는 askq_approval.py 를 재사용하고 그 파일은 고치지 않는다.
 팀원은 트랜스크립트를 보지 않고 리드의 승인 기록을 읽기만 한다.
+쿨타임: 계속 답은 주 키가 바뀌어도 COOLDOWN_SEC(3600초) 안이고 단계가 같거나 더 깊은 단계에서 받은 것이면 다시 묻지 않는다(중단은 대상 아님).
 
 시험·실측용 환경변수:
   WLG_THRESHOLDS=25,22  임계값 덮어쓰기(기본 30,20,10 — 2개 이상 N개 목록, 남은 비율 기준)
@@ -44,6 +45,7 @@ LABEL_STOP = "중단"
 DEFAULT_THRESHOLDS = (30.0, 20.0, 10.0)
 TTL_SEC = 1800
 UNVERIFIED_TTL_SEC = 3600
+COOLDOWN_SEC = 3600
 MAX_RESET_AHEAD = 8 * 86400
 NTFY_WAIT_SEC = 2.5
 SWITCH_NAME = "DISABLE_WEEKLY_LIMIT_GATE"
@@ -126,6 +128,31 @@ def read_records(cpath, week):
     except FileNotFoundError:
         pass
     return recs
+
+
+def read_records_all(cpath):
+    """주 키와 무관한 모든 승인 기록 [(단계, continue|stop|void, 답 epoch)]. 쿨타임 판정 전용."""
+    recs = []
+    try:
+        with open(cpath, encoding="utf-8", errors="replace") as f:
+            for ln in f:
+                p = ln.rstrip("\n").split("\t")
+                m = TARGET_RE.fullmatch(p[1]) if len(p) >= 2 else None
+                if m:
+                    recs.append((float(m.group(1)), m.group(2), int(m.group(4))))
+    except FileNotFoundError:
+        pass
+    return recs
+
+
+def cooldown_pass(all_recs, stage, now):
+    """계속 기록 중 단계 <= stage 이고 답 후 COOLDOWN_SEC 안인 것의 최댓값이 주 키 무관 stop·void 최댓값보다 크면 True.
+    시계 오차는 미래 60초까지만 인정한다. 중단은 쿨타임 대상이 아니다."""
+    conts = [e for a, k, e in all_recs if k == "continue" and a <= stage and -60 <= now - e <= COOLDOWN_SEC]
+    if not conts:
+        return False
+    last_reset = max((e for _, k, e in all_recs if k in ("stop", "void")), default=-1)
+    return max(conts) > last_reset
 
 
 def _mtime_int(path):
@@ -523,6 +550,8 @@ def main():
                 pass
     # 판정 직전에 읽는다. 병렬 호출이 스캔·기록 사이에 먼저 남긴 답도 이 호출의 판정에 반영한다.
     verdict = decide(read_records(cpath, week), stage, last_prompt)
+    if verdict == "ask" and cooldown_pass(read_records_all(cpath), stage, now):
+        verdict = "pass"  # 주 키가 바뀌어도 쿨타임 안의 계속 답은 다시 묻지 않는다
     if verdict == "pass":
         return
     if role == "main":

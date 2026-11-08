@@ -467,6 +467,11 @@ class Hub(object):
                 raise HubError(404, "UNKNOWN_SESSION")
             now = pc.now()
             s = self.sessions[key]
+            if s.get("observed"):  # observer 부재·불일치 observed 는 살려 두지 않는다(미러가 재등록)
+                ok_key = str(s.get("observer_key", ""))
+                bk = b.get("observer_key")
+                if ok_key not in self.sessions or (bk is not None and str(bk) != ok_key):
+                    raise HubError(404, "OBSERVER_ABSENT")
             s["last_seen"] = now
             if b.get("active_ts") is not None:
                 s["active_ts"] = _ts(b.get("active_ts"))
@@ -475,8 +480,11 @@ class Hub(object):
             missing = []
             for k in extra:
                 k = str(k)
-                if k in self.sessions:
-                    self.sessions[k]["last_seen"] = now
+                t = self.sessions.get(k)
+                if t is not None and t.get("observed") and str(t.get("observer_key", "")) not in self.sessions:
+                    missing.append(k)
+                elif t is not None:
+                    t["last_seen"] = now
                 else:
                     missing.append(k)
             self.save()

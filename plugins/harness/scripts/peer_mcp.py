@@ -639,6 +639,14 @@ class Client(object):
         st, obj = self.call("GET", "/v1/sessions")
         if st != 200:
             return None
+        if self.key not in {str(s.get("session_key")) for s in obj.get("sessions") or []}:
+            # 자기 등록 소실 — 먼저 재등록하고 실패하면 이번 주기 미러를 건너뛴다(고아 observed 방지)
+            self.registered = False
+            if not self.register():
+                return None
+            st, obj = self.call("GET", "/v1/sessions")
+            if st != 200:
+                return None
         mid = C.machine_id()
         direct = set()
         hub_obs = {}  # 이 머신의 observed 항목(머신당 미러 1개라 전부 미러 몫이다)
@@ -684,7 +692,8 @@ class Client(object):
                 continue
             if k in hub_obs and str(hub_obs[k].get("observer_key") or self.key) == self.key:
                 st2, _ = self.call("POST", "/v1/sessions/heartbeat",
-                                   {"session_key": k, "active_ts": float(e.get("updated_ts") or 0)})
+                                   {"session_key": k, "observer_key": self.key,
+                                    "active_ts": float(e.get("updated_ts") or 0)})
                 if st2 == 200:
                     self.mirrored[k] = e
                     n_hb += 1
@@ -1409,6 +1418,7 @@ def main(argv=None):
         print("POLLED key=%s next=%s handled=%s" % (cl.key, cl.cursor, ",".join(got) or "-"))
         return 0
     if a.cmd == "mirror-once":
+        cl.ensure_registered()
         r = cl.mirror_once()
         if r is None:
             print("MIRROR_SKIP")
