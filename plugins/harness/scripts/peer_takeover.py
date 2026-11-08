@@ -59,6 +59,12 @@ SESSION_ALLOW_DIRS = ("plans/",)
 SESSION_ALLOW_EXT = (".md", ".json", ".jsonl", ".txt")
 SESSION_FILE_MAX = 2 * 1024 * 1024
 BUNDLE_FILES_MAX = 500
+REASON_TEXT = {
+    "OBSERVER_ABSENT": "대상 머신의 대리(미러) 프로세스가 없다",
+    "OBSERVER_NO_TAKEOVER": "대상 머신의 대리 프로세스가 구판이라 인계를 지원하지 않는다(하네스 갱신 필요)",
+    "OBSERVER_TAKEOVER_OFF": "대상 머신의 대리 프로세스가 인계를 꺼 두었다(PEER_ALLOW_TAKEOVER=0)",
+    "HUB_OLD": "host 가 구판이라 observed 대상 인계를 지원하지 않는다",
+}
 TAKEOVER_NAME = "takeover"  # 원격 인계 요청자가 hub 에 임시 등록할 때 쓰는 이름(목록 충돌 판정에서 제외)
 
 RC_OK, RC_USAGE, RC_HOST, RC_CANCEL, RC_STOP, RC_SYNC, RC_FF, RC_MOVE = 0, 2, 3, 10, 20, 30, 31, 40
@@ -160,15 +166,23 @@ def enc(cwd):
     return re.sub(r"[^A-Za-z0-9]", "-", cwd)
 
 
-def find_transcript(sid):
-    pdir = os.path.join(home_base(), "projects")
-    try:
-        for d in sorted(os.listdir(pdir)):
-            p = os.path.join(pdir, d, sid + ".jsonl")
-            if os.path.isfile(p):
-                return p
-    except OSError:
-        pass
+def find_transcript(sid, config_dir=""):
+    """sid 의 본 대화 파일. config_dir(대상 세션의 CLAUDE_CONFIG_DIR)가 있으면 그 아래 projects 를 먼저, 없으면 home_base 를 본다.
+    하네스에서는 둘 다 같은 저장소의 심볼릭 링크지만, 별도 base 를 쓰는 환경도 지원한다."""
+    bases = []
+    if config_dir and os.path.isabs(config_dir):
+        bases.append(os.path.join(config_dir, "projects"))
+    hp = os.path.join(home_base(), "projects")
+    if hp not in bases:
+        bases.append(hp)
+    for pdir in bases:
+        try:
+            for d in sorted(os.listdir(pdir)):
+                p = os.path.join(pdir, d, sid + ".jsonl")
+                if os.path.isfile(p):
+                    return p
+        except OSError:
+            pass
     return ""
 
 
@@ -222,6 +236,8 @@ def local_conflicts(project, value):
         if same_role(value, v):
             out.append({"kind": "local", "key": e.get("_key", ""), "value": v, "pid": e.get("pid"),
                         "pid_start": e.get("pid_start"), "updated_ts": e.get("updated_ts", 0),
+                        "tmux": ("%s:%s" % (e.get("tmux_session", "-"), e.get("pane", "-"))
+                                 if e.get("tmux_session") else ""),
                         "label": "%s@%s:%s" % (v, e.get("tmux_session", "-"), e.get("pane", "-"))})
     return out
 
@@ -274,30 +290,112 @@ def remote_conflicts(project, value, locals_):
                 continue  # 같은 머신의 같은 프로세스는 로컬 항목으로 이미 잡았다
         label = "%s@%s%s" % (v, re.sub(r"\s", "_", str(s.get("machine_label") or "remote"))[:64],
                              "(같은 머신)" if same_machine and s.get("pid") is not None else "")
-        out.append({"kind": "remote", "key": s["session_key"], "value": v, "label": label, "git": s.get("git") or {}})
+        tm = str(s.get("tmux_session") or "")
+        if tm and s.get("tmux_pane"):
+            tm = "%s:%s" % (tm, s.get("tmux_pane"))
+        out.append({"kind": "remote", "key": s["session_key"], "value": v, "label": label, "git": s.get("git") or {},
+                    "takeover": takeover_code(s), "same_machine": same_machine, "observed": bool(s.get("observed")),
+                    "machine_label": re.sub(r"\s", "_", str(s.get("machine_label") or ""))[:64],
+                    "host_tag": str(s.get("host_tag") or ""), "tmux": tm, "active_ts": s.get("active_ts") or 0,
+                    "age": s.get("age")})
     return out
+
+
+def takeover_code(s):
+    """원격 항목의 인계 가능 코드. 직접 등록=ok, observed 인데 hub 응답에 takeover 필드가 없으면 구 hub(HUB_OLD)."""
+    if not s.get("observed"):
+        return "ok"
+    if "takeover" not in s:
+        return "HUB_OLD"
+    return str(s.get("takeover") or "OBSERVER_ABSENT")
+
+
+def _ago(sec):
+    sec = max(0, int(sec))
+    if sec < 60:
+        return "%d초" % sec
+    if sec < 3600:
+        return "%d분" % (sec // 60)
+    if sec < 86400:
+        return "%d시간" % (sec // 3600)
+    return "%d일" % (sec // 86400)
+
+
+def _emoji(tag):
+    """host_label 의 DEFAULT_EMOJI 재사용(없으면 빈 문자열)."""
+    try:
+        d = os.path.join(HERE, "..", "hooks", "lib")
+        if d not in sys.path:
+            sys.path.insert(0, d)
+        import host_label as hl  # noqa: E402
+        if tag:
+            return hl.DEFAULT_EMOJI.get(tag, "")
+        return hl.host_emoji()
+    except Exception:
+        return ""
+
+
+def build_detail(r, now=None):
+    """DETAIL 줄 1개 (takeover 코드, 같은/다른 머신, 설명). 토큰·sid·session_key·호스트명은 넣지 않는다."""
+    now = now or time.time()
+    parts = [r.get("value", "")]
+    if r["kind"] == "local":
+        code, host = "ok", "same"
+        em = _emoji("")
+        parts.append(("%s " % em if em else "") + "같은 머신")
+        ts = r.get("activity_ts") or 0
+        if r.get("tmux"):
+            parts.append("tmux %s" % r["tmux"])
+        if ts:
+            parts.append("마지막 활동 %s 전" % _ago(now - ts))
+    else:
+        code, host = r.get("takeover", "ok"), ("same" if r.get("same_machine") else "other")
+        em = _emoji(r.get("host_tag", ""))
+        ml = r.get("machine_label", "")
+        parts.append(("%s " % em if em else "") + ("같은 머신" if r.get("same_machine") else "다른 머신")
+                     + ("(%s)" % ml if ml and not r.get("same_machine") else ""))
+        if r.get("tmux"):
+            parts.append("tmux %s" % r["tmux"])
+        ts = float(r.get("active_ts") or 0)
+        if ts:
+            parts.append("마지막 활동 %s 전" % _ago(now - ts))
+        elif r.get("age") is not None:
+            parts.append("연결 확인 %s 전" % _ago(float(r["age"])))
+        if r.get("observed"):
+            parts.append("peer 미연결(대리 등록)")
+    if code != "ok":
+        parts.append("인계 불가: " + REASON_TEXT.get(code, code))
+    return code, host, " · ".join(p for p in parts if p)
 
 
 def cmd_check(a):
     loc = local_conflicts(a.project, a.role)
     rem = remote_conflicts(a.project, a.role, loc)
+    for r in loc:
+        r["activity_ts"] = activity_ts(a.project, {"pid": r.get("pid"), "pid_start": r.get("pid_start"),
+                                                   "updated_ts": r.get("updated_ts", 0)},
+                                       target_config_dir(r.get("pid")) if r.get("pid") else "")
     rows = loc + rem
+    for r in rows:
+        r["takeover"], r["host"], r["detail"] = build_detail(r)
     if a.json:
-        print(json.dumps([{k: r[k] for k in ("kind", "key", "label", "value")} for r in rows], ensure_ascii=False))
+        print(json.dumps([{k: r[k] for k in ("kind", "key", "label", "value", "takeover", "detail")} for r in rows],
+                         ensure_ascii=False))
         return RC_OK
     if not rows:
         print("NONE")
     for r in rows:
         print("CONFLICT %s %s %s" % (r["kind"], r["key"], r["label"]))
+        print("DETAIL %s takeover=%s host=%s %s" % (r["key"], r["takeover"], r["host"], r["detail"]))
     log("check", "project=%s role=%s local=%d remote=%d" % (a.project.lower(), a.role, len(loc), len(rem)))
     return RC_OK
 
 
 # ───────────────────────── 묶음(pack / import) ─────────────────────────
 
-def session_dirs(sid):
+def session_dirs(sid, config_dir=""):
     out = []
-    for b in (os.environ.get("CLAUDE_CONFIG_DIR", "").strip(), home_base()):
+    for b in (config_dir, os.environ.get("CLAUDE_CONFIG_DIR", "").strip(), home_base()):
         if b:
             d = os.path.join(b, "session-env", sid)
             if os.path.isdir(d) and d not in out:
@@ -317,10 +415,10 @@ def session_allowed(rel):
     return False
 
 
-def session_files(sid):
+def session_files(sid, config_dir=""):
     """허용 목록 파일 (rel, 절대경로). 같은 rel 은 먼저 찾은 기준(CFG → 홈)만. 심볼릭 링크·큰 파일 제외."""
     seen, out = set(), []
-    for d in session_dirs(sid):
+    for d in session_dirs(sid, config_dir):
         cands = list(SESSION_ALLOW_FILES)
         for sub in SESSION_ALLOW_DIRS:
             try:
@@ -363,10 +461,28 @@ def _tar_add(tf, name, data):
     tf.addfile(ti, io.BytesIO(data))
 
 
-def do_pack(sid, cwd, project, role, out):
+def do_pack(sid, cwd, project, role, out, config_dir=""):
     """대상 측: 본 대화(conv_share export — 마스킹·상한 규칙 그대로) + 팀원 대화 + session-env 허용 목록을 tar.gz 로."""
     if not SID_RE.fullmatch(sid or ""):
         raise Fail("sid 형식 오류", RC_USAGE)
+    if config_dir and not (os.path.isabs(config_dir) and os.path.isdir(config_dir)):
+        config_dir = ""
+    old_base = os.environ.get("ROLE_HOME_BASE")
+    swapped = False
+    if config_dir and not find_transcript(sid) and find_transcript(sid, config_dir):
+        os.environ["ROLE_HOME_BASE"] = config_dir  # 대상 세션이 home 과 다른 base 를 쓰면 conv_share 도 그 base 를 보게 한다
+        swapped = True
+    try:
+        return _do_pack(sid, cwd, project, role, out, config_dir)
+    finally:
+        if swapped:
+            if old_base is None:
+                os.environ.pop("ROLE_HOME_BASE", None)
+            else:
+                os.environ["ROLE_HOME_BASE"] = old_base
+
+
+def _do_pack(sid, cwd, project, role, out, config_dir):
     cs = conv_share()
     with contextlib.redirect_stdout(sys.stderr):  # export 의 EXPORT 줄이 stdout(MCP 등)을 오염시키지 않게
         try:
@@ -376,7 +492,7 @@ def do_pack(sid, cwd, project, role, out):
     sd = cs.stage_dir()
     with open(os.path.join(sd, sid + ".jsonl.gz"), "rb") as f:
         gz = f.read()
-    tr = find_transcript(sid)
+    tr = find_transcript(sid, config_dir)
     entries = [("conv/%s.meta.json" % sid, json.dumps(meta, ensure_ascii=False).encode("utf-8")),
                ("conv/%s.jsonl.gz" % sid, gz)]
     sub = os.path.join(os.path.dirname(tr), sid, "subagents") if tr else ""
@@ -395,7 +511,7 @@ def do_pack(sid, cwd, project, role, out):
             if data:
                 entries.append(("subagents/" + n, data))
                 n_sub += 1
-    for rel, p in session_files(sid):
+    for rel, p in session_files(sid, config_dir):
         with open(p, "rb") as f:
             raw = f.read()
         try:
@@ -636,6 +752,38 @@ def cmdline_sid(pid):
     return None
 
 
+def target_config_dir(pid):
+    """대상 pid 의 CLAUDE_CONFIG_DIR 값 하나만 돌려준다(/proc/<pid>/environ). 없음·권한 실패·경로 부적합이면 "".
+    environ 에는 토큰 같은 다른 값이 있을 수 있어 해당 키 하나만 취하고 나머지는 보관·로그·출력하지 않는다."""
+    try:
+        with open("/proc/%d/environ" % int(pid), "rb") as f:
+            raw = f.read()
+    except (OSError, ValueError, TypeError):
+        return ""
+    val = ""
+    key = b"CLAUDE_CONFIG_DIR="
+    for item in raw.split(b"\0"):
+        if item.startswith(key):
+            val = item[len(key):].decode("utf-8", "replace")
+            break
+    raw = item = None
+    if not val or not os.path.isabs(val) or not os.path.isdir(val):
+        return ""
+    return val
+
+
+def config_dir_sid(config_dir):
+    """(a') <config_dir>/session-env/ 아래 SID 형식 폴더가 정확히 1개이고 그 대화 파일이 있으면 sid, 아니면 None."""
+    try:
+        names = [n for n in os.listdir(os.path.join(config_dir, "session-env"))
+                 if SID_RE.fullmatch(n) and os.path.isdir(os.path.join(config_dir, "session-env", n))]
+    except OSError:
+        return None
+    if len(names) == 1 and find_transcript(names[0], config_dir):
+        return names[0]
+    return None
+
+
 def proc_start_epoch(pid):
     """프로세스 시작 시각(epoch 초). /proc/stat btime + starttime/CLK_TCK. 실패 None."""
     st = pc.pid_start(pid)
@@ -688,7 +836,7 @@ def first_prompt(tr, width=40):
     return ""
 
 
-def _value_records(project, value):
+def _value_records(project, value, config_dir=""):
     rl = role_lib()
     out = {}
     if rl is None:
@@ -698,12 +846,12 @@ def _value_records(project, value):
         if not SID_RE.fullmatch(sid):
             continue
         rv = r.get("value") or rl.join_value(r.get("role", ""), r.get("area", ""), r.get("name", ""))
-        if rv == value and find_transcript(sid):
+        if rv == value and find_transcript(sid, config_dir):
             out[sid] = r
     return out
 
 
-def local_sid_candidates(project, entry):
+def local_sid_candidates(project, entry, config_dir=""):
     """대상 live 항목의 sid 판별. 반환 (확정 sid 또는 None, 후보 [(sid, cwd, 갱신시각, 요약)], 근거).
 
     결정적 수단을 순서대로 쓴다.
@@ -714,15 +862,19 @@ def local_sid_candidates(project, entry):
       (d) role_registry live 에는 sid 를 기록하지 않는다(role_lib 설계 — 세션 UUID 비노출)
     결정이 안 되면 후보(같은 롤 값으로 그 프로세스 시작 뒤 갱신된 재개 기록)를 돌려주고 호출자가 고르게 한다."""
     pid = entry.get("pid")
-    recs = _value_records(project, entry["value"])
+    recs = _value_records(project, entry["value"], config_dir)
     if pid and pc.pid_alive(pid, entry.get("pid_start")):
-        fs = set(s for s in fd_sids(pid) if find_transcript(s))
+        fs = set(s for s in fd_sids(pid) if find_transcript(s, config_dir))
         if len(fs) == 1:
             return fs.pop(), [], "fd"
+        if config_dir:  # (a') 세션마다 CONFIG_DIR 가 분리되어 session-env 폴더가 프로세스와 1:1 이다
+            ds = config_dir_sid(config_dir)
+            if ds:
+                return ds, [], "config_dir"
         t0 = proc_start_epoch(pid)
         after = set(s for s, r in recs.items() if t0 is not None and float(r.get("updated_ts", 0) or 0) >= t0 - 1)
         cs = cmdline_sid(pid)
-        if cs and find_transcript(cs):
+        if cs and find_transcript(cs, config_dir):
             if not (after - {cs}):
                 return cs, [], "cmdline"
             cand = sorted(after | {cs})
@@ -732,7 +884,7 @@ def local_sid_candidates(project, entry):
         cand = sorted(recs)  # 이미 끝난 대상: 결정적 수단이 없다 — 후보는 같은 롤 값의 재개 기록 전체
     rows = []
     for s in cand:
-        tr = find_transcript(s)
+        tr = find_transcript(s, config_dir)
         r = recs.get(s, {})
         try:
             mt = os.path.getmtime(tr)
@@ -811,46 +963,56 @@ def post_sync(my_cwd, target_head):
     return None
 
 
-def run_local(a):
-    rl = role_lib()
-    if rl is None:
-        raise Fail("role_lib 을 찾지 못했다", RC_MOVE)
-    path = os.path.join(rl.live_dir(a.project.lower()), a.key + ".json")
-    e = rl.read_json(path, {}) if re.fullmatch(r"[A-Za-z0-9._-]{1,128}", a.key or "") else {}
-    if not e:
-        raise Fail("대상 세션을 찾지 못했다: local %s" % a.key, RC_MOVE)
-    e["value"] = e.get("value") or rl.join_value(e.get("role", ""), e.get("area", ""), e.get("name", ""))
-    if not same_role(a.role, e["value"]):
-        raise Fail("대상 롤이 요청과 다르다(%s ≠ %s)" % (e["value"], a.role), RC_MOVE)
-    # sid 확정을 중지보다 먼저 끝낸다("중지했는데 대화를 못 찾는" 상황 방지). 추정으로 고르지 않는다.
+def resolve_entry_sid(project, entry, sid_arg="", pick_tty=False, config_dir=""):
+    """live 항목의 sid 확정 → (sid, cwd, how). 못 정하면 Fail(SID_NOT_FOUND|SID_AMBIGUOUS, RC_MOVE). 대상은 건드리지 않는다."""
     how = "arg"
-    if a.sid:
-        sid = a.sid.lower() if SID_RE.fullmatch(a.sid.lower()) and find_transcript(a.sid.lower()) else None
+    if sid_arg:
+        sid = sid_arg.lower() if SID_RE.fullmatch(sid_arg.lower()) and find_transcript(sid_arg.lower(), config_dir) else None
         if not sid:
             raise Fail("SID_NOT_FOUND --sid 의 대화 파일이 없다 — 중지하지 않았다", RC_MOVE)
     else:
-        sid, rows, how = local_sid_candidates(a.project, e)
+        sid, rows, how = local_sid_candidates(project, entry, config_dir)
         if not sid:
             if not rows:
-                log("resolve", "local key=%s SID_NOT_FOUND" % a.key)
                 raise Fail("SID_NOT_FOUND 대상 세션의 대화(sid)를 찾지 못했다 — 중지하지 않았다", RC_MOVE)
-            got = pick_candidate(rows, a.pick_tty)
+            got = pick_candidate(rows, pick_tty)
             if not got:
-                log("resolve", "local key=%s SID_AMBIGUOUS candidates=%d" % (a.key, len(rows)))
                 raise Fail("SID_AMBIGUOUS 대상 세션의 대화를 결정적으로 찾지 못했다(후보 %d개) — 중지하지 않았다. "
                            "tty 에서 다시 실행해 고르거나 --sid 로 지정하라" % len(rows), RC_MOVE)
             sid, how = got[0], "picked"
-    tr = find_transcript(sid)
-    rec = _value_records(a.project, e["value"]).get(sid, {})
-    cwd = rec.get("cwd") or transcript_cwd(tr) or a.cwd
-    log("resolve", "local key=%s sid=%s by=%s" % (a.key, sid, how))
-    # 1) 사전 동기화
-    if same_tree(cwd, a.cwd):
-        log("presync", "local same-tree skip")
-    else:
-        sync_gate(git_state(cwd), a.force_sync, "local")
-    # 2) 중지(pid_start 재검증 → SIGTERM → 확인, SIGKILL 없음)
-    pid, start = e.get("pid"), e.get("pid_start")
+    tr = find_transcript(sid, config_dir)
+    rec = _value_records(project, entry.get("value", ""), config_dir).get(sid, {})
+    log("resolve", "sid=%s by=%s" % (sid, how))  # sid 는 log() 가 앞 8자만 남긴다. 토큰·경로는 기록하지 않는다
+    return sid, rec.get("cwd") or transcript_cwd(tr) or "", how
+
+
+def activity_ts(project, entry, config_dir=""):
+    """마지막 활동 시각(epoch). fd→config_dir→cmdline 로 sid 를 얻으면 그 대화 파일 mtime(내용은 읽지 않음), 못 얻으면 entry.updated_ts."""
+    pid = entry.get("pid")
+    try:
+        if pid and pc.pid_alive(pid, entry.get("pid_start")):
+            sid = None
+            fs = set(s for s in fd_sids(pid) if find_transcript(s, config_dir))
+            if len(fs) == 1:
+                sid = fs.pop()
+            if not sid and config_dir:
+                sid = config_dir_sid(config_dir)
+            if not sid:
+                cs = cmdline_sid(pid)
+                if cs and find_transcript(cs, config_dir):
+                    sid = cs
+            if sid:
+                return float(os.path.getmtime(find_transcript(sid, config_dir)))
+    except OSError:
+        pass
+    try:
+        return float(entry.get("updated_ts", 0) or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _stop_local(pid, start):
+    """pid_start 재검증 → SIGTERM → 최대 PEER_TAKEOVER_STOP_WAIT 초 확인. SIGKILL 없음."""
     if pid and pc.pid_alive(pid, start):
         try:
             os.kill(int(pid), signal.SIGTERM)
@@ -867,6 +1029,40 @@ def run_local(a):
         log("stop", "local stopped pid=%s" % pid)
     else:
         log("stop", "local already-stopped")
+
+
+def run_local(a):
+    rl = role_lib()
+    if rl is None:
+        raise Fail("role_lib 을 찾지 못했다", RC_MOVE)
+    path = os.path.join(rl.live_dir(a.project.lower()), a.key + ".json")
+    e = rl.read_json(path, {}) if re.fullmatch(r"[A-Za-z0-9._-]{1,128}", a.key or "") else {}
+    if not e:
+        raise Fail("대상 세션을 찾지 못했다: local %s" % a.key, RC_MOVE)
+    e["value"] = e.get("value") or rl.join_value(e.get("role", ""), e.get("area", ""), e.get("name", ""))
+    if not same_role(a.role, e["value"]):
+        raise Fail("대상 롤이 요청과 다르다(%s ≠ %s)" % (e["value"], a.role), RC_MOVE)
+    pid, start = e.get("pid"), e.get("pid_start")
+    if getattr(a, "stop_only", False):  # 대상만 중지: sid 확정·동기화·이관을 모두 생략한다
+        _stop_local(pid, start)
+        return "", a.cwd, e["value"], None
+    # sid 확정을 중지보다 먼저 끝낸다("중지했는데 대화를 못 찾는" 상황 방지). 추정으로 고르지 않는다.
+    cfg = target_config_dir(pid) if (pid and pc.pid_alive(pid, start)) else ""
+    try:
+        sid, cwd, how = resolve_entry_sid(a.project, e, a.sid, a.pick_tty, cfg)
+    except Fail as ex:
+        log("resolve", "local key=%s %s" % (a.key, str(ex).split(" ", 1)[0]))
+        raise
+    cwd = cwd or a.cwd
+    tr = find_transcript(sid, cfg)
+    log("resolve", "local key=%s sid=%s by=%s" % (a.key, sid, how))
+    # 1) 사전 동기화
+    if same_tree(cwd, a.cwd):
+        log("presync", "local same-tree skip")
+    else:
+        sync_gate(git_state(cwd), a.force_sync, "local")
+    # 2) 중지(pid_start 재검증 → SIGTERM → 확인, SIGKILL 없음)
+    _stop_local(pid, start)
     # 3) 이관 — 같은 sid 재개라 파일 이동 없음(본 대화·팀원 대화·session-env 가 이미 이 머신에 있다)
     if not os.path.isfile(tr):
         raise Fail("대화 파일이 사라졌다", RC_MOVE)
@@ -906,7 +1102,13 @@ def run_remote(a):
         raise Fail("대상 롤이 요청과 다르다(%s ≠ %s)" % (value, a.role), RC_MOVE)
     g = s.get("git") if isinstance(s.get("git"), dict) else {}
     same_machine = s.get("machine_id") == pc.machine_id()
-    if same_machine:
+    code = takeover_code(s)
+    if code != "ok":
+        log("stop", "remote blocked code=%s" % code)
+        raise Fail("인계 불가(%s) — %s" % (code, REASON_TEXT.get(code, code)), RC_STOP)
+    if getattr(a, "stop_only", False):
+        log("presync", "remote stop-only skip")
+    elif same_machine:
         log("presync", "presync same-machine skip")
     else:
         sync_gate(g if g.get("head") else None, a.force_sync, "remote")
@@ -944,18 +1146,34 @@ def _blob_ids(blobs):
 
 
 def _run_remote_req(a, url, tok, req_key, value, g, same_machine=False):
-    st, obj = pc.http_json(url + "/v1/takeover", "POST", {"requester_key": req_key, "target_key": a.key}, tok, 10)
+    stop_only = bool(getattr(a, "stop_only", False))
+    body = {"requester_key": req_key, "target_key": a.key}
+    if stop_only:
+        body["mode"] = "stop"
+    st, obj = pc.http_json(url + "/v1/takeover", "POST", body, tok, 10)
     if st == 0:
         raise Fail("host 에 접속하지 못했다", RC_HOST)
     tid = str(obj.get("id", ""))
     if st not in (200, 201) or not re.fullmatch(r"[A-Za-z0-9_-]{4,64}", tid):
-        raise Fail("인계 요청 실패(status %s %s)" % (st, obj.get("error", "")), RC_STOP if st == 409 else RC_MOVE)
-    log("stop", "remote requested id=%s" % tid)
-    end = time.time() + env_float("PEER_TAKEOVER_REMOTE_WAIT", 120)
+        code = str(obj.get("error", "") or "")
+        if st == 409 and code in REASON_TEXT:
+            raise Fail("인계 불가(%s) — %s" % (code, REASON_TEXT[code]), RC_STOP)
+        raise Fail("인계 요청 실패(status %s %s)" % (st, code), RC_STOP if st == 409 else RC_MOVE)
+    log("stop", "remote requested id=%s mode=%s" % (tid, "stop" if stop_only else "move"))
+    # 대기: 요청 시점부터 REMOTE_WAIT 초, state 가 uploading 으로 바뀌면 그 시점부터 다시 센다. 전체 상한 TTL(300).
+    wait = env_float("PEER_TAKEOVER_REMOTE_WAIT", 120)
+    t_start = time.time()
+    hard_end = t_start + env_float("PEER_TAKEOVER_TTL", 300)
+    end = t_start + wait
+    seen_up = False
     info = {}
-    while time.time() < end:
+    while time.time() < min(end, hard_end):
         st, info = pc.http_json(url + "/v1/takeover/%s?for=%s" % (tid, req_key), token=tok, timeout=10)
         state = info.get("state", "") if st == 200 else ""
+        if state == "uploading" and not seen_up:
+            seen_up = True
+            end = time.time() + wait
+            log("stop", "remote uploading — wait restart")
         if state in ("stopped", "refused", "timeout"):
             break
         time.sleep(0.3)
@@ -968,6 +1186,9 @@ def _run_remote_req(a, url, tok, req_key, value, g, same_machine=False):
     if state != "stopped":
         log("stop", "remote timeout state=%s" % state)
         raise Fail("대상 세션이 시간 안에 멈추지 않았다(state=%s) — 이관하지 않았다" % (state or "-"), RC_STOP)
+    if stop_only:  # 중지만 요청: ack 에 sid 가 비어 있어도 성공(blob 은 쓰지 않는다)
+        log("stop", "remote stop-only stopped")
+        return "", a.cwd, value, None
     sid = str(info.get("sid", ""))
     blobs = _blob_ids(info.get("blobs"))
     if not SID_RE.fullmatch(sid) or len(blobs) != 1 or not pc.BLOB_ID_RE.fullmatch(blobs[0][0]):
@@ -1018,6 +1239,10 @@ def cmd_run(a):
         sid, cwd, value, why = run_local(a)
     else:
         sid, cwd, value, why = run_remote(a)
+    if getattr(a, "stop_only", False):
+        print("STOPPED=1")
+        log("done", "rc=0 stop-only")
+        return RC_OK
     print("RESUME_SID=%s" % sid)
     print("RESUME_CWD=%s" % cwd)
     print("RESUME_VALUE=%s" % value)
@@ -1030,7 +1255,7 @@ def cmd_run(a):
 
 
 def cmd_pack(a):
-    man = do_pack(a.sid, a.cwd, a.project, a.role, a.out)
+    man = do_pack(a.sid, a.cwd, a.project, a.role, a.out, getattr(a, "config_dir", "") or "")
     print("PACKED sha256=%s bytes=%d git_head=%s" % (pc.sha256_file(a.out), os.path.getsize(a.out),
                                                      man.get("git_head") or "-"))
     return RC_OK
@@ -1058,12 +1283,14 @@ def main(argv=None):
     q.add_argument("--sid", default="")
     q.add_argument("--force-sync", action="store_true")
     q.add_argument("--pick-tty", action="store_true", help="sid 를 결정적으로 못 찾으면 /dev/tty 로 후보를 보여 고르게 한다")
+    q.add_argument("--stop-only", action="store_true", help="대상만 중지(sid 확정·이관·동기화 생략). 성공 시 STOPPED=1")
     q = sp.add_parser("pack")
     q.add_argument("--sid", required=True)
     q.add_argument("--cwd", default="")
     q.add_argument("--project", default="")
     q.add_argument("--role", default=None)
     q.add_argument("--out", required=True)
+    q.add_argument("--config-dir", default="", help="대상 세션의 CLAUDE_CONFIG_DIR (session-env 수집용)")
     q = sp.add_parser("import-bundle")
     q.add_argument("--file", required=True)
     q.add_argument("--project", required=True)

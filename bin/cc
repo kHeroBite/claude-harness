@@ -8,7 +8,7 @@
 #       → 2.4(디렉터리·롤·프로파일이 아닌 인자는 프로젝트 이름(role_lib project-dir, 루트 CLAUDE_PROJECT_ROOTS)
 #             로 해석해 작업 위치를 먼저 정한 뒤 롤을 판정한다 — 인자 순서 무관. 같은 이름 충돌은 --project)
 #       → 2.5(같은 롤 인계: 같은 프로젝트·롤(·영역)이 이미 동작 중이면 취소 / 인계 / 병행 선택 — peer_takeover.py.
-#             취소 rc 10, 비 tty 기본 병행(singleton 롤은 기본 취소·병행 거부), CC_TAKEOVER_PICK=cancel|takeover|parallel 주입, CC_TAKEOVER=0 끄기)
+#             취소 rc 10, 비 tty 기본 병행(singleton 롤은 기본 취소·병행 거부), CC_TAKEOVER_PICK=cancel|takeover|stop|parallel 주입, CC_TAKEOVER=0 끄기)
 #       → 2.6(롤 메뉴 줄을 박스 안쪽 폭에 맞춰 …로 줄임(_fit_cols), 머리줄 `[계정 X] · 프로젝트 Y`,
 #             롤 예약에 --holder-pid(cc pid, 시험 주입 CC_HOLDER_PID) 전달, 공식 `claude --mcp-config` 로 peer MCP 를 세션마다 붙임(CC_PEER_MCP=0 끄기))
 # 사용: cc [작업디렉터리|프로젝트] [계정] [롤[:영역]] [--role 롤] [--profile 계정] [--project 프로젝트] [--continue]
@@ -423,9 +423,38 @@ _takeover_gate() {
     single="$(python3 -B "$ROLE_LIB" singleton --role "${ROLE_VALUE%%[:#]*}" 2>/dev/null || true)"
     [[ "$single" == "1" ]] || single=0
     echo "⚠️  같은 롤(${ROLE_VALUE})이 이미 동작 중입니다: ${label} (${kind})" >&2
+    # DETAIL 줄(세션·머신·활동·인계 가능 여부)을 충돌 전부에 대해 나열한다. 대상 판정(tk)은 첫 충돌 기준이다.
+    local cl ck_kind ck_key ck_label d desc tkx tk=ok
+    while IFS= read -r cl; do
+        read -r _ ck_kind ck_key ck_label <<< "$cl"
+        d="$(printf '%s\n' "$out" | grep -F -m1 -- "DETAIL ${ck_key} " || true)"
+        desc="$(printf '%s' "$d" | sed -n 's/^DETAIL [^ ]* takeover=[^ ]* host=[^ ]* //p')"
+        tkx="$(printf '%s' "$d" | sed -n 's/^DETAIL [^ ]* takeover=\([^ ]*\) .*/\1/p')"
+        [[ -n "$tkx" ]] || tkx=ok
+        [[ "$ck_key" == "$key" ]] && tk="$tkx"
+        echo "   • ${ck_label} (${ck_kind})${desc:+ — ${desc}}" >&2
+        if [[ "$tkx" == "ok" ]]; then echo "     인계 가능" >&2
+        elif [[ "$desc" != *"인계 불가"* ]]; then echo "     인계 불가 — ${tkx}" >&2; fi
+    done < <(printf '%s\n' "$out" | grep '^CONFLICT ')
+    local s8="" tk_lbl=""
+    [[ -n "$RESUME_SID" ]] && s8="${RESUME_SID:0:8}…"
+    [[ "$tk" == "ok" ]] || tk_lbl="인계 불가 — ${tk}"
     if [[ -n "${CC_TAKEOVER_PICK:-}" ]]; then
         pick="$CC_TAKEOVER_PICK"
         echo "   선택: ${pick}  (주입)" >&2
+    elif [[ -t 0 && -t 1 && -n "$RESUME_SID" ]]; then
+        # 재개 메뉴에서 대화를 골랐다 — 인계(대상 대화를 연다)와 대상만 중지(고른 대화를 연다)를 구분해 보인다
+        echo "   [1] 취소" >&2
+        echo "   [2] ${tk_lbl:-인계 — 대상 세션의 대화를 받아 엽니다(고른 대화 ${s8} 는 열리지 않음)}" >&2
+        echo "   [3] ${tk_lbl:-대상만 중지 — 대상을 멈추고 고른 대화 ${s8} 를 엽니다}" >&2
+        if [[ "$single" == "1" ]]; then
+            IFS= read -r -p "   선택 (기본 1): " l </dev/tty || l=""
+            case "$l" in 2|t|takeover|인계) pick=takeover ;; 3|s|stop|중지) pick=stop ;; *) pick=cancel ;; esac
+        else
+            echo "   [4] 병행 — 새 세션 추가" >&2
+            IFS= read -r -p "   선택 (기본 4): " l </dev/tty || l=""
+            case "$l" in 1|c|cancel|취소) pick=cancel ;; 2|t|takeover|인계) pick=takeover ;; 3|s|stop|중지) pick=stop ;; *) pick=parallel ;; esac
+        fi
     elif [[ -t 0 && -t 1 ]]; then
         if [[ "$single" == "1" ]]; then
             echo "   [1] 취소   [2] 인계 — 그 세션을 중지하고 대화·세션 정보를 받아 여기서 이어 가기" >&2
@@ -448,11 +477,29 @@ _takeover_gate() {
         cancel)
             echo "취소했습니다(기동하지 않음)." >&2
             exit 10 ;;
-        takeover) ;;
+        takeover|stop)
+            # 인계 불가 대상은 건드리지 않고 끝낸다(rc 20)
+            if [[ "$tk" != "ok" ]]; then
+                echo "❌ 인계 불가(${tk}) — 대상을 건드리지 않았고 기동하지 않습니다." >&2
+                exit 20
+            fi
+            # 고른 대화가 없으면 stop 은 의미가 없어 인계로 처리한다
+            [[ "$pick" == "stop" && -z "$RESUME_SID" ]] && pick=takeover ;;
         *)
             return 0 ;;
     esac
+    if [[ "$pick" == "stop" ]]; then
+        echo "🛑 대상만 중지 중: ${label} → 고른 대화 ${s8} 를 엽니다" >&2
+        out="$(python3 -B "$pt" run --project "$proj" --role "$ROLE_VALUE" --kind "$kind" --key "$key" --cwd "$WORK_DIR" --stop-only)" || rc=$?
+        if [[ $rc -ne 0 ]]; then
+            echo "❌ 대상 중지 실패(rc=$rc) — 기동하지 않았습니다." >&2
+            exit "$rc"
+        fi
+        echo "✅ 대상 중지 완료 — 고른 대화 ${s8} 를 엽니다" >&2
+        return 0
+    fi
     echo "🔁 인계 중: ${label} → 중지 확인 후 대화·세션 정보를 이어받습니다" >&2
+    local picked_sid="$RESUME_SID"
     # 대상 대화(sid)를 결정적으로 못 찾으면 tty 일 때만 후보를 보여 고르게 한다(비 tty 는 rc 40 SID_AMBIGUOUS — 대상 미중지)
     local tty_flag=""
     [[ -t 0 && -t 1 ]] && tty_flag="--pick-tty"
@@ -473,6 +520,9 @@ _takeover_gate() {
     if [[ ! "$sid" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
         echo "❌ 인계 결과에 세션 ID 가 없습니다 — 기동하지 않았습니다." >&2
         exit 40
+    fi
+    if [[ -n "$picked_sid" && "$sid" != "$picked_sid" ]]; then
+        echo "ℹ️ 고른 대화(${picked_sid:0:8}…) 대신 대상 대화(${sid:0:8}…)를 엽니다" >&2
     fi
     RESUME_SID="$sid"
     [[ -n "$cwd" && -d "$cwd" ]] && WORK_DIR="$(cd "$cwd" && pwd)"

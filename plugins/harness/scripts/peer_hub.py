@@ -73,6 +73,30 @@ def _git(g):
     return {"head": str(g.get("head", "") or "")[:64], "dirty": bool(g.get("dirty", False)), "ahead": ahead}
 
 
+CAPS_ALLOW = ("takeover", "takeover:off")
+HOST_TAG_RE = re.compile(r"[A-Za-z0-9_-]{1,12}")
+UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+
+
+def _caps(v):
+    if not isinstance(v, list):
+        return []
+    return [c for c in v if isinstance(c, str) and c in CAPS_ALLOW][:4]
+
+
+def _host_tag(v):
+    v = str(v or "")
+    return v if HOST_TAG_RE.fullmatch(v) else ""
+
+
+def _ts(v):
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return 0.0
+    return f if f >= 0 and f == f and f != float("inf") else 0.0
+
+
 class HubError(Exception):
     def __init__(self, status, code, extra=None):
         Exception.__init__(self, code)
@@ -288,7 +312,25 @@ class Hub(object):
                                           "cwd_tail", "tmux_pane", "git", "observed", "registered_at", "last_seen"))
         v["session_key"] = key
         v["age"] = round(pc.now() - float(s.get("last_seen", 0)), 1)
+        v["observer_key"] = s.get("observer_key", "")
+        v["tmux_session"] = s.get("tmux_session", "")
+        v["host_tag"] = s.get("host_tag", "")
+        v["active_ts"] = s.get("active_ts", 0.0)
+        v["takeover"] = self._takeover_state(s)
         return v
+
+    # 인계 가능 여부 계산(잠금 안에서 호출). 직접 등록=ok, observed=대리(미러) 상태에 따라 사유 코드
+    def _takeover_state(self, s):
+        if not s.get("observed"):
+            return "ok"
+        if self.sessions.get(s.get("observer_key", "")) is None:
+            return "OBSERVER_ABSENT"
+        caps = s.get("caps") or []
+        if "takeover:off" in caps:
+            return "OBSERVER_TAKEOVER_OFF"
+        if "takeover" not in caps:
+            return "OBSERVER_NO_TAKEOVER"
+        return "ok"
 
     # 주기 정리(잠금 안)
     def sweep(self):
@@ -400,6 +442,10 @@ class Hub(object):
             "git": _git(b.get("git")), "sid": str(b.get("sid", "") or "")[:64],
             "observed": bool(b.get("observed", False)),
             "observer_key": str(b.get("observer_key", "") or "")[:64],
+            "caps": _caps(b.get("caps")),
+            "tmux_session": str(b.get("tmux_session", "") or "")[:64],
+            "host_tag": _host_tag(b.get("host_tag")),
+            "active_ts": _ts(b.get("active_ts")),
             "auth": who, "last_seen": now,
         }
         with self.mu:
@@ -422,6 +468,8 @@ class Hub(object):
             now = pc.now()
             s = self.sessions[key]
             s["last_seen"] = now
+            if b.get("active_ts") is not None:
+                s["active_ts"] = _ts(b.get("active_ts"))
             if isinstance(b.get("git"), dict):
                 s["git"] = _git(b["git"])
             missing = []
@@ -601,14 +649,23 @@ class Hub(object):
             if rk == tk:
                 raise HubError(400, "SAME_SESSION")
             r, t = self.sessions[rk], self.sessions[tk]
+            mode = str(b.get("mode", "") or "move")
+            if mode not in ("move", "stop"):
+                raise HubError(400, "BAD_MODE")
+            tstate = self._takeover_state(t)
+            if tstate != "ok":
+                raise HubError(409, tstate)
+            audience = [tk]
+            if t.get("observed") and t.get("observer_key"):
+                audience.append(t["observer_key"])
             tid = pc.gen_hex(16)
             now = pc.now()
             self.takeovers[tid] = {"id": tid, "requester_key": rk, "target_key": tk, "state": "requested",
-                                   "blobs": [], "reason": "", "created": now, "updated": now,
+                                   "blobs": [], "reason": "", "created": now, "updated": now, "mode": mode,
                                    "target_sid": t.get("sid", ""), "project": t.get("project"), "role": t.get("role")}
-            self.emit("takeover_request", {"id": tid, "requester_key": rk, "target_key": tk,
+            self.emit("takeover_request", {"id": tid, "requester_key": rk, "target_key": tk, "mode": mode,
                                            "requester_label": "%s/%s" % (r.get("machine_label", ""), r.get("name", "")),
-                                           "project": r.get("project"), "role": r.get("role")}, audience=[tk])
+                                           "project": r.get("project"), "role": r.get("role")}, audience=audience)
             self.save()
             return {"id": tid, "state": "requested"}
 
@@ -621,7 +678,7 @@ class Hub(object):
             if for_key not in (t["requester_key"], t["target_key"]):
                 raise HubError(403, "NOT_PARTY")
             out = dict((k, t.get(k)) for k in ("id", "state", "blobs", "reason", "requester_key", "target_key",
-                                                "project", "role", "created", "updated"))
+                                                "project", "role", "created", "updated", "mode"))
             if for_key == t["requester_key"] and t["state"] == "stopped":
                 out["sid"] = t.get("target_sid", "")
             return out
@@ -644,6 +701,9 @@ class Hub(object):
             for x in blobs:
                 if not os.path.isfile(os.path.join(self.blob_dir, x)):
                     raise HubError(404, "UNKNOWN_BLOB")
+            sid = str(b.get("sid", "") or "")
+            if st == "stopped" and not t.get("target_sid") and UUID_RE.fullmatch(sid):
+                t["target_sid"] = sid
             t["state"] = st
             t["blobs"] = list(blobs)
             t["reason"] = str(b.get("reason", "") or "")[:200]

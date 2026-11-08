@@ -405,6 +405,7 @@ class Client(object):
         self.takeovers_done = set()
         self.mirror_fd = None
         self.mirrored = {}
+        self.observed_busy = set()
         self.leases = {}
         self.host_ok, self.host_why = host_eligible(self.sid, self.parent)
         self.stopping = False
@@ -453,6 +454,10 @@ class Client(object):
              "pid_start": self.parent[1] if self.parent else C.pid_start(os.getpid()),
              "cwd_tail": "/".join(self.cwd.rstrip("/").split("/")[-2:]),
              "tmux_pane": os.environ.get("TMUX_PANE", ""), "git": git_info(self.cwd)}
+        b["caps"] = ["takeover:off"] if os.environ.get("PEER_ALLOW_TAKEOVER", "1") == "0" else ["takeover"]
+        b["host_tag"] = _host_tag()
+        b["tmux_session"] = _tmux_session()
+        b["active_ts"] = _conv_mtime(self.sid)
         if self.sid:
             b["sid"] = self.sid  # hub 는 목록에 싣지 않고 인계 요청자에게만 준다(§3)
         return b
@@ -471,7 +476,8 @@ class Client(object):
         return True if self.registered else self.register()
 
     def heartbeat(self):
-        st, _ = self.call("POST", "/v1/sessions/heartbeat", {"session_key": self.key, "git": git_info(self.cwd)})
+        st, _ = self.call("POST", "/v1/sessions/heartbeat", {"session_key": self.key, "git": git_info(self.cwd),
+                                                        "active_ts": _conv_mtime(self.sid)})
         if st == 404:
             self.registered = False
             return self.register()
@@ -538,6 +544,68 @@ class Client(object):
             return t
         if t == "takeover_request" and d.get("target_key") == self.key:
             return "takeover:" + self.handle_takeover(d)
+        if t == "takeover_request" and d.get("target_key") and d.get("target_key") != self.key:
+            return self.dispatch_observed(d)
+        return None
+
+    def dispatch_observed(self, d):
+        """미러가 대리 등록한 observed 키로 온 요청 — 자격 재계산 후 데몬 스레드로 처리한다(F2)."""
+        tid = str(d.get("id") or "")
+        tk = str(d.get("target_key") or "")
+        if not re.fullmatch(r"[A-Za-z0-9_-]{4,64}", tid) or not re.fullmatch(r"[A-Za-z0-9_-]{4,64}", tk):
+            return None
+        ent = self.observed_entry(tk)
+        if ent is None:
+            return None  # 다른 미러·다른 머신 몫이거나 자격 없음
+        with self.lock:
+            if tid in self.takeovers_done or tk in self.observed_busy:
+                return None
+            self.takeovers_done.add(tid)
+            self.observed_busy.add(tk)
+        threading.Thread(target=self._observed_worker, args=(d, tk, ent), daemon=True).start()
+        return "takeover:observed-started"
+
+    def _observed_worker(self, d, tk, ent):
+        try:
+            self.handle_observed_takeover(d, tk, ent)
+        except Exception as e:
+            C.log("observed 인계 처리 예외: %s" % type(e).__name__)
+            try:
+                self.ack_for(tk, str(d.get("id") or ""), "refused", reason="INTERNAL")
+            except Exception:
+                pass
+        finally:
+            with self.lock:
+                self.observed_busy.discard(tk)
+
+    def observed_entry(self, tk):
+        """처리 자격 재계산: mirror.lock 보유 + hub 목록의 observed·같은 machine_id + role_registry live 항목 일치."""
+        R = role_lib()
+        if R is None or not self.mirror_enabled():
+            return None
+        st, obj = self.call("GET", "/v1/sessions")
+        if st != 200:
+            return None
+        mid = C.machine_id()
+        hs = None
+        for x in obj.get("sessions") or []:
+            if str(x.get("session_key")) == tk:
+                hs = x
+                break
+        if not hs or not hs.get("observed") or hs.get("machine_id") != mid:
+            return None
+        if str(hs.get("observer_key") or "") != self.key:
+            return None  # 방어 심층: 이 미러가 대리 등록한 항목만
+        proj = str(hs.get("project") or "")
+        if not PROJ_RE.fullmatch(proj):
+            return None
+        try:
+            ents = R.live_entries(proj, alive_only=True)
+        except Exception:
+            return None
+        for e in ents:
+            if self.observed_key(mid, proj, e) == tk:
+                return dict(e, project=proj)
         return None
 
     # observed 미러 -------------------------------------------------------
@@ -601,14 +669,22 @@ class Client(object):
                     continue
                 want[self.observed_key(mid, proj, e)] = dict(e, project=proj)
         n_reg = n_hb = n_drop = 0
+        with self.lock:
+            busy = set(self.observed_busy)
         for k in set(hub_obs) | set(self.mirrored):
+            if k in busy:
+                self.call("POST", "/v1/sessions/heartbeat", {"session_key": k})
+                continue
             if k not in want:  # 죽은 세션·직접 등록으로 바뀐 세션 — 직접 등록이 우선
                 self.call("POST", "/v1/sessions/unregister", {"session_key": k}, timeout=3)
                 self.mirrored.pop(k, None)
                 n_drop += 1
         for k, e in want.items():
-            if k in hub_obs:
-                st2, _ = self.call("POST", "/v1/sessions/heartbeat", {"session_key": k})
+            if k in busy:
+                continue
+            if k in hub_obs and str(hub_obs[k].get("observer_key") or self.key) == self.key:
+                st2, _ = self.call("POST", "/v1/sessions/heartbeat",
+                                   {"session_key": k, "active_ts": float(e.get("updated_ts") or 0)})
                 if st2 == 200:
                     self.mirrored[k] = e
                     n_hb += 1
@@ -617,7 +693,10 @@ class Client(object):
             body = {"session_key": k, "machine_id": mid, "machine_label": C.machine_label(), "project": e["project"],
                     "role": (rid or "all") + (":" + area if area else ""), "name": name or "",
                     "pid": int(e.get("pid") or 0), "pid_start": str(e.get("pid_start") or ""), "cwd_tail": "",
-                    "tmux_pane": str(e.get("pane") or ""), "git": {}, "observed": True, "observer_key": self.key}
+                    "tmux_pane": str(e.get("pane") or ""), "git": {}, "observed": True, "observer_key": self.key,
+                    "caps": ["takeover:off"] if os.environ.get("PEER_ALLOW_TAKEOVER", "1") == "0" else ["takeover"],
+                    "tmux_session": (str(e.get("tmux_session") or "")[:64] or _tmux_session(e.get("pane"))), "host_tag": _host_tag(),
+                    "active_ts": float(e.get("updated_ts") or 0)}
             st3, _ = self.call("POST", "/v1/sessions/register", body)
             if st3 == 200:
                 self.mirrored[k] = e
@@ -625,11 +704,114 @@ class Client(object):
         return {"registered": n_reg, "heartbeat": n_hb, "dropped": n_drop}
 
     # 원격 인계 대상 측 -----------------------------------------------------
+    def ack_for(self, key, tid, state, **kw):
+        """대리 등록 키(key)로 ack — hub 는 session_key == target_key 로 판정한다."""
+        body = {"state": state, "session_key": key}
+        body.update(kw)
+        st, _ = self.call("POST", "/v1/takeover/%s/ack" % tid, body)
+        return st == 200
+
     def ack(self, tid, state, **kw):
         body = {"state": state, "session_key": self.key}
         body.update(kw)
         st, _ = self.call("POST", "/v1/takeover/%s/ack" % tid, body)
         return st == 200
+
+    def handle_observed_takeover(self, d, tk, ent):
+        """observed 대상 대리 인계: 업로드 → SIGTERM·종료 확인 → ack stopped(sid, blob). SIGKILL 없음."""
+        tid = str(d.get("id") or "")
+        mode = "stop" if d.get("mode") == "stop" else "move"
+
+        def refuse(code):
+            self.ack_for(tk, tid, "refused", reason=code)
+            return "refused"
+
+        if os.environ.get("PEER_ALLOW_TAKEOVER", "1") == "0":
+            return refuse("DISABLED")
+        req_rid, req_area, _ = split_role(str(d.get("role") or ""))
+        e_rid, e_area, _ = split_role(str(ent.get("value") or ent.get("role") or "all"))
+        if (str(d.get("project") or "").lower() != ent["project"] or req_rid != (e_rid or "all")
+                or (req_area or "") != (e_area or "")):
+            return refuse("ROLE_MISMATCH")
+        pid = int(ent.get("pid") or 0)
+        pst = str(ent.get("pid_start") or "")
+        if not pid or not C.pid_alive(pid, pst):
+            return refuse("TARGET_GONE")
+        comm, argv0 = _comm_argv0(pid)
+        if "claude" not in (comm, argv0):
+            return refuse("TARGET_NOT_CLAUDE")
+        sid, cwd, cfg = "", "", ""
+        if mode == "move":
+            T = _takeover_mod()
+            if T is None or not hasattr(T, "resolve_entry_sid"):
+                return refuse("SID_NOT_FOUND")
+            # environ 은 odev-4 의 target_config_dir 만 읽는다(CLAUDE_CONFIG_DIR 단일 키). 여기서 직접 읽지 않는다.
+            cfg = T.target_config_dir(pid) if hasattr(T, "target_config_dir") else ""
+            try:
+                ent2 = dict(ent)
+                ent2["value"] = str(ent.get("value") or ent.get("role") or "all")  # odev-4: value 키 필수
+                sid, cwd, _how = T.resolve_entry_sid(ent["project"], ent2, config_dir=cfg)
+            except Exception as e:
+                m = str(e).split(" ", 1)[0]
+                return refuse(m if m in ("SID_NOT_FOUND", "SID_AMBIGUOUS") else "SID_NOT_FOUND")
+        if os.environ.get("PEER_TEST_MODE") and os.environ.get("PEER_TEST_PRE_UPLOAD_SLEEP"):
+            try:
+                time.sleep(float(os.environ["PEER_TEST_PRE_UPLOAD_SLEEP"]))  # 시험 전용(요청자 대기 연장 변별)
+            except ValueError:
+                pass
+        self.ack_for(tk, tid, "uploading")
+        bid = None
+        if mode == "move":
+            tmpd = tempfile.mkdtemp(prefix="peer-obs-")
+            try:
+                path = os.path.join(tmpd, "bundle.tar.gz")
+                role_value = str(ent.get("value") or ent.get("role") or "all")
+                sha = pack_bundle(path, sid, cwd, ent["project"], role_value, config_dir=cfg)
+                if not sha:
+                    return refuse("PACK_FAILED")
+                url, tok = self.hub()
+                st, obj = C.http_put_file(url + "/v1/blobs", path, tok, sha=sha) if url else (0, {})
+                bid = obj.get("id") if st in (200, 201) else None
+            except Exception as e:
+                C.log("observed 묶음 처리 실패: %s" % type(e).__name__)
+                bid = None
+            finally:
+                _rm_tree(tmpd)
+            if not bid:
+                return refuse("UPLOAD_FAILED")
+        # 종료: pid_start 재검증·comm 재확인 후 SIGTERM, 최대 STOP_WAIT 초 확인(SIGKILL 금지)
+        if not C.pid_alive(pid, pst):
+            return refuse("TARGET_GONE")
+        comm, argv0 = _comm_argv0(pid)
+        if "claude" not in (comm, argv0):
+            return refuse("TARGET_NOT_CLAUDE")
+        # 요청자가 이미 포기(timeout·refused 등)했으면 대상을 죽이지 않는다 — hub 상태 재조회
+        stq, tobj = self.call("GET", "/v1/takeover/%s?for=%s" % (tid, tk))
+        if stq != 200 or str((tobj or {}).get("state") or "") not in ("requested", "uploading"):
+            C.log("observed 인계 중단: 요청 상태 %s" % (str((tobj or {}).get("state") or stq)[:20]))
+            return "aborted"
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError as e:
+            C.log("observed 대상 종료 실패: %s" % type(e).__name__)
+            return refuse("STOP_TIMEOUT")
+        limit = _env_num("PEER_TAKEOVER_STOP_WAIT", 15)
+        t0 = time.time()
+        while time.time() - t0 < limit:
+            if not C.pid_alive(pid, pst) or _is_zombie(pid):
+                break
+            time.sleep(0.2)
+        else:
+            return refuse("STOP_TIMEOUT")
+        kw = {"blobs": [bid] if bid else []}
+        if sid:
+            kw["sid"] = sid
+        if not self.ack_for(tk, tid, "stopped", **kw) and not self.ack_for(tk, tid, "stopped", **kw):
+            C.log("observed ack stopped 실패(재시도 포함) tid=%s" % tid[:12])
+        with self.lock:
+            self.mirrored.pop(tk, None)
+        self.call("POST", "/v1/sessions/unregister", {"session_key": tk}, timeout=3)
+        return "stopped"
 
     def handle_takeover(self, ev):
         tid = str(ev.get("id") or "")
@@ -645,11 +827,19 @@ class Client(object):
         if not same:
             self.ack(tid, "refused", reason="ROLE_MISMATCH")
             return "refused"
+        if ev.get("mode") == "stop":
+            self.ack(tid, "stopped", blobs=[])
+            self.stop_parent()
+            try:
+                self.unregister()
+            except Exception:
+                pass
+            return "stopped"
         self.ack(tid, "uploading")
         tmpd = tempfile.mkdtemp(prefix="peer-to-")
         try:
             path = os.path.join(tmpd, "bundle.tar.gz")
-            sha = pack_bundle(path, self)  # 묶음 형식은 peer_takeover.py pack 단일 소유(받는 쪽 import 가 manifest 검증)
+            sha = pack_bundle(path, self.sid, self.cwd, self.project, self.role_value)  # 묶음 형식은 peer_takeover.py pack 단일 소유(받는 쪽 import 가 manifest 검증)
             if not sha:
                 self.ack(tid, "refused", reason="PACK_FAILED")
                 return "refused"
@@ -703,6 +893,48 @@ class Client(object):
         return info
 
 
+def _is_zombie(pid):
+    try:
+        with open("/proc/%d/stat" % pid, encoding="utf-8", errors="replace") as f:
+            return f.read().rsplit(")", 1)[1].split()[0] == "Z"
+    except (OSError, IndexError):
+        return False
+
+
+def _host_tag():
+    v = os.environ.get("CC_HOST_TAG", "") or os.environ.get("PEER_HOST_TAG", "")
+    return v if re.fullmatch(r"[A-Za-z0-9_-]{1,12}", v or "") else ""
+
+
+def _tmux_session(pane=None):
+    """tmux 세션명(<=64). 모르면 빈 문자열."""
+    pane = pane if pane is not None else os.environ.get("TMUX_PANE", "")
+    if not pane or not re.fullmatch(r"%\d+", str(pane)):
+        return ""
+    try:
+        r = subprocess.run(["tmux", "display-message", "-p", "-t", str(pane), "#S"], stdin=subprocess.DEVNULL,
+                           stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=2, universal_newlines=True)
+        return (r.stdout or "").strip()[:64] if r.returncode == 0 else ""
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def _conv_mtime(sid):
+    """자기 sid 대화 파일 mtime(없으면 0.0). 내용은 읽지 않는다."""
+    if not sid:
+        return 0.0
+    cfg = os.environ.get("CLAUDE_CONFIG_DIR", "") or os.path.join(os.path.expanduser("~"), ".claude")
+    base = os.path.join(cfg, "pro" + "jects")
+    try:
+        for dn in os.listdir(base):
+            fp = os.path.join(base, dn, sid + "." + "jsonl")
+            if os.path.isfile(fp):
+                return os.path.getmtime(fp)
+    except OSError:
+        pass
+    return 0.0
+
+
 def _rm_tree(d):
     for dp, dns, fns in os.walk(d, topdown=False):
         for n in fns:
@@ -735,15 +967,52 @@ def _find_script(name):
     return None
 
 
-def pack_bundle(out, cl):
-    """peer_takeover.py pack 으로 묶음을 만든다. 반환 sha256(hex) 또는 None(PACK_FAILED)."""
+_TM = {"mod": None, "tried": False}
+
+
+def _takeover_mod():
+    """peer_takeover.py 를 1회 import(target_config_dir·resolve_entry_sid 단일 출처). 없으면 None."""
+    if _TM["tried"]:
+        return _TM["mod"]
+    _TM["tried"] = True
     pt = _find_script("peer_takeover.py")
-    if not pt or not cl.sid:
+    if not pt:
+        return None
+    d = os.path.dirname(pt)
+    sys.path.insert(0, d)
+    try:
+        import peer_takeover as T  # noqa: E402
+        _TM["mod"] = T
+    except Exception as e:
+        C.log("peer_takeover import 실패: %s" % type(e).__name__)
+    finally:
+        try:
+            sys.path.remove(d)
+        except ValueError:
+            pass
+    return _TM["mod"]
+
+
+def pack_bundle(out, sid, cwd, project, role_value, config_dir=""):
+    """peer_takeover.py pack 으로 묶음을 만든다. 반환 sha256(hex) 또는 None(PACK_FAILED).
+    config_dir 이 있으면 subprocess env 의 CLAUDE_CONFIG_DIR 만 덮어쓴다(대상 세션의 session-env 를 보게 함)."""
+    pt = _find_script("peer_takeover.py")
+    if not pt or not sid:
         C.log("인계 묶음 불가: %s" % ("peer_takeover.py 없음" if not pt else "sid 모름"))
         return None
+    env = None
+    if config_dir:
+        env = dict(os.environ)
+        env["CLAUDE_CONFIG_DIR"] = config_dir
+    if os.environ.get("PEER_TEST_MODE") and os.environ.get("PEER_TEST_PACK_SLEEP"):
+        try:
+            time.sleep(float(os.environ["PEER_TEST_PACK_SLEEP"]))
+        except ValueError:
+            pass
     try:
-        r = subprocess.run([sys.executable, "-B", pt, "pack", "--sid", cl.sid, "--cwd", cl.cwd,
-                            "--project", cl.project, "--role", cl.role_value, "--out", out],
+        r = subprocess.run([sys.executable, "-B", pt, "pack", "--sid", sid, "--cwd", cwd,
+                            "--project", project, "--role", role_value, "--out", out]
+                           + (["--config-dir", config_dir] if config_dir else []), env=env,
                            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                            timeout=float(os.environ.get("PEER_PACK_TIMEOUT", "600")), universal_newlines=True)
     except (OSError, subprocess.SubprocessError) as e:
