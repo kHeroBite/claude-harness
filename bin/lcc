@@ -4,6 +4,8 @@
 # 사용법: lcc [cc 인자...]   /   lccc [ccc 인자...]
 #   예) lcc pd          → 원격에서 'cc pd' (프로젝트 해석은 서버 cc 가 서버 루트 기준으로 한다)
 #       lcc             → 원격 접속 폴더(서버 홈)에서 'cc'
+#   장기 로그인: 서버 cc 가 서버 계정 토큰을 적용한다(토큰은 ssh 로 넘기지 않음).
+#   등록은 서버에서 cas token-set · cas token-issue 로 한다.
 #   LCC_HOST  원격 ssh 별칭 (기본 pd-server)
 #   LCC_DIR   원격 작업 폴더 (기본 없음 — 설정했을 때만 cd 한다)
 #   LCC_TITLE 로컬 tmux 안에서 쓸 window 이름 꼬리 (기본 호스트 별칭 → "⇄pd-server")

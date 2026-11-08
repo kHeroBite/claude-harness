@@ -177,6 +177,227 @@ unset_anthropic_envs() {
     unset CLAUDE_SESSION_ID
 }
 
+# =============================================================================
+# 장기 로그인 토큰 (setup-token) — 계정별 ${PROFILES_ROOT}/<계정>/.long_token
+#   · 값은 변수에만 두고 echo/err/_cas_log/argv 어디에도 넣지 않는다 (set -x 금지)
+#   · claude 실행 직전 CLAUDE_CODE_OAUTH_TOKEN 으로 export (cmd_run (i) 블록)
+#   · CAS_LONG_TOKEN=off 이면 주입하지 않는다
+# =============================================================================
+_cas_tok_file() { printf '%s/%s/.long_token' "${PROFILES_ROOT}" "$1"; }
+_cas_tok_meta() { printf '%s/%s/.long_token.meta' "${PROFILES_ROOT}" "$1"; }
+
+# 결과: _TOK_REG(등록 epoch), _TOK_EXP(만료 epoch). 메타 없으면 파일 mtime 을 등록일로 간주.
+_cas_tok_read_meta() {
+    local name="$1" f m reg="" exp="" line
+    f="$(_cas_tok_file "${name}")"
+    m="$(_cas_tok_meta "${name}")"
+    if [[ -r "${m}" ]]; then
+        while IFS= read -r line || [[ -n "${line}" ]]; do
+            case "${line}" in
+                registered_at=*) reg="${line#registered_at=}" ;;
+                expires_at=*) exp="${line#expires_at=}" ;;
+            esac
+        done < "${m}"
+    fi
+    [[ "${reg}" =~ ^[0-9]+$ ]] || reg=""
+    [[ "${exp}" =~ ^[0-9]+$ ]] || exp=""
+    if [[ -z "${reg}" ]]; then
+        reg="$(stat -c %Y "${f}" 2>/dev/null || date +%s)"
+    fi
+    if [[ -z "${exp}" ]]; then
+        exp=$(( reg + 365 * 86400 ))
+    fi
+    _TOK_REG="${reg}"
+    _TOK_EXP="${exp}"
+}
+
+# rc: 0=유효, 3=미등록, 4=만료 임박, 5=만료, 6=권한·소유자·형식 이상. 출력 없음(값 미노출).
+_cas_tok_check() {
+    local name="$1" f perm owner v="" now renew
+    f="$(_cas_tok_file "${name}")"
+    [[ -f "${f}" && -s "${f}" ]] || return 3
+    owner="$(stat -c %u "${f}" 2>/dev/null || echo -1)"
+    [[ "${owner}" = "$(id -u)" ]] || return 6
+    perm="$(stat -c %a "${f}" 2>/dev/null || echo 000)"
+    if [[ "${perm}" != "600" ]]; then
+        chmod 600 "${f}" 2>/dev/null || return 6
+    fi
+    IFS= read -r v < "${f}" || true
+    if [[ -z "${v}" || "${v}" =~ [[:space:]] || ${#v} -lt 20 ]]; then
+        v=""
+        return 6
+    fi
+    v=""
+    _cas_tok_read_meta "${name}"
+    now="$(date +%s)"
+    renew="${CAS_LONG_TOKEN_RENEW_DAYS:-14}"
+    [[ "${renew}" =~ ^[0-9]+$ ]] || renew=14
+    if (( now >= _TOK_EXP )); then
+        return 5
+    fi
+    if (( _TOK_EXP - now < renew * 86400 )); then
+        return 4
+    fi
+    return 0
+}
+
+# cmd_run (i) 블록에서 호출 — 유효(0)·임박(4)이면 export, 아니면 미설정 유지.
+_cas_apply_long_token() {
+    local name="$1" rc=0 v="" mode="login"
+    if [[ "${CAS_LONG_TOKEN:-on}" != "off" ]]; then
+        _cas_tok_check "${name}" || rc=$?
+        case "${rc}" in
+            0|4)
+                IFS= read -r v < "$(_cas_tok_file "${name}")" || true
+                if [[ -n "${v}" ]]; then
+                    export CLAUDE_CODE_OAUTH_TOKEN="${v}"
+                    mode="long_token"
+                fi
+                v=""
+                ;;
+            5) echo "[claude-as] 장기 로그인 토큰 만료 — 일반 로그인으로 실행합니다 (재발급: cas token-issue ${name})" >&2 ;;
+            6) echo "[claude-as] 장기 로그인 토큰 파일 권한/소유자/형식 이상 — 적용하지 않습니다 (cas token-set ${name})" >&2 ;;
+        esac
+    fi
+    # 값 없는 표식 — cas token-status 가 읽는다
+    printf '%s %s %s\n' "${mode}" "$$" "${name}" > "${TMP_CFG}/.cas_auth_mode" 2>/dev/null || true
+}
+
+# 원자 저장: 같은 폴더 mktemp(umask 077) → chmod 600 → mv -f, 메타 기록
+_cas_tok_store() {
+    local name="$1" v="$2" dir f m tmp now exp
+    dir="${PROFILES_ROOT}/${name}"
+    [[ -d "${dir}" ]] || die "프로파일 없음: ${name}"
+    if [[ "${v}" =~ [[:space:]] || ${#v} -lt 20 ]]; then
+        die "토큰 형식 오류 (공백 없는 한 줄, 20자 이상)"
+    fi
+    f="$(_cas_tok_file "${name}")"
+    m="$(_cas_tok_meta "${name}")"
+    now="$(date +%s)"
+    exp=$(( now + 365 * 86400 ))
+    (
+        umask 077
+        tmp="$(mktemp "${dir}/.long_token.XXXXXX")"
+        printf '%s\n' "${v}" > "${tmp}"
+        chmod 600 "${tmp}"
+        mv -f "${tmp}" "${f}"
+        tmp="$(mktemp "${dir}/.long_token.meta.XXXXXX")"
+        printf 'registered_at=%s\nexpires_at=%s\n' "${now}" "${exp}" > "${tmp}"
+        chmod 600 "${tmp}"
+        mv -f "${tmp}" "${m}"
+    ) || die "토큰 저장 실패"
+    rm -f "${dir}/.long_token_skip" 2>/dev/null || true
+    echo "등록됨 · 만료 예정 $(date -d "@${exp}" +%F)"
+}
+
+cmd_token_set() {
+    local name="${1:-}" mode="${2:-}" v=""
+    [[ -n "${name}" ]] || die "사용법: cas token-set <계정> [--stdin]"
+    validate_name "${name}"
+    [[ -d "${PROFILES_ROOT}/${name}" ]] || die "프로파일 없음: ${name}"
+    if [[ "${mode}" = "--stdin" ]]; then
+        IFS= read -r v || true
+    else
+        [[ -t 0 ]] || { echo "[claude-as] 대화형 터미널이 아닙니다 (--stdin 사용)" >&2; exit 2; }
+        printf '장기 로그인 토큰(숨김 입력): ' >&2
+        IFS= read -rs v || true
+        printf '\n' >&2
+    fi
+    v="${v%$'\r'}"
+    _cas_tok_store "${name}" "${v}"
+    v=""
+}
+
+cmd_token_clear() {
+    local name="${1:-}"
+    [[ -n "${name}" ]] || die "사용법: cas token-clear <계정>"
+    validate_name "${name}"
+    rm -f "$(_cas_tok_file "${name}")" "$(_cas_tok_meta "${name}")" "${PROFILES_ROOT}/${name}/.long_token_skip"
+    echo "해제됨"
+}
+
+cmd_token_check() {
+    local name="${1:-}" rc=0
+    [[ -n "${name}" ]] || exit 2
+    validate_name "${name}"
+    _cas_tok_check "${name}" || rc=$?
+    exit "${rc}"
+}
+
+cmd_token_status() {
+    local only="${1:-}" names=() d n rc now left f marker mode pid mname cnt=0
+    if [[ -n "${only}" ]]; then
+        validate_name "${only}"
+        names=("${only}")
+    else
+        for d in "${PROFILES_ROOT}"/*/; do
+            [[ -d "${d}" ]] || continue
+            n="$(basename "${d}")"
+            [[ "${n}" =~ ^[A-Za-z0-9_-]+$ ]] || continue
+            names+=("${n}")
+        done
+    fi
+    now="$(date +%s)"
+    echo "장기 로그인 토큰 (계정별)"
+    for n in "${names[@]}"; do
+        rc=0
+        _cas_tok_check "${n}" || rc=$?
+        if [[ "${rc}" = "3" ]]; then
+            printf '  %-14s 미등록\n' "${n}"
+            continue
+        fi
+        f="$(_cas_tok_file "${n}")"
+        _cas_tok_read_meta "${n}"
+        left=$(( (_TOK_EXP - now) / 86400 ))
+        printf '  %-14s 등록 %s · 만료 예정 %s · 남은 %s일 · 권한 %s%s\n' "${n}" \
+            "$(date -d "@${_TOK_REG}" +%F)" "$(date -d "@${_TOK_EXP}" +%F)" "${left}" \
+            "$(stat -c %a "${f}" 2>/dev/null || echo '?')" \
+            "$(case "${rc}" in 4) echo ' · 만료 임박';; 5) echo ' · 만료됨';; 6) echo ' · 이상(권한/소유자/형식)';; esac)"
+    done
+    echo ""
+    echo "실행 중 세션 (일반 로그인)"
+    for marker in /tmp/cc-*/.cas_auth_mode; do
+        [[ -f "${marker}" && -O "${marker}" ]] || continue
+        mode=""; pid=""; mname=""
+        read -r mode pid mname < "${marker}" || true
+        [[ "${pid}" =~ ^[0-9]+$ ]] && kill -0 "${pid}" 2>/dev/null || continue
+        if [[ "${mode}" = "login" ]]; then
+            cnt=$(( cnt + 1 ))
+            echo "  - 계정 ${mname} · $(dirname "${marker}")"
+        fi
+    done
+    echo "  일반 로그인으로 실행 중인 세션: ${cnt}개 (표식 없는 이전 실행 세션은 개별 탐지하지 않음)"
+    echo ""
+    echo "이미 떠 있는 세션을 장기 로그인으로 바꾸는 방법 (실행 중 프로세스의 환경은 바꿀 수 없음)"
+    echo "  1) cas token-set <계정>  (또는 cas token-issue <계정>)  으로 토큰 등록"
+    echo "  2) 그 세션에서 /exit"
+    echo "  3) ccc (또는 ccc <계정>) 로 같은 대화를 재개 — 대화 문맥은 유지됩니다"
+}
+
+cmd_token_issue() {
+    local name="${1:-}" bin tmp v=""
+    [[ -n "${name}" ]] || die "사용법: cas token-issue <계정>"
+    validate_name "${name}"
+    [[ -d "${PROFILES_ROOT}/${name}" ]] || die "프로파일 없음: ${name}"
+    if [[ ! -t 0 || ! -t 1 ]]; then
+        echo "[claude-as] token-issue 는 대화형 터미널 전용입니다" >&2
+        exit 2
+    fi
+    bin="$(detect_claude_bin)"
+    tmp="$(mktemp -d)"
+    chmod 700 "${tmp}"
+    trap 'rm -rf "${tmp}"' EXIT
+    echo "브라우저에서 승인하면 화면에 장기 토큰이 한 번 표시됩니다. 복사해 두세요 (저장되지 않음)." >&2
+    env -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN \
+        CLAUDE_CONFIG_DIR="${tmp}" "${bin}" setup-token || true
+    printf '\n표시된 토큰을 붙여넣으세요(숨김 입력): ' >&2
+    IFS= read -rs v || true
+    printf '\n' >&2
+    v="${v%$'\r'}"
+    _cas_tok_store "${name}" "${v}"
+    v=""
+}
+
 # generate_uuid — uuidgen 의존 회피
 generate_uuid() {
     if [[ -r /proc/sys/kernel/random/uuid ]]; then
@@ -906,12 +1127,12 @@ PYEOF_STALESYNC
 _r12_acquire_flock() {
     # 단일원본 .credentials.json.lock 파일로 flock 보호 (fd 9)
     CRED_LOCK_FILE="${PROFILE_DIR}/.credentials.json.lock"
-    exec 9>"${CRED_LOCK_FILE}" 2>/dev/null || { CRED_FLOCK_HELD=0; return 0; }
+    { exec 9>"${CRED_LOCK_FILE}"; } 2>/dev/null || { CRED_FLOCK_HELD=0; return 0; }
     if flock -w 30 9 2>/dev/null; then
         CRED_FLOCK_HELD=1
     else
         echo "[cas] 경고: .credentials.json flock 30s 타임아웃 — 잠금 없이 진행" >&2
-        exec 9>&- 2>/dev/null || true
+        { exec 9>&-; } 2>/dev/null || true
         CRED_FLOCK_HELD=0
     fi
 } || true
@@ -920,7 +1141,7 @@ _r12_acquire_flock() {
 _r12_release_flock() {
     # flock 획득 상태일 때만 해제 (중복 호출 안전)
     if [[ "${CRED_FLOCK_HELD:-0}" -eq 1 ]]; then
-        exec 9>&- 2>/dev/null || true
+        { exec 9>&-; } 2>/dev/null || true
         CRED_FLOCK_HELD=0
     fi
 } || true
@@ -1953,6 +2174,8 @@ PYEOF_SCALAR
     export CLAUDE_AS_UUID="${UUID}"
     # 오토컴팩트 임계 70% — settings env 만으로는 반영되지 않는 버전 보고(#63186)가 있어 셸 export 로도 준다
     export CLAUDE_AUTOCOMPACT_PCT_OVERRIDE="${CLAUDE_AUTOCOMPACT_PCT_OVERRIDE:-70}"
+    # 장기 로그인 토큰 주입 (등록·유효한 계정만) + .cas_auth_mode 표식
+    _cas_apply_long_token "${name}"
 
     err "profile=${name} uuid=${UUID} config_dir=${TMP_CFG}"
 
@@ -1992,10 +2215,17 @@ claude-as — Claude Code multi-account profile launcher
   claude-as current                   현재 활성 프로파일 표시
   claude-as monitor                   모든 프로파일 사용량 5분 주기 모니터 (Ctrl+C로 종료)
   claude-as help                      이 도움말
+  claude-as token-set <name> [--stdin]  장기 로그인 토큰 등록 (숨김 입력)
+  claude-as token-clear <name>        장기 로그인 토큰 해제
+  claude-as token-status [name]       토큰 등록 현황 + 실행 중 일반 로그인 세션 + 전환 방법
+  claude-as token-check <name>        판정 rc (0=유효 3=미등록 4=임박 5=만료 6=이상)
+  claude-as token-issue <name>        setup-token 안내 후 토큰 등록 (대화형 전용)
 
 환경변수:
   CLAUDE_PROFILES_ROOT  (기본: ~/.claude-profiles)
   CLAUDE_BIN            (기본: command -v claude)
+  CAS_LONG_TOKEN        off 이면 장기 로그인 토큰을 주입하지 않음
+  CAS_LONG_TOKEN_RENEW_DAYS  만료 임박 기준 일수 (기본 14)
 
 예:
   claude-as create work
@@ -2023,6 +2253,26 @@ EOF
         monitor)
             shift
             cmd_monitor "$@"
+            ;;
+        token-set)
+            shift
+            cmd_token_set "$@"
+            ;;
+        token-clear)
+            shift
+            cmd_token_clear "$@"
+            ;;
+        token-status)
+            shift
+            cmd_token_status "$@"
+            ;;
+        token-check)
+            shift
+            cmd_token_check "$@"
+            ;;
+        token-issue)
+            shift
+            cmd_token_issue "$@"
             ;;
         install-batch)
             shift

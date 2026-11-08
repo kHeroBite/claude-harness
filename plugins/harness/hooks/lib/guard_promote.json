@@ -31,9 +31,9 @@
     "gp_gate": {
       "live": "lib/gp_gate.sh",
       "test": "tests/test_gp_gate.sh",
-      "test_sha256": "e8a5671a2a198392cb3c161d5c99fd27ebf8387f70aa1fa64fb4d714b350129b",
-      "core_sha256": "4dd2223c230a8cf3b7a994a83b4d92962c078704d2f4acec888d55a5cf636fe6",
-      "min_pass": 777,
+      "test_sha256": "f2f42ded066b44fc0ce27bff5933b8a014b5db4b600506148f33537e5fb39059",
+      "core_sha256": "42a982f0e00c2414c2ad3410f9acfe7b5471c68fec75c3623b553e16b1149bdc",
+      "min_pass": 803,
       "max_skip": 0,
       "lang": "gp_gate"
     },

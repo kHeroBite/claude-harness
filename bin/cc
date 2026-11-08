@@ -1171,10 +1171,39 @@ if [[ "${CC_ROLE_CHECK_ONLY:-}" == "1" ]]; then
     exit 0
 fi
 
+# 장기 로그인 토큰 발급 안내: 미등록·만료 임박·만료이고 대화형 신규 진입일 때만 묻는다. 토큰 값은 다루지 않고 cas 부명령에 위임한다.
+#   CC_TOKEN_ANSWER(y|enter|n) 주입 시 tty 없이 시험 가능. 실패해도 진입은 계속한다.
+_cc_long_token_offer() {
+    local acct="$1" rc=0 ans="" skip
+    [[ "${CAS_LONG_TOKEN:-on}" == "off" ]] && return 0
+    [[ -n "$RESUME_SID" || -n "$CONTINUE_FLAG" || -n "$RESUME_PICK" ]] && return 0
+    if [[ -z "${CC_TOKEN_ANSWER:-}" ]]; then [[ -t 0 && -t 1 ]] || return 0; fi
+    command -v cas >/dev/null 2>&1 || return 0
+    cas token-check "$acct" >/dev/null 2>&1 || rc=$?
+    case "$rc" in 3|4|5) ;; *) return 0 ;; esac
+    skip="$PROFILES_ROOT/$acct/.long_token_skip"
+    if [[ -f "$skip" && -n "$(find "$skip" -mtime -30 2>/dev/null)" ]]; then return 0; fi
+    local why="없습니다"
+    [[ "$rc" == "4" ]] && why="곧 만료됩니다"
+    [[ "$rc" == "5" ]] && why="만료됐습니다"
+    echo ""
+    echo "🔑 [$acct] 장기 로그인 토큰(1년)이 ${why}. 지금 발급할까요?"
+    echo "   [y] 발급 · [Enter] 이번만 건너뛰기 · [n] 30일간 묻지 않기"
+    if [[ -n "${CC_TOKEN_ANSWER:-}" ]]; then ans="$CC_TOKEN_ANSWER"; else read -r -p "   > " ans || ans=""; fi
+    case "$ans" in
+        y|Y) cas token-issue "$acct" || echo "⚠️ 토큰 발급이 끝나지 않았습니다. 일반 로그인으로 계속합니다." ;;
+        n|N) : > "$skip" 2>/dev/null && chmod 600 "$skip" 2>/dev/null || true ;;
+    esac
+    return 0
+}
+_cc_long_token_offer "$SELECTED" || true
+
 echo ""
 _MODE_TXT="진입"
 [[ -n "$CONTINUE_FLAG" || -n "$RESUME_SID" ]] && _MODE_TXT="재개"
-echo "🚀 [$SELECTED] 계정으로 Claude Code ${_MODE_TXT} 중...${ROLE_SET_VALUE:+ (롤: $ROLE_SET_VALUE)}"
+_AUTH_TXT=""
+if [[ "${CAS_LONG_TOKEN:-on}" != "off" ]] && command -v cas >/dev/null 2>&1 && cas token-check "$SELECTED" >/dev/null 2>&1; then _AUTH_TXT=" · 장기 로그인"; fi
+echo "🚀 [$SELECTED] 계정으로 Claude Code ${_MODE_TXT} 중...${ROLE_SET_VALUE:+ (롤: $ROLE_SET_VALUE)}${_AUTH_TXT}"
 
 # cas의 정보성 메시지 필터 (정보/profile= 디버그 숨김, 에러/경고는 통과)
 _CAS_FILTER='grep -v -E "^\[claude-as\] (정보|profile=)"'

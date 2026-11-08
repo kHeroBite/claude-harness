@@ -1701,11 +1701,109 @@ _gpg_lit_subst() {  # $1=명령 → stdout: 치환한 명령(조건 불충족이
 #   ((hooks|..)/(lib|tests|backup|logs)/ 뒤에 $ · .claude/ 뒤 $ 가 든 디렉터리를 거쳐 /lib·tests·backup·logs)가 있고
 #   그 구간이 쓰기 수단(_gpg_wm_re·tee·git 쓰기 하위 명령)이거나 그 단어가 쓰기 리다이렉트 대상이면 차단한다.
 #   조회 구간(cat <hooks>/lib/$f > /tmp/o — 대상 비보호)은 통과한다.
+# relpath(pd-a2 2026-11-08): ../lib · ../tests · ../backup · ../logs 가 hooks 보호 디렉터리일 수 없음이 확실하면 0 을 낸다.
+#   종전 _hd·_gpg_dyn_check 는 ../(lib|tests|backup|logs) 를 실행 위치와 무관하게 hooks 보호 디렉터리로 봤다(hooks/candidates 탈출 대비).
+#   그래서 저장소 안 ../../../logs/… 같은 상대 경로를 쓰는 해석기·리다이렉트 명령이 모두 막혔다.
+#   ".. 가 hooks/<하위> 에서 출발할 수 없다" 가 확실할 때만 그 대안을 뺀다 — 조건(전부):
+#   ① 명령에 hooks 단어가 없다. ② 기준 위치(tool_input.working_dir·cwd·workdir, 없으면 INPUT .cwd)가 절대 경로이고 realpath 가 hooks 성분을 품지
+#   않으며 ${HARNESS_HOME:-$HOME/.harness}/current/hooks 아래가 아니다. ③ 명령의 cd·pushd 대상이 모두 리터럴(글자·숫자·_ . / @ % + : , = - 만, - 단독 제외)이거나
+#   $NAME[/리터럴] 이고, 리터럴은 기준 위치로 붙인 realpath 가 ②와 같은 검사를 통과한다. $NAME 은 명령 안의 모든 NAME= 대입이 리터럴이고
+#   각각 같은 검사를 통과해야 한다(대입이 없거나 하나라도 비리터럴이면 탈락). 어느 하나라도 어기면 종전 판정 그대로다.
+#   한계: 미리 만든 심볼릭 링크로 hooks/<하위> 에 들어가 이름 없이 ../lib 를 지우는 2단계는 같은 uid 기존 한계와 같은 등급이다(realpath 가 이미 있는 링크는 푼다).
+_gpg_dd_dir_ok() {  # $1=경로 $2=hooks realpath → 0: hooks 밖
+  local _r
+  _r=$(realpath -m -- "$1" 2>/dev/null) || return 1
+  [[ -n "$_r" && "$_r" == /* ]] || return 1
+  [[ "${_r,,}" =~ (^|/)hooks(/|$) ]] && return 1
+  [[ -n "$2" && ( "$_r" == "$2" || "$_r" == "$2"/* ) ]] && return 1
+  return 0
+}
+_gpg_dd_var_ok() {  # $1=명령 $2=이름 $3=기준 위치 $4=hooks realpath $5=접미 → 0: 모든 대입이 리터럴이고 hooks 밖
+  local _s="$1" _v _n=0 _re="(^|[^A-Za-z0-9_])$2=([^[:space:];&|]*)"
+  while [[ "$_s" =~ $_re ]]; do
+    _v="${BASH_REMATCH[2]}"; _s="${_s/"${BASH_REMATCH[0]}"/ }"; _n=$((_n+1))
+    _v="${_v//[\'\"]/}"
+    [[ "$_v" =~ ^[A-Za-z0-9_./@%+:,=-]+$ ]] || return 1
+    [[ "$_v" == /* ]] || _v="${3%/}/$_v"
+    _gpg_dd_dir_ok "$_v$5" "$4" || return 1
+    [[ $_n -lt 16 ]] || return 1
+  done
+  [[ $_n -ge 1 ]]
+}
+_gpg_dd_free() {  # $1=원본 명령 → 0: ../{lib,tests,backup,logs} 가 hooks 보호 디렉터리일 수 없다
+  local _s="$1" _b _t _hr _nm _sx
+  local _re='(^|[^A-Za-z0-9_.-])(cd|pushd)[[:space:]]+([^[:space:];&|)]+)'
+  [[ "${1,,}" =~ (^|[^a-z0-9_])hooks([^a-z0-9_]|$) ]] && return 1
+  _hr=$(realpath -m -- "${HARNESS_HOME:-$HOME/.harness}/current/hooks" 2>/dev/null)
+  _b=$(jq -r '[.tool_input.working_dir,.tool_input.cwd,.tool_input.workdir,.cwd] | map(select(type=="string" and . != ""))[0] // empty' <<<"$INPUT" 2>/dev/null)
+  [[ "$_b" == /* ]] || return 1
+  _gpg_dd_dir_ok "$_b" "$_hr" || return 1
+  while [[ "$_s" =~ $_re ]]; do
+    _t="${BASH_REMATCH[3]}"; _s="${_s/"${BASH_REMATCH[0]}"/ }"
+    _t="${_t//[\'\"]/}"
+    [[ "$_t" == "-" ]] && return 1
+    if [[ "$_t" =~ ^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?(/[A-Za-z0-9_./@%+:,=-]*)?$ ]]; then
+      _nm="${BASH_REMATCH[1]}"; _sx="${BASH_REMATCH[2]}"
+      _gpg_dd_var_ok "$1" "$_nm" "$_b" "$_hr" "$_sx" || return 1
+      continue
+    fi
+    [[ "$_t" =~ ^[A-Za-z0-9_./@%+:,=-]+$ ]] || return 1
+    [[ "$_t" == /* ]] || _t="${_b%/}/$_t"
+    _gpg_dd_dir_ok "$_t" "$_hr" || return 1
+  done
+  return 0
+}
+
+# relpath(pd-a2 2026-11-08) R2: 해석기 쓰기 규칙의 hooks 조건에서 조회 구간 속 hooks 경로를 뺀다 — $1=_hn(소문자·따옴표 제거본) → stdout
+#   구간(; & 개행 사이)이 조회 명령(grep·rg·ls·cat·head·tail·wc·sha256sum·md5sum·stat·du·diff·cmp) 하나이고 $·백틱·< > 가 없으며
+#   (무해 리다이렉트 2>/dev/null·2>&1 은 먼저 지운다) 끝이 구간 구분자이거나 조회 꼬리(| head·tail·cut·sort·uniq·wc·grep)뿐이면 그 구간을 비운다.
+#   해석기 본문·쓰기 구간 안의 hooks 경로는 그대로 남아 종전처럼 막힌다. 다른 규칙(토큰·미확정 변수·재해석)은 이 사본을 쓰지 않는다.
+_gpg_hn_ro() {
+  local _s="$1" _m _nl=$'\n'
+  while [[ "$_s" =~ [0-9]*\>\>?[[:space:]]*(/dev/(null|stdout|stderr)|\&[0-9-]) ]]; do _s="${_s/"${BASH_REMATCH[0]}"/ }"; done
+  local _ar="[^;|&<>\`\$${_nl}]*"
+  local _re="(^|[;&${_nl}])[[:space:]]*(grep|egrep|fgrep|rg|ls|cat|head|tail|wc|sha256sum|md5sum|stat|du|diff|cmp)([[:space:]]${_ar})?(\|[[:space:]]*(head|tail|cut|sort|uniq|wc|grep)([[:space:]]${_ar})?)*([;&${_nl}]|$)"
+  local _k=0
+  while [[ "$_s" =~ $_re ]]; do
+    _m="${BASH_REMATCH[0]}"; _s="${_s/"$_m"/"${BASH_REMATCH[1]} ; "}"
+    _k=$((_k+1)); [[ $_k -lt 64 ]] || break
+  done
+  printf '%s' "$_s"
+}
+
+# relpath(pd-a2 2026-11-08) R3: '조회 단위들 ; python <<'W' … W' 꼴 — $1=원본 명령 → 0: 앞 단위가 모두 조회(G3 판정)이고 마지막 python heredoc 한 호출이
+#   분류기(gp_pyclass) SAFE 다. 두 부분을 따로 실행한 것과 같다(조회는 쓰지 않고, python 쓰기 대상은 분류기가 비보호 절대 리터럴로 확정).
+#   앞부분에 << 가 있거나, 분해가 불확실하거나, 조회가 아닌 단위가 하나라도 있으면 rc 1(종전 판정).
+_gpg_pyhd_combo() {
+  local _s="$1" _pre _py _u _nl=$'\n' _ok=1
+  local _re="^(.*[;${_nl}])[[:space:]]*(python[0-9.]*([[:space:]]+-[A-Za-z]+)*([[:space:]]+-)?[[:space:]]*<<-?[[:space:]]*['\"][A-Za-z_][A-Za-z0-9_]*['\"][^${_nl}]*${_nl}.*)$"
+  [[ "$_s" =~ $_re ]] || return 1
+  _pre="${BASH_REMATCH[1]}"; _py="${BASH_REMATCH[2]}"
+  _pre="${_pre%?}"
+  [[ "$_pre" =~ [^[:space:]] && "$_pre" != *'<<'* ]] || return 1
+  _gpg_py_safe "$_py" || return 1
+  _GPG_RO=1
+  if _gpg_units "$_pre" 1; then
+    for _u in "${_GPG_U[@]}"; do
+      [[ "$_u" =~ [^[:space:]] ]] || continue
+      _gpg_unit_readonly "$_u" || _gpg_unit_litassign "$_u" || { _ok=0; break; }
+    done
+  else
+    _ok=0
+  fi
+  _GPG_RO=0; _GPG_U=()
+  [[ $_ok -eq 1 ]]
+}
+
 _gpg_dyn_check() {
   local _s="$1" _n _i _c _q="" _seg="" _l
   local -a _S=()
   local _dp='((hooks|\.\.)/(lib|tests|backup|logs)/[^[:space:]]*[$]|\.claude/[^[:space:]]*[$][^[:space:]]*/(lib|tests|backup|logs)([/[:space:]]|$))'
   local _dr='>>?\|?[[:space:]]*[^[:space:]]*((hooks|\.\.)/(lib|tests|backup|logs)/[^[:space:]]*[$]|\.claude/[^[:space:]]*[$][^[:space:]]*/(lib|tests|backup|logs)([/[:space:]]|$))'
+  if [[ "${_GPG_DDF:-0}" == 1 ]]; then   # relpath(pd-a2 2026-11-08)
+    _dp='(hooks/(lib|tests|backup|logs)/[^[:space:]]*[$]|\.claude/[^[:space:]]*[$][^[:space:]]*/(lib|tests|backup|logs)([/[:space:]]|$))'
+    _dr='>>?\|?[[:space:]]*[^[:space:]]*(hooks/(lib|tests|backup|logs)/[^[:space:]]*[$]|\.claude/[^[:space:]]*[$][^[:space:]]*/(lib|tests|backup|logs)([/[:space:]]|$))'
+  fi
   [[ "$_s" == *'$'* ]] || return 1
   _n=${#_s}
   for (( _i=0; _i<_n; _i++ )); do
@@ -2261,6 +2359,7 @@ _gpg_shell_core() {  # → _GPG_HIT (c217: 호출부 _gpg_shell 이 && 명령에
   _raw=$(jq -r '[.command,.cmd] | map(select(type=="string"))[0] // empty' <<<"$_GPG_TI" 2>/dev/null)
   [[ -n "$_raw" ]] || return 0
   local _raw0="$_raw"                             # K11: 치환·마스킹 전 원본(python 구간 분류기 판정용)
+  _GPG_DDF=0; _gpg_dd_free "$_raw0" && _GPG_DDF=1   # relpath(pd-a2 2026-11-08): ../{lib,tests,backup,logs} 가 hooks 일 수 없으면 1
   # K2(D-7, 2026-11-06): 명령 전체가 정확히 'for 이름 in <리터럴 목록·글로브>; do <구간 하나>; done' 한 줄이면 _GPG_FORGIT=1 —
   #   _gpg_git_safe 가 본문 첫 단어 do 를 벗겨 git 머리 구간(unblock3 git 허용)으로 본다(for p in …*gp_gate*.patch; do git apply "$p"; done).
   #   목록에 $ · 백틱 · 따옴표 · ; | & < > 가 없고 본문에 ; | & < > 백틱이 없으며 명령에 $( · 개행이 없을 때만이다.
@@ -2279,6 +2378,7 @@ _gpg_shell_core() {  # → _GPG_HIT (c217: 호출부 _gpg_shell 이 && 명령에
   #   (해석기 자체를 쓰기 수단으로 보던 규칙①·S1b② 과차단 해소 — D-7 비보호 JSON 쓰기·보호 등록부 읽기 전용 json.load).
   #   분류기가 없거나 UNSAFE·시간 초과·형태 불일치면 아래 종전 판정 그대로다(fail-closed).
   if [[ "${_raw,,}" == *python* ]] && _gpg_py_safe "$_raw"; then _GPG_HIT=""; return 0; fi
+  if [[ "${_raw,,}" == *python* ]] && _gpg_pyhd_combo "$_raw"; then _GPG_HIT=""; return 0; fi   # relpath(pd-a2 2026-11-08) R3
   # c206 11-1: oio bash_exec 는 && 에서만 나누고 역슬래시를 무시한다 — && 가 없으면 명령 전체가 한 bash 에 가므로
   #   분해기가 큰따옴표 안 \" 를 bash 규칙(글자 ")으로 읽어도 단위 경계가 같다. && 가 있으면 종전 rc1(분할 불일치 우회 차단).
   _GPG_AND=1; [[ "$_raw" == *'&&'* ]] || _GPG_AND=0
@@ -2355,6 +2455,7 @@ _gpg_shell_core() {  # → _GPG_HIT (c217: 호출부 _gpg_shell 이 && 명령에
   #   센다. 위치 인자 $0~$9 는 bash -c 의 인자로 경로가 될 수 있어 포함한다(odev-6 Z01 "$0"_gate.sh). 특수 매개변수 $? $! $$ $# $- 만 제외.
   local _sqd="'[^']*[\$]([A-Za-z0-9_{(@*])[^']*'" _dvq='\\[\$]([A-Za-z0-9_{(@*])'
   local _hd='((hooks|\.\.)/(lib|tests|backup|logs)([/[:space:];|&]|$)|\.claude/hooks/?([[:space:];|&]|$))' _hn="$_nq"
+  [[ "${_GPG_DDF:-0}" == 1 ]] && _hd='(hooks/(lib|tests|backup|logs)([/[:space:];|&]|$)|\.claude/hooks/?([[:space:];|&]|$))'   # relpath(pd-a2 2026-11-08)
   local _rr; _rr=$(_gpg_unq "$_raw"); _rr="${_rr,,}"   # c206 S1c: > 존재는 미인용 기준으로만 본다(따옴표 안 글자 제외)
   local _xp='(^|[^a-z0-9_.-])(bash|sh|dash)[[:space:]]+[^[:space:];|&<>-][^[:space:];|&<>]*hooks/(lib|tests)/[^[:space:];|&<>]*'
   while [[ "$_hn" =~ $_xp ]]; do _hn="${_hn/"${BASH_REMATCH[0]}"/"${BASH_REMATCH[1]}${BASH_REMATCH[2]} "}"; done
@@ -2428,7 +2529,7 @@ _gpg_shell_core() {  # → _GPG_HIT (c217: 호출부 _gpg_shell 이 && 명령에
   local _wapi='open[[:space:]]*\([^)]*,[[:space:]]*["'\''][^"'\'']*[wax+]|shutil\.|os\.(rename|replace|remove|unlink|symlink|link|truncate|chmod|chown|makedirs|mkdir|rmdir|removedirs|system|popen|exec|spawn|write)|\.write_(text|bytes)|\.(unlink|rename|replace|symlink_to|hardlink_to|touch|chmod|rmdir)[[:space:]]*\(|subprocess|copyfile|fs\.(write|append|copy|rename|unlink|symlink|rm|cp)|file\.(write|open|rename|delete)|fileutils|syswrite|(^|[^a-z_.])(unlink|rename|system|exec|symlink)[[:space:]]*\(|open[[:space:]]*\(?[[:space:]]*[a-z_]+[[:space:]]*,[[:space:]]*["'\'']?[>+]'
   # c206 S1d: 해석기 쓰기 규칙은 실제 보호 경로(_hd)만 본다 — 이름 조각으로 다른 프로젝트의 *_gate.py 를 오탐하지 않게(Mars ac_gate.py).
   #   문자열 이어붙이기(#46)도 쓰기 대상에 /hooks/lib/ 가 글자로 있어 _hd 가 잡는다.
-  if [[ "$_nq" =~ ${_GPG_B}(python[0-9.]*|perl|node|ruby|php|lua|deno|bun)${_GPG_E} ]] && [[ "$_hn" =~ $_hd ]] \
+  if [[ "$_nq" =~ ${_GPG_B}(python[0-9.]*|perl|node|ruby|php|lua|deno|bun)${_GPG_E} ]] && [[ "$(_gpg_hn_ro "$_hn")" =~ $_hd ]] \
      && [[ "$_low" =~ $_wapi ]]; then
     _GPG_HIT="셸 명령(해석기 쓰기 API + hooks 보호 경로)"; return 0
   fi
@@ -2664,14 +2765,27 @@ _gpg_git_mask() {
 #   본문이 비어 있지 않음)이면 본문을 직접 실행한 것과 같다 — 본문을 명령으로 바꿔 종전 판정 전부(_gpg_shell_run)를 그대로 적용한다.
 #   bash -c '…$HOME…' 처럼 작은따옴표 안 실행 시점 변수 때문에 '재해석 실행 + 실행 시점 변수' 규칙에 걸리던 읽기 전용 실행을 푼다.
 #   본문 안 보호 쓰기는 펼친 본문에서 규칙①·리터럴 치환·HOME 판정이 그대로 잡는다. -l·-x 등 다른 옵션·sh·eval·인자 있는 꼴은 종전대로다.
+# andsplit(pd-a2 2026-11-08): && 빈값 해석(B)이 실제 실행 의미일 수 있을 때만 0 을 낸다.
+#   oio bash_exec(ad06123, 2026-10-16 이후)는 따옴표·괄호·중괄호 밖 && 에서만 나누고, 마지막이 아닌 구간에 변수 대입·셸 상태 변경이
+#   있으면 나누지 않고 셸 하나로 실행한다(_needs_single_shell). 리터럴 대입 변수(_gpg_lit_subst 가 푸는 머리 순수 대입)는 그래서
+#   뒤 구간에 전달된다. Bash 도구와 K14 bash -c '<본문>' 본문은 애초에 나누지 않는다.
+#   B 는 oio 분할기와 판정 분해가 어긋날 수 있는 꼴 — heredoc(<<)·역슬래시 따옴표(\' \") — 에만 남긴다.
+#   한계: 단일 셸 판정이 없는 2026-10-16 이전 oio 서버에서는 B 가 실제 의미일 수 있다(그런 서버를 운영하지 않는다는 전제).
+_gpg_and_lossy() {  # $1=명령 → 0: B 해석 필요 / 1: 불필요
+  [[ "${_GPG_NOSPLIT:-0}" == 1 || "$TOOL_NAME" == Bash ]] && return 1
+  [[ "$1" == *'<<'* || "$1" == *"\\'"* || "$1" == *'\"'* ]] && return 0
+  return 1
+}
+
 _gpg_shell() {
   local _w0 _ti0="$_GPG_TI" _b
+  _GPG_NOSPLIT=0                                  # andsplit(pd-a2 2026-11-08): K14 본문 판정 중에만 1
   _w0=$(jq -r '[.command,.cmd] | map(select(type=="string"))[0] // empty' <<<"$_GPG_TI" 2>/dev/null)
   if [[ "$_w0" =~ ^[[:space:]]*bash[[:space:]]+-c[[:space:]]+\'([^\']*)\'[[:space:]]*$ ]]; then
     _b="${BASH_REMATCH[1]}"
     if [[ "$_b" =~ [^[:space:]] ]]; then
       _GPG_TI=$(jq -c --arg c "$_b" '.command=$c | del(.cmd)' <<<"$_ti0" 2>/dev/null)
-      if [[ -n "$_GPG_TI" ]]; then _gpg_shell_run; _GPG_TI="$_ti0"; return 0; fi
+      if [[ -n "$_GPG_TI" ]]; then _GPG_NOSPLIT=1; _gpg_shell_run; _GPG_NOSPLIT=0; _GPG_TI="$_ti0"; return 0; fi
       _GPG_TI="$_ti0"
     fi
   fi
@@ -2682,13 +2796,14 @@ _gpg_shell_run() {
   local _c0
   _c0=$(jq -r '[.command,.cmd] | map(select(type=="string"))[0] // empty' <<<"$_GPG_TI" 2>/dev/null)
   _GPG_LS_BLANK=0
-  if [[ "$_c0" == *'&&'* && "$_c0" == *'$'* ]]; then
+  if [[ "$_c0" == *'&&'* && "$_c0" == *'$'* ]] && _gpg_and_lossy "$_c0"; then
     _gpg_shell_core
     [[ -n "$_GPG_HIT" ]] && return 0
     _GPG_HIT=""; _GPG_U=(); _GPG_X=(); _GPG_W=(); _GPG_RO=0; _GPG_AND=1
     _GPG_LS_BLANK=1
     _gpg_shell_core
     _GPG_LS_BLANK=0
+    [[ -n "$_GPG_HIT" ]] && _GPG_HIT="&& 구간 빈값 해석(앞 구간 변수 미전달 가정) — ${_GPG_HIT}"   # andsplit(pd-a2 2026-11-08)
     return 0
   fi
   _gpg_shell_core
