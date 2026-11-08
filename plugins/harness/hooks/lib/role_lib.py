@@ -1382,8 +1382,9 @@ def cmd_resume_list(a):
         # 가져온 대화(imported_from)는 기록 계정이 비어 있어도 계정 필터에서 빼지 않는다
         recs = [r for r in recs if r.get("profile") == a.profile or r.get("imported_from")]
     recs = [r for r in recs if transcript_exists(r["sid"])]
-    # 활동 시각 = max(색인 updated_ts, 대화 파일 mtime). cc 밖(claude --resume)에서 이어 쓴 대화는 색인이 갱신되지 않으므로
-    # 파일 mtime 으로 보정한다(ADR-035). 파일은 읽지 않고 mtime 만 본다. 파일이 없으면 색인 값 그대로다
+    # 활동 시각 = 대화 파일 mtime(ADR-039, ADR-035 일부 대체). 색인 updated_ts 는 cc 가 재개 기동 직전에 찍는
+    # source=resume 기록 때문에 "고르고 대화 없이 나온" 세션도 최신처럼 만든다. 그래서 mtime 을 얻으면 그 값만 쓰고
+    # (max 로 섞지 않는다), 못 얻을 때(경로 없음·OSError)만 색인 updated_ts 로 폴백한다. 파일은 읽지 않고 mtime 만 본다
     for r in recs:
         act = r.get("updated_ts", 0) or 0
         p = _find_transcript(r["sid"])
@@ -1391,7 +1392,7 @@ def cmd_resume_list(a):
             mt = os.path.getmtime(p) if p else 0
         except OSError:
             mt = 0
-        if mt > act:
+        if mt > 0:
             r["updated"] = iso(mt)  # 메모리상 기록만 고친다(색인 파일은 쓰지 않는다)
             act = mt
         r["_act_ts"] = act

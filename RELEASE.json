@@ -1,9 +1,9 @@
 {
   "schema": 1,
-  "version": "1.3.7",
-  "source_commit": "96825756026777a1112ff47211004b3818e55639",
-  "built_at": "2026-11-07T17:19:02Z",
-  "summary": "lccc 재개가 가져온 대화 fork 의 최신 대화를 고르게 수정(fork 롤 상속 증거 판정), 종료 탭색 회색빛 빨강/파랑, harness: 접두사 hook 판정 보강(ogrill 표식·주간 한도 게이트), peer 통지 중복·홈 판정·정규식 끝 개행 정리, 설치기 plugin_state 판정 수정",
+  "version": "1.3.8",
+  "source_commit": "4ab97b76cf286f1771cf8449480e1536e6d1e5d8",
+  "built_at": "2026-11-08T00:20:54Z",
+  "summary": "재개 목록 정렬을 대화 파일 수정시각 우선으로 바꿔 고르기만 하고 나온 대화가 맨 위에 오던 결함 수정(ADR-039). statusline 계정 조회 음성 결과 캐시·락으로 claude auth status 반복 실행 부하 저감(ADR-038).",
   "breaking": false,
   "requires": [
     {
@@ -132,7 +132,7 @@
   "post_actions": [
     {
       "kind": "restart_cc",
-      "text": "hook·cc 변경 반영을 위해 실행 중인 cc 세션을 다시 시작하세요"
+      "text": "statusline 수정은 cc 를 다시 띄운 세션부터 적용됩니다"
     }
   ],
   "history": [
@@ -207,6 +207,17 @@
         {
           "kind": "note",
           "text": "양쪽 머신 모두 v1.3.6 이어야 머신 간 통지 pull 이 동작한다(ack 형식 변경)"
+        }
+      ]
+    },
+    {
+      "version": "1.3.7",
+      "breaking": false,
+      "summary": "lccc 재개가 가져온 대화 fork 의 최신 대화를 고르게 수정(fork 롤 상속 증거 판정), 종료 탭색 회색빛 빨강/파랑, harness: 접두사 hook 판정 보강(ogrill 표식·주간 한도 게이트), peer 통지 중복·홈 판정·정규식 끝 개행 정리, 설치기 plugin_state 판정 수정",
+      "post_actions": [
+        {
+          "kind": "restart_cc",
+          "text": "hook·cc 변경 반영을 위해 실행 중인 cc 세션을 다시 시작하세요"
         }
       ]
     }

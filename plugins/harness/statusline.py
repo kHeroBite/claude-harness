@@ -1134,33 +1134,101 @@ def account_label(account_email, color=False, is_team_agent=False):
         return f"{C_DIM}{account_email or '?'}{C_RESET}"
     return f"{nick}({account_email or '?'})" if nick else (account_email or '?')
 
-def get_account_email(_session_id=None):
-    creds_path = os.path.join(claude_config_dir(), '.credentials.json')
+_AUTH_LOCK_STALE = 30  # 조회 락이 이 초 이상 오래되면 비정상 종료 잔재로 보고 회수
+
+def _auth_neg_ttl():
     try:
-        cache = os.path.join(claude_config_dir(), '.account_email_cache')
-        creds_mtime = os.path.getmtime(creds_path)
-        if os.path.exists(cache):
-            try:
-                with open(cache, 'r') as f:
-                    cached = json.loads(f.read())
-                if cached.get('creds_mtime') == creds_mtime and cached.get('email'):
-                    return cached['email']
-            except:
-                pass
-        result = subprocess.run(
-            ['claude', 'auth', 'status'],
-            capture_output=True, text=True, timeout=15,
-            stdin=subprocess.DEVNULL
-        )
-        info = json.loads(result.stdout)
-        email = info.get('email', '')
-        if email:
-            with open(cache, 'w') as f:
-                json.dump({'creds_mtime': creds_mtime, 'email': email}, f)
-        return email or None
-    except:
+        return float(os.environ.get('STATUSLINE_AUTH_NEG_TTL', '300'))
+    except ValueError:
+        return 300.0
+
+def _read_email_cache(cache, creds_mtime):
+    """캐시 판정. ('hit', email) 양성 적중, ('neg', None) 음성 TTL 내, ('miss', 낡은 email) 재조회 필요."""
+    try:
+        with open(cache, 'r') as f:
+            cached = json.loads(f.read())
+        if not isinstance(cached, dict):
+            return ('miss', None)  # null·배열·문자열 등 비정상 캐시는 없는 것으로 본다
+        email = cached.get('email')
+        email = email if isinstance(email, str) and email else None
+        if cached.get('creds_mtime') == creds_mtime:
+            if email:
+                return ('hit', email)
+            age = time.time() - float(cached.get('fail_ts') or 0)
+            if 0 <= age < _auth_neg_ttl():
+                return ('neg', None)
+        return ('miss', email)
+    except Exception:
+        return ('miss', None)
+
+def _write_email_cache(cache, creds_mtime, email):
+    """임시 파일에 쓴 뒤 os.replace 로 원자 갱신. 실패는 삼킨다(표시 우선)."""
+    data = {'creds_mtime': creds_mtime, 'email': email or ''}
+    if not email:
+        data['fail_ts'] = time.time()
+    tmp = f"{cache}.tmp.{os.getpid()}"
+    try:
+        with open(tmp, 'w') as f:
+            json.dump(data, f)
+        os.replace(tmp, cache)
+    except Exception:
         pass
-    return None
+
+def get_account_email(_session_id=None):
+    cfg = claude_config_dir()
+    creds_path = os.path.join(cfg, '.credentials.json')
+    cache = os.path.join(cfg, '.account_email_cache')
+    lock = cache + '.lock'
+    try:
+        creds_mtime = os.path.getmtime(creds_path)
+    except OSError:
+        return None
+    state, val = _read_email_cache(cache, creds_mtime)
+    if state == 'hit':
+        return val
+    if state == 'neg':
+        return None
+    stale = val
+    got = False
+    for _ in range(2):
+        try:
+            os.close(os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
+            got = True
+            break
+        except FileExistsError:
+            try:
+                if time.time() - os.path.getmtime(lock) < _AUTH_LOCK_STALE:
+                    return stale  # 다른 프로세스가 조회 중 — CLI 를 또 띄우지 않는다
+                os.remove(lock)
+            except OSError:
+                pass
+        except OSError:
+            return stale
+    if not got:
+        return stale
+    try:
+        state, val = _read_email_cache(cache, creds_mtime)  # 락 대기 중 채워졌는지 이중 확인
+        if state == 'hit':
+            return val
+        if state == 'neg':
+            return None
+        email = ''
+        try:
+            result = subprocess.run(
+                ['claude', 'auth', 'status'],
+                capture_output=True, text=True, timeout=15,
+                stdin=subprocess.DEVNULL
+            )
+            email = json.loads(result.stdout).get('email', '')
+        except Exception:
+            email = ''
+        _write_email_cache(cache, creds_mtime, email)
+        return email or None
+    finally:
+        try:
+            os.remove(lock)
+        except OSError:
+            pass
 
 # ── stdin JSON ────────────────────────────────────────
 
