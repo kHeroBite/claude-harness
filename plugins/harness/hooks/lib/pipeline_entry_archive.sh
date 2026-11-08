@@ -22,6 +22,7 @@
 #         같은 base 의 ok_started 가 ofinish_done 보다 엄격히 새것이면 오래된 완료 표식으로 보고 미완료 취급한다(결함3 GF).
 #         stale 판정: 4번째 인자(0|1)가 주어지면 그것을, 없으면 각 base state 줄의 stale_ 유무를 본다.
 #
+# 스킵 경로(ROOF·미완료)에서도 세션 루트 acceptance_criteria.json 만은 보관한다(로그 태그 ROOT_AC_ARCHIVED).
 # 보관 대상 (각 base 마다, 같은 상대 경로로 이동):
 #   evidence/ 안 항목 전부, .phase_batches.written, plans/phase_batches.json, current_phase_batch,
 #   plans/acceptance_criteria.json, acceptance_criteria.json (세션 루트 — 결함2 GF),
@@ -82,6 +83,29 @@ _pea_bound() {
   return 1
 }
 
+# 스킵 경로(ROOF·미완료) 전용: 세션 루트 acceptance_criteria.json 옛 사본만 logs/prev_cycle 로 이동한다(삭제 없음).
+#   루트 AC 를 쓰는 주체가 없어 루트 사본은 늘 옛 잔존물이며, 남으면 verify_crud_executed.py 가 CRITERIA_SOURCE_CONFLICT 로 거부한다.
+#   plans/ AC·evidence 등 나머지는 스킵 경로에서 종전대로 보존한다. L-1393 경계(_ref)보다 새 파일은 옮기지 않는다.
+_pea_root_ac_sweep() {
+  local _d _dest _moved _ref _TS _ts
+  _TS="$(date '+%Y%m%dT%H%M%S')-$$"
+  while IFS= read -r _d; do
+    [ -n "$_d" ] || continue
+    _dest="${_d}/logs/prev_cycle/${_TS}"
+    _moved=""
+    _ref=$(_pea_bound "$_d") || _ref=""
+    _pea_mv "$_d" "$_dest" "acceptance_criteria.json"
+    if [ -n "$_moved" ]; then
+      _ts=$(date '+%Y-%m-%dT%H:%M:%S%z')
+      mkdir -p "${_d}/logs" 2>/dev/null
+      echo "${_ts} uuid=${_PEA_UUID} value=${_PEA_VALUE} via=${_PEA_VIA} ROOT_AC_ARCHIVED dest=logs/prev_cycle/${_TS} files=${_moved}" >> "${_d}/logs/pipeline_entry_reset.log" 2>/dev/null || true
+    fi
+  done <<EOF_PEA
+$_PEA_DIRS
+EOF_PEA
+  return 0
+}
+
 pea_archive() {
   _PEA_UUID="${1:-}"; _PEA_VIA="${2:-unknown}"; _PEA_VALUE="${3:-PLAN}"
   local _stale_hint="${4:-}"
@@ -118,11 +142,13 @@ EOF_PEA
   case "$_stale_hint" in 0|1) _stale="$_stale_hint" ;; esac
 
   if [ "$_roof" -eq 1 ]; then
+    _pea_root_ac_sweep
     _pea_log "RALPH_SKIP states=${_states:-absent}"  # ROOF-COMPAT(deprecation window 1주기 — 로그 태그 RALPH_SKIP 은 소비자 호환 유지)
     return 1
   fi
   # R4: 미완료 사이클 보호
   if [ "$_has_start" -eq 1 ] && { [ "$_has_fin" -eq 0 ] || [ "$_unfin" -eq 1 ]; } && [ "$_stale" -eq 0 ]; then
+    _pea_root_ac_sweep
     _pea_log "SKIPPED_UNFINISHED states=${_states:-absent}"
     return 1
   fi

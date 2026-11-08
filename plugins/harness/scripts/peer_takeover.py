@@ -659,7 +659,8 @@ def do_import(path, project, cwd):
         mine = [ln for ln in buf.getvalue().splitlines() if ln.startswith("ITEM\t%s\t" % sid)]
         kind = mine[-1].split("\t")[2] if mine else ""
         if kind not in ("new", "extend", "replace", "same") or not os.path.isfile(target):
-            raise Fail("본 대화 import 실패(kind=%s rc=%s)" % (kind or "-", irc), RC_MOVE)
+            why = " — 로컬 대화는 그대로 두었고 받은 대화는 수신함의 .conflict 기록으로 남겼다. 수동 병합 필요" if kind == "conflict" else ""
+            raise Fail("본 대화 import 실패(kind=%s rc=%s)%s" % (kind or "-", irc, why), RC_MOVE)
         if not target_existed:
             undo.files.append(target)
         _fail_inject("subagents")

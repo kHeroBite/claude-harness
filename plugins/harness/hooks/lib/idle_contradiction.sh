@@ -57,6 +57,13 @@ _ic_detect() {
   [[ "$_state" == "IDLE" ]] || return 1
   [[ -n "$_dir" && -d "$_dir" ]] || return 1
 
+  # entry_tier 첫 줄이 OK 인 IDLE 은 인스턴스 플랜(/odebate·/oconsult·/odeep·/oplan, L-422)이다.
+  # state=IDLE 에서 팀원이 도는 것이 설계상 정상이므로 모순이 아니다.
+  if [[ "$(head -1 "${_dir}/entry_tier" 2>/dev/null)" == "OK" ]]; then
+    _IC_REASON="instance_plan"
+    return 1
+  fi
+
   _IC_AGENTS=$(_ic_live_agent_count "$_uuid")
   # 살아있는 에이전트가 0 이면 진짜 IDLE 이다 — 잔존 파일이 있어도 모순으로 보지 않는다.
   # (ofinish 직후 goal.json/oralph_active 잔존이 정상 종료의 일반적 모습이다)

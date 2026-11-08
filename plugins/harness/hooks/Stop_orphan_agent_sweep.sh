@@ -259,8 +259,14 @@ while read -r PANE_ID PANE_PID; do
   fi
 
   # 조건 2: state 가 IDLE 인데 pane 이 남아 있다
+  #   예외: entry_tier 첫 줄이 OK 인 IDLE 은 인스턴스 플랜(/odebate·/oconsult·/odeep·/oplan, L-422)이라
+  #   state=IDLE 이어도 팀원이 정상 동작 중이다. kill 대신 SKIP_INSTANCE_PLAN 로그만 남긴다(조건 1·3 은 그대로).
   if [ -z "$REASON" ] && [ "$CUR_STATE" = "IDLE" ]; then
-    REASON="idle_state"
+    if [ "$(head -1 "${SESSION_DIR}/entry_tier" 2>/dev/null)" = "OK" ]; then
+      _log "SKIP_INSTANCE_PLAN pane=${PANE_ID} name=${AGENT_NAME} entry_tier=OK"
+    else
+      REASON="idle_state"
+    fi
   fi
 
   # 조건 3: 등록 근거가 ★하나도★ 없고 판정이 확실할 때만 완전 고아로 본다 (F-ORPHAN-2)

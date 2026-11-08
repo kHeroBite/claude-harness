@@ -469,6 +469,24 @@ Step_7.5 (o1/o2 경량 커밋 — tier=o1/o2에서만 실행):
   o3+_동작: 이 Step 스킵 (o3+는 odone_git이 커밋 담당)
 ```
 
+### 계획 전용 경량 경로 (IDLE 유지·커밋 없음)
+
+```yaml
+적용_판정: 계획만 만들고 코드를 바꾸지 않는 사이클 (예 /odebate·/oconsult·/odeep·/oplan·/onormal·/osimple).
+  조건: entry_tier=OK 이고 state=IDLE 이며 이번 사이클에 PLAN 이후 전이(DEV/TEST/DONE)가 없다.
+  해당하지 않으면 이 절을 쓰지 않고 기존 Step 순서를 따른다.
+수행:
+  - 팀원 정리: Step 1 (Skill('oinit') 위임). no_kill 대상과 oqa 질답 팀원 보존 규칙은 기존 Step 1 과 동일하게 유지한다.
+  - Step 2 통계.
+  - evidence/마커 정리: Step 4 임시 파일 삭제와 Step 6 checkpoint·evidence 마커. entry_tier 는 pre_cleanup_3b 에서 classification 과 함께 삭제한다.
+  - 타 세션 종료 통지: Step 8 의 종료 통지 규칙에 따라 해당될 때만 발송한다.
+  - Step 5 배너에는 "커밋 없음" 을 표기한다.
+생략:
+  - Step 0.5 FINISH 전이 (문서 갱신 게이트 포함), Step 1.5, Step 3, Step 3.5, Step 7.5 커밋, Step 8 IDLE 전이.
+  - ntfy (Step 7) 는 생략한다. 산출물이 계획 파일뿐이라 알릴 변경이 없다.
+state: IDLE 을 유지한다 (이미 IDLE 이므로 전환 호출 없음).
+```
+
 ### Step 8: oroof gate → state → IDLE + 재귀 카운터 정리 (최후 단계 — 절대 이전으로 이동 금지)
 
 게이트_생략_감사 (Step 8 진입 직후 1회, 실패해도 진행): `python3 -B "${HARNESS_HOME:-$HOME/.harness}/current/scripts/gate_skip_audit.py" --session "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/session-env/${UUID}"` 를 실행하고 rc=1 이면 출력(상태 전이 판정 hook 의 시간 초과 생략·탈출·늦은 차단)을 최종 보고에 그대로 적는다. 이미 지나간 전이를 되돌리지 못하는 재검사·기록 수단이다.

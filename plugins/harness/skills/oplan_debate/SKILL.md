@@ -64,6 +64,19 @@ oplan-3 (구현 렌즈,    codex:rescue)──┘             비판가-B(genera
                                                       oplan_final.md (${CLAUDE_CONFIG_DIR:-$HOME/.claude}/session-env/${UUID}/plans/)
 ```
 
+## 실행 주체별 spawn 방식 (L-299 정합)
+
+```yaml
+메인이_직접_실행: 아래 단계별 절차의 spawn 서술(분석가·비판가·배심원·oplan-final)을 그대로 따른다. 종전 절차를 바꾸지 않는다.
+팀원이_실행 (예 ok 파이프라인에서 oplan 팀원이 이 스킬을 로딩한 경우):
+  제약: L-299 hook(full_task_team_guard.sh)이 팀원의 하위 Agent spawn 을 mcp-* 온디맨드 외 전부 차단한다. 아래 단계별 절차의 "spawn" 은 팀원이 직접 하지 않는다.
+  위임: 분석가(oplan-1/2/3)·비판가·배심원·oplan-final 의 spawn 은 SendMessage(to='team-lead') 로 "SPAWN_REQUEST:" 메시지를 보내 리드가 대신 spawn 하게 한다.
+  메시지_내용: 이름·subagent_type·model·프롬프트 파일 절대경로(프롬프트 본문은 파일에 두고 경로만 전달).
+  결과_규약: spawn 된 에이전트의 결과 파일 경로(plans/ 하위)는 종전과 동일하다. 팀원은 해당 파일 생성을 확인한 뒤 다음 단계로 진행한다.
+  codex_계열: codex:rescue·codex:adversarial-review 호출은 메인 대행을 SPAWN_REQUEST 에 명시한다.
+  금지: hook 우회(표현 바꾸기·다른 도구 전환)로 직접 spawn 하는 행위. 차단되면 SPAWN_REQUEST 로 전환한다.
+```
+
 ## 단계별 절차
 
 ### 0단계: TeamCreate + 메인 사전 탐색 (spawn 전 필수)

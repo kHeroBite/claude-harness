@@ -1,9 +1,9 @@
 {
   "schema": 1,
-  "version": "1.3.15",
-  "source_commit": "8ae58da42de2cc773b4a8bb13aa3d61c7a5022e7",
-  "built_at": "2026-11-08T20:05:12Z",
-  "summary": "peer 허브/미러 observer 자가 복구(인계 OBSERVER_ABSENT 해소)와 주간 한도 게이트 계속 답 3600초 쿨타임",
+  "version": "1.3.16",
+  "source_commit": "e9a96352b5ca705f345c974b772f3790564649ba",
+  "built_at": "2026-11-08T22:54:38Z",
+  "summary": "import 로컬 앞섬 same 처리(서버 인계 conflict 해소)·인스턴스 플랜 오살 방지·진입 보관기 루트 AC 보관·ofinish 계획 전용 경로·oplan_debate spawn 정합",
   "breaking": false,
   "requires": [
     {
@@ -132,7 +132,7 @@
   "post_actions": [
     {
       "kind": "restart_cc",
-      "text": "cc 를 재시작해야 새 peer_mcp·주간 한도 게이트가 적용된다"
+      "text": "cc 를 재시작하면 새 conv_share import 판정이 적용된다"
     }
   ],
   "history": [
@@ -295,6 +295,17 @@
         {
           "kind": "restart_cc",
           "text": "host 머신은 hub 와 미러를 가진 세션(peer_mcp)을 재시작해야 대리 인계가 동작한다. 서버는 /oUpdate 후 cc 재시작."
+        }
+      ]
+    },
+    {
+      "version": "1.3.15",
+      "breaking": false,
+      "summary": "peer 허브/미러 observer 자가 복구(인계 OBSERVER_ABSENT 해소)와 주간 한도 게이트 계속 답 3600초 쿨타임",
+      "post_actions": [
+        {
+          "kind": "restart_cc",
+          "text": "cc 를 재시작해야 새 peer_mcp·주간 한도 게이트가 적용된다"
         }
       ]
     }

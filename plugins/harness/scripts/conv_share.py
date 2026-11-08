@@ -771,6 +771,8 @@ def tail_overlap(local, new_lines):
         rest = len(local) - k
         if rest <= len(new_lines) and local[k:] == new_lines[:rest]:
             return "replace" if len(new_lines) > rest else "same"
+        if local[k:k + len(new_lines)] == new_lines:
+            return "same"  # 받는 대화가 로컬 기록 안의 부분 구간 — 로컬이 더 앞섬, 로컬 보존
 
 
 def cmd_import(a):
@@ -821,6 +823,8 @@ def cmd_import(a):
                     local = norm_lines(target)
                     if local == new_lines[:len(local)]:
                         kind = "extend" if len(new_lines) > len(local) else "same"
+                    elif new_lines == local[:len(new_lines)]:
+                        kind = "same"  # 받는 대화가 로컬의 접두 — 로컬이 더 앞섬, 덮어쓰지 않고 보존
                     elif meta.get("truncated") is True and new_lines:
                         kind = tail_overlap(local, new_lines)
                     else:
