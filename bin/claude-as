@@ -386,7 +386,8 @@ cmd_token_issue() {
     bin="$(detect_claude_bin)"
     tmp="$(mktemp -d)"
     chmod 700 "${tmp}"
-    trap 'rm -rf "${tmp}"' EXIT
+    local q; printf -v q '%q' "${tmp}"
+    trap "rm -rf -- ${q}" EXIT
     echo "브라우저에서 승인하면 화면에 장기 토큰이 한 번 표시됩니다. 복사해 두세요 (저장되지 않음)." >&2
     env -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN \
         CLAUDE_CONFIG_DIR="${tmp}" "${bin}" setup-token || true
