@@ -23,7 +23,7 @@ invocation:
 2. **질문이면 모든 단계에서 즉시 답변** — 파이프라인 상태 무관
 3. **작업은 상태에 따라**: PLAN/DEV → 팀에이전트 즉시 위임, TEST/DONE/FINISH → 큐잉
 4. **state를 변경하지 않는다**
-5. **항상 팀에이전트로 spawn** — 메인은 1문장 이내 즉시 답변만 직접 처리. 그 이상은 모두 팀에이전트(oqa/oi-worker)로 spawn. 팀이 없어도 Agent 호출이 팀을 자동으로 만든다(TeamCreate 호출 불필요). 그대로 spawn 한다 (직접 처리 폴백 금지).
+5. **항상 팀에이전트로 spawn** — 메인은 1문장 이내 즉시 답변만 직접 처리. 그 이상은 모두 팀에이전트(oi-qa-N/oi-worker)로 spawn. oqa 스킬은 사용자가 `/oqa` 로 직접 호출할 때만 쓰며 oi 가 호출하지 않는다. 팀이 없어도 Agent 호출이 팀을 자동으로 만든다(TeamCreate 호출 불필요). 그대로 spawn 한다 (직접 처리 폴백 금지).
 6. **ok 흐름 정식 스킬은 oi 경유 면제** (Phase A 보강 — 2026-05-06):
    - **면제 대상**: `ok_pipeline`, `ofinish`, `oinit` (그 외 ok가 직접 호출하는 정식 흐름 스킬 포함)
    - **사유**: 이들은 ok 흐름의 정식 단계로, 메인이 PLAN/DEV/TEST/DONE 상태에서 직접 호출해도 oi 라우팅이 부적절
@@ -125,24 +125,52 @@ UUID는 hook 메시지(`💬 [oi] 활성(PLAN|DEV)`)에서 확인.
         안내: "독립 수정 요청을 oi-fix-1 에이전트가 처리합니다."
         정리: oi-fix-1은 ofinish 단계에서 다른 팀에이전트와 함께 shutdown됨
 
-  C_질문 (Q&A 에이전트 spawn):
+  C_질문 (일회성 Q&A 팀원 oi-qa-N spawn — oqa 스킬 호출 금지):
     - 기술적 질문, 설명 요청, 분석 의뢰
     - 단순 즉시처리로 부족한 깊이 있는 질문
+    oqa_금지 (2026-11-08 사용자 지시): |
+      oqa 는 사용자가 `/oqa` 로 직접 호출할 때만 쓰는 수동 전용 스킬이다.
+      oi 는 Skill('oqa') 를 호출하지 않고, oqa-N 이름도 쓰지 않으며, no_kill 마커도 쓰지 않는다.
+      사용자가 질문 문장 안에서 oqa 를 명시로 요구해도 oi 가 대신 띄우지 않고 "/oqa 로 호출해 주세요" 1줄로 안내한다.
+    메인_직답_기준: |
+      답이 1문장 이내이고 이미 대화·hook 출력에 있는 사실만으로 확정되면(파일 읽기·검색 불필요) 메인이 직접 답한다.
+      파일 읽기·검색·실측이 1건이라도 필요하면 아래처럼 oi-qa-N 에 넘긴다(메인 직접 조사 금지).
     행동: |
       # Step 0에서 확인한 TEAM_NAME 사용
       1. 팀명 없으면:
            팀_없음_처리:
-             별도 팀 생성 없이 oqa 를 그대로 spawn 한다. 팀은 Agent 호출이 자동 생성한다.
+             별도 팀 생성 없이 그대로 spawn 한다. 팀은 Agent 호출이 자동 생성한다.
              (직접 처리 폴백 금지)
 
-      2. Skill('oqa') 를 호출하고 그 절차를 따른다 (인자=사용자 질문). Q&A 에이전트(oqa-N)의
-         spawn 프롬프트·no_kill 마커·팀 합류 방식은 oqa 스킬이 단일 출처이며 여기서 재정의하지 않는다.
-         팀명은 위 TEAM_NAME 을 전달한다(없으면 oqa 스킬의 session-{UUID 앞 8자} 규칙을 따른다).
+      2. 일회성 Q&A 팀원 spawn (NAME = oi-qa-1, 살아 있는 같은 이름이 있으면 oi-qa-2, oi-qa-3 순):
+          Agent(
+            description="oi 질답",
+            name=NAME,
+            subagent_type="general-purpose",
+            team_name=TEAM_NAME,          # 없으면 생략
+            run_in_background=true,
+            prompt="""
+            PIPELINE_UUID={UUID}
+            CLAUDE_CONFIG_DIR={CONFIG_DIR}
+            당신은 {NAME} 질답 팀원입니다. 아래 질문에 답만 합니다.
+            사용자 질문 원문: {원문 그대로}
+            [금지] 파일 생성·수정·삭제, git 커밋·push, 설치, 서비스·프로세스 변경, DB 쓰기, 다른 에이전트 spawn.
+            [작업이 필요하면] 직접 하지 말고 SendMessage(to="team-lead") 로 [작업 위임](요지·대상·이유·근거) 을 보냅니다.
+            [답변] SendMessage(to="team-lead", summary 필수) 로 보냅니다. 파일은 절대 전체경로, 확인한 사실만 단정, 추정은 "추정" 표기, 웹 출처 URL 병기.
+            shutdown_request 를 받으면 즉시 승인 응답을 보냅니다.
+            """
+          )
+          mcp__oio__file_write(
+            path="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/session-env/${UUID}/agents/${NAME}",
+            content="${NAME}"
+          )
+         - no_kill 마커를 쓰지 않는다(일회성 팀원이므로 정리 대상이다).
+         - 세션당 팀원 동시 생존 상한 10개를 넘기지 않는다. STATE 가 PLAN/DEV 이면 ListAgents 를 먼저 1회 호출한다(F-PEER-GATE).
 
-         agents/ 등록은 oqa 절차가 수행한다.
-
-      3. 사용자에게: "질문을 oqa 에이전트가 처리합니다. 답변을 기다려주세요."
-      4. oqa-N 은 ofinish 단계에서 다른 팀에이전트와 함께 shutdown됨
+      3. 사용자에게: "질문을 oi-qa 팀원이 처리합니다. 답변을 기다려주세요."
+      4. 답변이 오면 가공하지 않고 사용자에게 전달한 뒤, 후속 질문이 없으면 메인이
+         SendMessage(to=NAME, message={"type":"shutdown_request","reason":"oi 질답 완료"}) 로 정리해도 된다.
+         정리하지 않은 oi-qa-N 은 ofinish 단계에서 다른 팀에이전트와 함께 shutdown 된다.
          (팀 디렉토리는 세션 종료 시 Claude Code 가 자동 정리하므로 별도 정리 도구를 호출하지 않는다.)
 ```
 
@@ -153,4 +181,4 @@ UUID는 hook 메시지(`💬 [oi] 활성(PLAN|DEV)`)에서 확인.
 - oi는 ok를 호출하지 않음
 - IDLE 상태에서는 oi가 호출되지 않음
 - 슬래시 명령(/ox 포함)은 hook이 oi 바이패스 처리 — oi가 개입하지 않음
-- Q&A 에이전트(oqa-N)의 spawn·no_kill·agents/ 등록 절차는 oqa 스킬이 보유 → ofinish가 누락 없이 정리
+- C_질문의 Q&A 팀원(oi-qa-N)은 일회성이며 agents/ 등록으로 ofinish가 누락 없이 정리한다. oqa(oqa-N)는 사용자 `/oqa` 수동 호출 전용이라 oi 와 무관하다(답변 뒤에도 남는 상주 팀원).

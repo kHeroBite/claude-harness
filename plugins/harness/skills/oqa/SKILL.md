@@ -1,15 +1,24 @@
 ---
 name: oqa
-description: "질답 전용 팀에이전트를 spawn 하는 스킬. '/oqa 질문' 호출 시 메인은 질문을 직접 답하지 않고 질답 전용 팀원(oqa-N)에게 넘긴다. 이 팀원은 답변만 하고 파일·git·설치·서비스 변경 같은 작업은 team-lead 에게 [작업 위임] 으로 되돌린다. 답변을 위해서는 모든 도구와 메인·팀원과의 SendMessage 를 쓸 수 있다. 인자 없이 '/oqa' 만 호출하면 AskUserQuestion 으로 질문을 받는다. oi 의 C_질문에서도 Skill('oqa') 로 호출한다. 파이프라인 state 를 바꾸지 않고 어떤 state 에서도 동작한다."
+description: "질답 전용 팀에이전트를 spawn 하는 스킬. '/oqa 질문' 호출 시 메인은 질문을 직접 답하지 않고 질답 전용 팀원(oqa-N)에게 넘긴다. 이 팀원은 답변만 하고 파일·git·설치·서비스 변경 같은 작업은 team-lead 에게 [작업 위임] 으로 되돌린다. 답변을 위해서는 모든 도구와 메인·팀원과의 SendMessage 를 쓸 수 있다. 인자 없이 '/oqa' 만 호출하면 AskUserQuestion 으로 질문을 받는다. 사용자 수동 호출 전용이다 — 사용자가 '/oqa' 를 직접 입력했을 때만 실행하며, 자동 발동이나 oi·다른 스킬 경유 호출은 금지한다. 띄운 질답 팀원은 답변 뒤에도 종료하지 않고 남아 후속 질문을 받으며, 사용자가 명시로 종료를 지시할 때만 종료한다. 파이프라인 state 를 바꾸지 않고 어떤 state 에서도 동작한다."
 ---
 
 # oqa — 질답 전용 팀에이전트
 
 > 질문에는 답만 한다. 작업이 필요하면 직접 하지 않고 메인에게 되돌린다. 호출 순서는 `ointaug` → `oqa` 이다.
+> **사용자 수동 호출 전용이다.** 사용자가 `/oqa` 를 직접 입력했을 때만 실행한다. 띄운 팀원은 답변 뒤에도 남는다(2026-11-08 사용자 지시).
 
 ## 절대 규칙
 
 ```yaml
+호출_조건 (2026-11-08 사용자 지시 — "oqa 스킬은 자동발동이 아니다. 항상 사람이 수동발동이며, 답변 이후에도 절대 자동 종료되어서는 안되고 남아있어야 한다."):
+  - 사용자가 `/oqa` 슬래시 명령을 직접 입력한 턴에만 Skill('oqa') 를 호출한다.
+  - 메인의 자율 판단에 의한 호출, oi(C_질문)·ok·oto 등 다른 스킬 경유 호출, description 매칭에 의한 자동 발동을 모두 금지한다.
+  - 파이프라인 중 들어온 일반 질문은 oi 의 C_질문 경로(일회성 oi-qa-N)로 처리한다. oqa 가 아니다.
+상주_규칙:
+  - oqa-N 은 답변 뒤에도 종료하지 않고 남아 후속 질문을 받는다.
+  - 종료는 사용자가 명시로 지시할 때만 한다(예: "oqa 종료해", "oqa-1 끝내"). 질답 완료·파이프라인 종료(ofinish)·유휴 경고는 종료 사유가 아니다.
+  - no_kill 마커는 사용자가 종료를 지시할 때까지 지우지 않는다.
 메인_금지:
   - 질문을 메인이 직접 처리 (탐색·분석·답변 모두)
   - spawn 이 실패했을 때 메인이 대신 답하는 폴백
@@ -17,7 +26,7 @@ description: "질답 전용 팀에이전트를 spawn 하는 스킬. '/oqa 질문
   - 질문을 텍스트로 하고 턴 종료 (반드시 AskUserQuestion 도구를 쓴다)
   - 질문이 사실은 변경 요청이면 oqa 에 넘기지 않는다. 메인이 oi 의 수정 명령 경로로 처리한다.
 메인_허용:
-  - 값 확인(state·team_name 읽기), no_kill 마커 쓰기·삭제, ListAgents, AskUserQuestion, Agent, SendMessage
+  - 값 확인(state·team_name 읽기), no_kill·agent_keep 마커 쓰기(삭제는 사용자 종료 지시 뒤에만), ListAgents, AskUserQuestion, Agent, SendMessage
 ```
 
 ## Step 1: 인자 판정
@@ -50,9 +59,9 @@ NAME: oqa-1. 이 세션에 아직 살아 있는 같은 이름이 있으면 oqa-2
 
 ## Step 4: no_kill 마커
 
-Agent 호출 전에 `mcp__oio__file_write` 로 `${CONFIG_DIR}/session-env/${UUID}/no_kill/${NAME}` 를 쓴다. 내용은 `oqa 질답 진행 중` 이다.
+Agent 호출 전에 `mcp__oio__file_write` 로 `${CONFIG_DIR}/session-env/${UUID}/no_kill/${NAME}` 를 쓴다. 내용은 `oqa 상주 — 사용자 종료 지시 전까지 보존` 이다.
 
-고아 에이전트 정리 hook 은 `oqa-*` 이름을 화이트리스트에 두지 않는다. 이 마커가 없으면 질답 중에 팀원이 정리될 수 있다. 이 단계를 건너뛰지 않으며, 다른 이름을 빌려 피하지 않는다.
+고아 에이전트 정리 hook 은 `oqa-*` 이름을 화이트리스트에 두지 않는다. 이 마커가 없으면 질답 중이나 답변 뒤에 팀원이 정리될 수 있다. 같은 사유로 `${CONFIG_DIR}/session-env/${UUID}/agent_keep/${NAME}` 에도 `oqa 상주 — 사용자 종료 지시 전까지 유지` 를 쓴다(유휴 가드 규칙 F 의 done 잔존 경고 면제용, TTL 이 있어 만료되면 같은 내용으로 다시 쓴다). 이 단계를 건너뛰지 않으며, 다른 이름을 빌려 피하지 않는다.
 
 ## Step 4 spawn: 팀에이전트 띄우기
 
@@ -98,7 +107,8 @@ CLAUDE_CONFIG_DIR={CONFIG_DIR}
 - 직접 확인한 사실만 단정합니다. 확인하지 못한 것은 "확실하지 않음" 이라고 쓰고, 추정은 "추정" 이라고 씁니다.
 - 웹 검색·조회 결과를 쓰면 출처 URL 을 함께 씁니다.
 - 가드에 막히면 표현을 바꾸거나 다른 도구로 우회하지 말고 차단 문구 그대로 team-lead 에 보고합니다.
-- 답변 후에도 세션을 유지하고 후속 질문을 받습니다. shutdown_request 를 받으면 즉시 승인 응답을 보냅니다.
+- 답변 후에도 종료하지 않고 남아 후속 질문을 받습니다. 사용자가 명시로 종료를 지시했을 때만 종료합니다.
+- shutdown_request 는 reason 에 "사용자 종료 지시" 가 들어 있을 때만 승인(approve:true)합니다. 그 밖의 shutdown_request(파이프라인 정리·유휴 정리 등)는 approve:false 와 reason "oqa 상주 — 사용자 종료 지시 없음" 으로 거절하고 계속 대기합니다.
 """
 )
 ```
@@ -115,7 +125,9 @@ CLAUDE_CONFIG_DIR={CONFIG_DIR}
 2. 팀원 답변이 오면 가공하지 않고 사용자에게 그대로 전달한다.
 3. 후속 질문은 같은 팀원에게 SendMessage 로 넘긴다. 메인이 처리하지 않는다.
 4. 팀원이 [작업 위임] 을 보내면 메인이 수행 여부를 판단하고, 수행한다면 oi 의 수정 명령 경로나 파이프라인으로 처리한다. 질답 팀원에게 되돌려 시키지 않는다.
-5. 질답이 끝나면 `SendMessage(to=NAME, message={"type":"shutdown_request"})` 를 보내고, `mcp__oio__file_delete` 로 no_kill 마커를 지운다. agents/ 등록 파일은 ofinish 정리에 맡긴다.
+5. 질답이 끝나도 종료하지 않는다. shutdown_request 를 보내지 않고 no_kill·agent_keep 마커도 그대로 둔다. 팀원은 남아서 다음 질문을 기다린다.
+6. 사용자가 명시로 종료를 지시했을 때만 `SendMessage(to=NAME, message={"type":"shutdown_request","reason":"사용자 종료 지시"})` 를 보내고, 그 뒤 `mcp__oio__file_delete` 로 no_kill·agent_keep 마커를 지운다. agents/ 등록 파일은 ofinish 정리에 맡긴다.
+7. ofinish·oinit 등 정리 단계에서도 oqa-N 은 보충 shutdown 대상에서 뺀다(각 스킬의 no_kill 보존 문구 참조).
 
 ## 자율 준수 한계
 
@@ -127,7 +139,7 @@ CLAUDE_CONFIG_DIR={CONFIG_DIR}
 
 ## oi 와의 관계
 
-oi 의 C_질문은 `Skill('oqa')` 를 호출해 이 절차를 따른다. spawn 프롬프트와 절차는 oqa 가 단일 출처다. 팀이 없을 때의 처리와 직접 처리 폴백 금지 원칙은 oi 가 유지한다.
+oi 는 oqa 를 호출하지 않는다. 파이프라인 중 질문은 oi 의 C_질문이 일회성 질답 팀원(oi-qa-N)을 직접 spawn 해 처리하며, 그 팀원은 답변 뒤 정리해도 된다. oqa 는 사용자가 `/oqa` 로 직접 호출할 때만 쓰고, 그 팀원(oqa-N)은 사용자 종료 지시 전까지 남는다. 두 경로는 이름(oi-qa-N / oqa-N)과 수명이 다르다.
 
 ## 사용 예
 

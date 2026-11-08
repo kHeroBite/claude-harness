@@ -180,6 +180,25 @@ def norm_id(text):
     return None
 
 
+def role_allowed(rid, project=None):
+    """롤 rid 를 project 에서 지정할 수 있는가. projects 필드가 없는 롤은 어디서나 허용한다.
+
+    project 가 비면 현재 작업 폴더(worktree 면 원본)의 project_slug 를 쓴다. 비교는 대소문자 무시.
+    """
+    projs = role_info(rid).get("projects")
+    if not projs:
+        return True
+    slug = (project or project_slug(None, None) or "").strip().lower()
+    return slug in [str(p).strip().lower() for p in projs]
+
+
+def check_role_allowed(rid, project=None):
+    """role_allowed 가 아니면 RoleError(ROLE_PROJECT_ONLY …)."""
+    if not role_allowed(rid, project):
+        slug = (project or project_slug(None, None) or "").strip().lower()
+        raise RoleError("ROLE_PROJECT_ONLY %s — 이 롤은 AI 프로젝트에서만 지정할 수 있다(현재: %s)" % (rid, slug))
+
+
 def roles_listing():
     out = []
     for r in load_defs()["roles"]:
@@ -563,6 +582,8 @@ def reservations(project, exclude_tokens=()):
             continue
         r = read_json(os.path.join(d, n), {})
         if r and now_ts() - float(r.get("created_ts", 0)) < RESERVE_TTL_SEC:
+            if r.get("holder_pid") and not alive(r.get("holder_pid"), r.get("holder_start")):
+                continue  # 예약을 건 기동기(cc)가 이미 죽었다 — 활성으로 보지 않는다(파일은 지우지 않는다)
             r["_token"] = n[:-5]
             out.append(r)
     return out
@@ -928,7 +949,8 @@ def transcript_preview(path):
 def normalize_value(text, root=None, project=None, exclude_key=None, keep_area=None, exclude_tokens=()):
     """텍스트('back', 'back:결제', 'back 결제', 'back:결제#철수', 'back#철수') → 저장 값. 실패 시 RoleError.
 
-    '#' 뒤는 에이전트명이며 check_name 으로 검증한다. 자동 번호는 붙이지 않는다(project 등 나머지 인자는 호환용).
+    '#' 뒤는 에이전트명이며 check_name 으로 검증한다. 자동 번호는 붙이지 않는다.
+    project 는 projects 제한 롤 판정에 쓴다(비면 현재 작업 폴더 기준). 나머지 인자는 호환용.
     """
     t = re.sub(r"\s*\([^)]*\)\s*", " ", (text or "")).strip()
     name = ""
@@ -946,6 +968,7 @@ def normalize_value(text, root=None, project=None, exclude_key=None, keep_area=N
     rid = norm_id(rid_txt)
     if not rid:
         raise RoleError("ROLE_UNKNOWN %s\n%s" % (t, roles_listing()))
+    check_role_allowed(rid, project)  # projects 제한 롤(host 등)은 허용 프로젝트에서만
     rp = load_paths(root) if root else None
     defined = areas_of(rp, rid)
     if rid == "all":
@@ -1017,8 +1040,8 @@ def remind_text(sid, n):
             % (LIB_CMD, sid, n, REMIND_MAX))
 
 
-def ask_spec_text(sid, root):
-    ap = ask_pages(None)
+def ask_spec_text(sid, root, project=None):
+    ap = ask_pages(None, project)
     page_txt = " ".join("[쪽 %d] %s" % (pg["page"] + 1, " / ".join("`%s`" % o["label"] for o in pg["options"])) for pg in ap["pages"])
     rp = load_paths(root)
     area_txt = ""
@@ -1051,8 +1074,10 @@ def due_text(sid, item):
 
 def cmd_norm(a):
     text = " ".join(a.text)
-    root = a.root or find_root(os.getcwd())
-    v = normalize_value(text, root=root)
+    cwd = getattr(a, "cwd", None) or os.getcwd()
+    root = a.root or find_root(cwd)
+    project = getattr(a, "project", None) or project_slug(None, cwd)
+    v = normalize_value(text, root=root, project=project)
     print(v)
     return 0
 
@@ -1100,7 +1125,7 @@ def cmd_set(a):
         pid = a.pid if a.pid is not None else find_claude_pid()
     with project_lock(project):
         toks = own_tokens(sid)
-        value = normalize_value(text, root=root)
+        value = normalize_value(text, root=root, project=project)
         rid0 = split_value(value)[0]
         w = ""
         if rid0 != "all" and prev != value:  # 이미 이 값을 쓰는 중인 자기 재지정은 중복으로 보지 않는다
@@ -1110,7 +1135,7 @@ def cmd_set(a):
             _live_upsert(project, tsess, pane, pid, value)
             drop_reservation(sid, project)
         elif rid0 != "all":
-            make_reservation(sid, project, value, a.base)
+            make_reservation(sid, project, value, a.base, getattr(a, "holder_pid", None))
         else:
             drop_reservation(sid, project)
     mark_asked(sid, a.source, a.base)
@@ -1160,8 +1185,8 @@ def cmd_agent(a):
 def cmd_dup_check(a):
     """런처·질문 흐름용 사전 판정. OK / NAME_REQUIRED(rc=3) / NAME_TAKEN·NAME_INVALID(rc=2)."""
     root = a.root or find_root(a.cwd or os.getcwd())
-    value = normalize_value(" ".join(a.text), root=root)
     project = (a.project or project_slug(None, a.cwd)).lower()
+    value = normalize_value(" ".join(a.text), root=root, project=project)
     with project_lock(project):
         check_dup(project, value, a.exclude_key)
     print("OK %s" % value)
@@ -1173,7 +1198,7 @@ def cmd_name_check(a):
     return 0
 
 
-def make_reservation(sid, project, value, mode):
+def make_reservation(sid, project, value, mode, holder_pid=None):
     """pane 이 아직 없는(런처 기동 전) 세션의 번호 예약. 반드시 project_lock 안에서 부른다.
 
     예약 파일에는 임의 토큰·롤 값·시각만 둔다(세션 UUID 없음). 토큰은 자기 세션 디렉터리에만 적는다.
@@ -1181,8 +1206,11 @@ def make_reservation(sid, project, value, mode):
     drop_reservation(sid, project)
     import secrets  # 지연 import(기동 비용 절감)
     tok = secrets.token_hex(4)
-    write_json(os.path.join(reserve_dir(project), tok + ".json"),
-               {"project": project, "value": value, "created": iso(), "created_ts": now_ts()})
+    rec = {"project": project, "value": value, "created": iso(), "created_ts": now_ts()}
+    if holder_pid:  # 예약을 건 기동기(cc) pid — 죽으면 예약이 무효가 된다
+        rec["holder_pid"] = int(holder_pid)
+        rec["holder_start"] = proc_start(holder_pid)
+    write_json(os.path.join(reserve_dir(project), tok + ".json"), rec)
     atomic_write(os.path.join(own_dir(sid), "reservation"), tok + "\n")
 
 
@@ -1345,7 +1373,8 @@ def cmd_context(a):
 
 def cmd_ask_spec(a):
     sid = resolve_sid(a.sid, required=False)
-    print(ask_spec_text(sid, a.root or find_root(a.cwd or os.getcwd())))
+    cwd = a.cwd or os.getcwd()
+    print(ask_spec_text(sid, a.root or find_root(cwd), project_slug(None, cwd)))
     return 0
 
 
@@ -1576,14 +1605,16 @@ def cmd_fork_adopt(a):
     return 0
 
 
-def menu_items():
-    return [{"id": r, "display": role_info(r).get("display", r), "duty": role_info(r).get("duty", "")} for r in role_ids()]
+def menu_items(project=None):
+    """메뉴에 보일 롤 목록. projects 제한 롤은 project(비면 현재 작업 폴더)에서 허용될 때만 넣는다."""
+    return [{"id": r, "display": role_info(r).get("display", r), "duty": role_info(r).get("duty", "")}
+            for r in role_ids() if role_allowed(r, project)]
 
 
-def ask_pages(current=None):
+def ask_pages(current=None, project=None):
     """롤 질문을 AskUserQuestion 옵션 상한(ASK_MAX_OPTIONS)에 맞춰 쪽으로 탐욕 분할한다. 롤 순서는 roles 배열 순서."""
     mx = ASK_MAX_OPTIONS
-    items = menu_items()
+    items = menu_items(project)
     cur_rid = split_value(current)[0] if current else None
     # 쪽별 롤 묶음 계산
     chunks, rest = [], list(items)
@@ -1618,7 +1649,7 @@ def cmd_ask_pages(a):
     cur = a.current
     if cur is None and a.sid:
         cur = read_role_raw(resolve_sid(a.sid))
-    res = ask_pages(cur)
+    res = ask_pages(cur, a.project or project_slug(None, a.cwd))
     if a.json:
         print(json.dumps(res, ensure_ascii=False))
     else:
@@ -1628,7 +1659,7 @@ def cmd_ask_pages(a):
 
 
 def cmd_menu_items(a):
-    rows = menu_items()
+    rows = menu_items(a.project or project_slug(None, a.cwd))
     if a.json:
         print(json.dumps(rows, ensure_ascii=False))
     else:
@@ -1927,7 +1958,38 @@ def cmd_source_mark(a):
         raise RoleError("SOURCE_INVALID %s (허용: %s)" % (a.source, "/".join(SOURCES)))
     for b in bases_for("both"):
         atomic_write(os.path.join(sess_dir(b, sid), "role_session_source"), s + "\n")
+    if getattr(a, "register", False):
+        try:
+            _session_register(sid, a.cwd or os.getcwd())
+        except Exception:
+            pass  # 조기 등록 실패는 source 기록 결과를 바꾸지 않는다
     print("SOURCE %s" % s)
+    return 0
+
+
+def _session_register(sid, cwd):
+    """SessionStart 시점 조기 등록 — 첫 프롬프트 전에 끝난 세션도 live 항목(claude pid)을 남긴다.
+
+    TMUX_PANE·tmux 세션명·claude pid 가 모두 있고 롤 파일이 있을 때만 동작. 경고 줄은 출력하지 않는다.
+    """
+    if not read_role_raw(sid):
+        return False
+    pane = os.environ.get("TMUX_PANE", "")
+    if not pane:
+        return False
+    tsess = os.environ.get("ROLE_HOOK_TMUX_SESSION") or tmux_session_of(pane)
+    envpid = os.environ.get("ROLE_HOOK_PID", "")
+    pid = int(envpid) if envpid.isdigit() else find_claude_pid()
+    if not (tsess and pid and pane_num(pane)):
+        return False
+    do_register(sid, pane, tsess, pid, os.environ.get("CLAUDE_PROFILE_NAME", ""), cwd, "", None, force=True)
+    return True
+
+
+def cmd_session_register(a):
+    sid = resolve_sid(a.sid)
+    ok = _session_register(sid, a.cwd or os.getcwd())
+    print("REGISTERED" if ok else "SKIP")
     return 0
 
 
@@ -2118,6 +2180,8 @@ def build_parser():
     q = add("norm", cmd_norm, sid=False)
     q.add_argument("text", nargs="+")
     q.add_argument("--root")
+    q.add_argument("--project")
+    q.add_argument("--cwd")
     q = add("list", cmd_list, sid=False)
     q.add_argument("--json", action="store_true")
     q = add("get", cmd_get)
@@ -2130,6 +2194,7 @@ def build_parser():
     for o in ("--root", "--project", "--cwd", "--profile", "--topic", "--pane", "--tmux-session"):
         q.add_argument(o)
     q.add_argument("--pid", type=int)
+    q.add_argument("--holder-pid", type=int)
     q = add("agent", cmd_agent)
     q.add_argument("name", nargs="*")
     q.add_argument("--clear", action="store_true")
@@ -2185,8 +2250,12 @@ def build_parser():
     q = add("ask-pages", cmd_ask_pages)
     q.add_argument("--current")
     q.add_argument("--json", action="store_true")
+    q.add_argument("--project")
+    q.add_argument("--cwd")
     q = add("menu-items", cmd_menu_items, sid=False)
     q.add_argument("--json", action="store_true")
+    q.add_argument("--project")
+    q.add_argument("--cwd")
     q = add("preview", cmd_preview, sid=False)
     q.add_argument("--sid")
     q.add_argument("--cwd")
@@ -2228,6 +2297,10 @@ def build_parser():
     q.add_argument("--tag", required=True)
     q = add("source-mark", cmd_source_mark)
     q.add_argument("--source", required=True)
+    q.add_argument("--register", action="store_true")
+    q.add_argument("--cwd")
+    q = add("session-register", cmd_session_register)
+    q.add_argument("--cwd")
     q = add("turn", cmd_turn)
     q.add_argument("--pid", type=int)
     for o in ("--pane", "--tmux-session", "--profile", "--cwd", "--topic", "--root", "--project"):
@@ -2246,6 +2319,8 @@ class _FastNormArgs:
     """norm 빠른 경로용 인자 묶음(argparse 결과와 같은 속성만 가진다)."""
     cmd = "norm"
     root = None
+    project = None
+    cwd = None
     fn = staticmethod(cmd_norm)
 
     def __init__(self, text):

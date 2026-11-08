@@ -100,6 +100,12 @@ NOTIF = ("<teammate-message", "<task-notification", "<cross-session-message",
          "Another Claude session sent a message", "[Request interrupted")
 NOT_PROMPT = ("Base directory for this skill", "Stop hook feedback", "<system-reminder>")
 OX = re.compile(r"^(?:/(?:[A-Za-z0-9_-]+:)?ox(?:\s|$)|<command-name>/?(?:[A-Za-z0-9_-]+:)?ox</command-name>)")
+# 인자 없는 슬래시 명령: 평문 /이름 한 토큰, 또는 command-name 뒤 command-args 가 비었거나 없는 형식. 비어 있지 않은 command-args 는 real.
+BARE_NAME = r"(?:[A-Za-z0-9_-]+:)?[A-Za-z0-9_-][A-Za-z0-9_:-]*"
+BARE = re.compile(
+    r"/" + BARE_NAME
+    + r"|(?:<command-message>[^<]*</command-message>\s*)?<command-name>/?" + BARE_NAME + r"</command-name>"
+    + r"(?:\s*<command-message>[^<]*</command-message>)?(?:\s*<command-args>\s*</command-args>)?")
 
 
 def log(msg):
@@ -171,7 +177,9 @@ def prompt_text(e):
 def classify(t):
     if t.startswith(NOTIF):
         return "notif"
-    return "ox" if OX.match(t) else "real"
+    if OX.match(t):
+        return "ox"
+    return "bare" if BARE.fullmatch(t) else "real"
 
 
 def is_call(b):
@@ -238,8 +246,8 @@ def judge(data):
         if k == "queued":
             t = str(e["attachment"].get("prompt") or "").strip()
             c = classify(t) if t else "notif"
-            if c == "ox":
-                return ("pass", "ox")
+            if c in ("ox", "bare"):
+                return ("pass", c)
             if c == "real":
                 opened = "real"
                 break

@@ -38,6 +38,13 @@
       "display": "인프라",
       "aliases": ["ops", "infra", "devops", "인프라", "배포", "운영", "빌드", "설정"],
       "duty": "빌드·배포·환경설정·CI"
+    },
+    {
+      "id": "host",
+      "display": "호스트",
+      "aliases": ["host", "호스트", "hub", "허브"],
+      "duty": "머신 간 peer host — 세션 레지스트리·포트·전파(AI 전용)",
+      "projects": ["ai"]
     }
   ]
 }

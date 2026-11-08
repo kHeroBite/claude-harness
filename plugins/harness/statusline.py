@@ -1738,6 +1738,36 @@ if mcp_servers:
         down = [n for n, v in mcp_servers.items() if not v]
         parts.append(f"{C_ORANGE}MCP ⚡ {','.join(down)}{C_RESET}")
 
+# peer host(hub) 칸 — hub.json+state.json 파일 읽기만(HTTP 금지), 죽었거나 실패 시 생략
+def get_peer_host():
+    try:
+        home = os.environ.get('PEER_HUB_HOME') or os.path.join(os.path.expanduser('~'), '.claude', 'peer_hub')
+        with open(os.path.join(home, 'hub.json'), encoding='utf-8') as f:
+            hj = json.load(f)
+        pid, start = hj.get('pid'), hj.get('pid_start')
+        with open('/proc/%d/stat' % int(pid), encoding='utf-8', errors='replace') as f:
+            rest = f.read().rsplit(')', 1)[1].split()
+        if rest[0] == 'Z' or (start is not None and str(rest[19]) != str(start)):
+            return ''
+        m = re.search(r':(\d+)(?:/|$)', str(hj.get('url', '')))
+        port = hj.get('port') or (m.group(1) if m else '')
+        n = 0
+        try:
+            with open(os.path.join(home, 'state.json'), encoding='utf-8') as f:
+                n = len((json.load(f).get('sessions') or {}))
+        except Exception:
+            pass
+        return f"🛰 :{port}·{n}" if port else ''
+    except Exception:
+        return ''
+
+try:
+    _peer_str = get_peer_host()
+    if _peer_str:
+        parts.append(f"{C_DIM}{_peer_str}{C_RESET}")
+except Exception:
+    pass
+
 # 리더 RSS 경고 — 임계(기본 1500MB, env CC_LEADER_RSS_WARN_MB) 이상일 때만 표시, 실패 시 생략
 try:
     _rss_warn_mb = float(os.environ.get('CC_LEADER_RSS_WARN_MB') or 1500)

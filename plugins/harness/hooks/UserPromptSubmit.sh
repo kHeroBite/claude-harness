@@ -244,8 +244,13 @@ fi
 #       /ox의 "o시리즈 0건 참조" 정의와 정면 충돌한다. 따라서 발동 자체를 제외한다.
 #       (2026-08-20: 구 o0 스킬 완전 제거 — ox가 단독 담당)
 _OINTAUG_SKIP=false
+_OINTAUG_BARE=false
 if echo "$PROMPT" | grep -qP '^\s*/ox(\s|$)'; then
   _OINTAUG_SKIP=true
+elif declare -F intaug_is_bare_slash >/dev/null 2>&1 && intaug_is_bare_slash "$PROMPT"; then
+  # 인자 없는 슬래시 명령(/이름 한 토큰)은 ointaug 강제 대상이 아니다 (lib/intaug_exempt.sh 정본 판정)
+  _OINTAUG_SKIP=true
+  _OINTAUG_BARE=true
 fi
 if [[ -n "${_UPS_NOTIF:-}" ]]; then
   # 시스템 알림·팀원 메시지 — 사용자 입력이 아니므로 ointaug 를 요구하지 않는다(턴 게이트 요구 표식도 안 찍힌다)
@@ -257,7 +262,9 @@ elif [[ "$_OINTAUG_SKIP" == "false" ]]; then
     echo "   ↳ 순서: Skill('ointaug') → 그 다음 아래 안내된 스킬(Skill('oi') 등). ointaug 가 항상 먼저다."
   fi
 fi
-if [[ "$_OINTAUG_SKIP" == "true" ]]; then
+if [[ "$_OINTAUG_BARE" == "true" ]]; then
+  echo "ℹ️ [ointaug 면제] 인자 없는 슬래시 명령 — Skill('ointaug') 요구 대상 아님"
+elif [[ "$_OINTAUG_SKIP" == "true" ]]; then
   echo "⚡ [ox] o시리즈 완전 바이패스 — ointaug 미발동. Skill 호출 없이 즉시 작업에 착수하라."
 fi
 
@@ -700,6 +707,9 @@ _ups_is_xsession() {  # $1=앞 공백을 벗긴 _p
   return 0
 }
 
+# 인자 없는 슬래시 명령 면제 판정(intaug_is_bare_slash). lib 부재 시 함수가 없으므로 호출부는 declare -F 로 확인하고 면제하지 않는다.
+. "${BASH_SOURCE[0]%/*}/lib/intaug_exempt.sh" 2>/dev/null || true
+
 # 예산 초과 시 축약 안내 — 빌트인 + EXT4 state 파일 1회 읽기만 사용한다.
 _ups_fallback() {
   local _st="" _x="" _p="" _nt=""
@@ -714,6 +724,8 @@ _ups_fallback() {
     echo "ℹ️ [알림] 시스템/팀원 메시지 — Skill('ointaug') 요구 대상 아님"
   elif [[ "$_p" =~ ^/ox([[:space:]]|\\|$) ]]; then
     echo "⚡ [ox] o시리즈 완전 바이패스 — ointaug 미발동. Skill 호출 없이 즉시 작업에 착수하라."
+  elif declare -F intaug_is_bare_slash >/dev/null 2>&1 && intaug_is_bare_slash "$_p"; then
+    echo "ℹ️ [ointaug 면제] 인자 없는 슬래시 명령 — Skill('ointaug') 요구 대상 아님"
   else
     echo "📌 [ointaug 필수] ⚠️ CLAUDE.md 규칙: Skill('ointaug')를 반드시 첫 번째 행동으로 호출하고 확장 질의를 화면에 출력한 후 답변하라. 미호출 시 위반."
     if [[ -n "$_st" && "$_st" != "IDLE" ]]; then
@@ -844,6 +856,14 @@ _ups_require() {
     _ups_ilog ox
     return 0
   fi
+  if declare -F intaug_is_bare_slash >/dev/null 2>&1 && intaug_is_bare_slash "$_p"; then
+    # 인자 없는 슬래시 명령 — 요구 표식을 지우고 면제 표식(ointaug_exempt)을 기록한다. 다른 가드는 이 표식만 참조한다.
+    [[ -e "$_UPS_SDIR/ointaug_required" || -e "$_UPS_SDIR/oi_required" ]] && rm -f "$_UPS_SDIR/ointaug_required" "$_UPS_SDIR/oi_required" 2>/dev/null
+    printf '%s' "$EPOCHREALTIME" > "$_UPS_SDIR/ointaug_exempt" 2>/dev/null
+    _ups_ilog bare
+    return 0
+  fi
+  [[ -e "$_UPS_SDIR/ointaug_exempt" ]] && rm -f "$_UPS_SDIR/ointaug_exempt" 2>/dev/null
   printf '%s' "$EPOCHREALTIME" > "$_UPS_SDIR/ointaug_required" 2>/dev/null
   _ups_ilog user
   if [[ ! "$_p" =~ ^/[a-zA-Z][a-zA-Z0-9_-]*([[:space:]]|\\|$) ]]; then

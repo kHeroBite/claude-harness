@@ -57,7 +57,7 @@ _block() {
 }
 
 # ─── 1. 위조 차단 (요구 충족 여부와 무관하게 항상) ───
-FORGE_RX='ointaug_invoked|oi_invoked|ointaug_required|oi_required|oi_routed|oteam_required|oteam_spawned|oteam_stop_count'
+FORGE_RX='ointaug_invoked|oi_invoked|ointaug_required|oi_required|ointaug_exempt|oi_routed|oteam_required|oteam_spawned|oteam_stop_count'
 case "$TOOL" in
   mcp__oio__file_write|mcp__oio__file_edit|mcp__oio__file_copy|mcp__oio__file_move|mcp__oio__file_rename|mcp__oio__file_symlink|mcp__oio__file_delete|mcp__oio__session_state|mcp__oio__dir_delete|mcp__oio__dir_move|mcp__oio__dir_rename|Write|Edit|MultiEdit|NotebookEdit)
     # 쓰기 대상 경로 필드의 basename 이 증표, 표식일 때만 차단한다 (내용 문자열에 이름이 들어 있다는 이유로는 막지 않는다)

@@ -45,6 +45,10 @@ shutdown_책임_통합 (L-193/L-214):
   1차: 메인이 각 단계 완료 시 해당 에이전트에 즉시 shutdown_request 발송 (리소스 즉시 해제)
   2차: Step 1이 isActive=true인 잔류 멤버에만 보충 shutdown_request 발송 (이미 shutdown된 멤버 스킵)
   대상: oplan/odev/otest/odone 팀에이전트 전체
+  보존_제외 (2026-11-08 사용자 지시 — oqa 상주):
+    - session-env/${UUID}/no_kill/{이름} 마커가 있는 팀원과 oqa-* 팀원은 1차·2차 shutdown_request·pane kill·agents/ 정리 대상에서 뺀다.
+    - oqa-N 은 사용자가 /oqa 로 직접 띄운 상주 질답 팀원이며, 사용자가 명시로 종료를 지시할 때만 종료한다. 파이프라인 종료는 종료 사유가 아니다.
+    - no_kill/·agent_keep/ 의 oqa-* 마커도 지우지 않는다.
 
 진입_조건:
   정상_경로: 마지막 팀에이전트(odone) 완료 보고 수신

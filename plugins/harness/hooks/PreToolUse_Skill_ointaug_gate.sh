@@ -54,6 +54,18 @@ CURRENT_STATE=$(state_read "${SESSION_DIR}/state" 2>/dev/null | awk '{print $1}'
 #   ointaug_done 은 메인이 쓰는 파일이라 Skill 호출의 증거가 아니다(L-467 자기신고 판정축과 같은 결함).
 #   ointaug_invoked 는 PostToolUse_Skill_ointaug_format.sh 가 Skill('ointaug') 실행 직후에만 쓰고,
 #   메인의 쓰기·삭제는 PreToolUse_ointaug_turn_gate.sh 가 막는다. 아래 mtime·기준점 판정 로직은 그대로다.
+# 인자 없는 슬래시 명령 면제 — UserPromptSubmit 이 기록한 ointaug_exempt 의 mtime 이 이번 턴 기준점(last_prompt_epoch) 이상이면 통과한다.
+#   미래 mtime(+120초 초과)은 무효로 본다. 판정 정의는 lib/intaug_exempt.sh 한 곳이며 여기서는 재구현하지 않는다.
+_EXF="${SESSION_DIR}/ointaug_exempt"
+_EXB="${SESSION_DIR}/last_prompt_epoch"
+if [[ -f "$_EXF" && -f "$_EXB" ]]; then
+  _EXT=$(stat -c %Y "$_EXF" 2>/dev/null)
+  _EXBT=$(stat -c %Y "$_EXB" 2>/dev/null)
+  _EXNOW=$(date +%s)
+  if [[ "$_EXT" =~ ^[0-9]+$ && "$_EXBT" =~ ^[0-9]+$ ]] && (( _EXT >= _EXBT && _EXT - _EXNOW <= 120 )); then
+    exit 0
+  fi
+fi
 MARK1="${SESSION_DIR}/ointaug_invoked"
 MARK2="$HOME/.claude/session-env/${UUID}/ointaug_invoked"
 NOW=$(date +%s)

@@ -149,6 +149,11 @@ Step 10:  재발방지 — 원인 분석 + oinit SKILL.md 자체 수정 (CASE 0�
 
 > **★ = 필수 셸 스크립트 실행 (AI가 tmux 명령을 직접 실행하여 진단하는 것 금지)**
 
+> **no_kill·oqa 보존 (2026-11-08 사용자 지시)**: `session-env/${UUID}/no_kill/{이름}` 마커가 있는 팀원과 `oqa-*` 팀원(사용자가 `/oqa` 로 띄운 상주 질답 팀원)은 Step 1.5 이후 모든 단계에서 shutdown_request·pane kill·agents/ 정리 대상에서 뺀다. 사용자가 명시로 종료를 지시한 경우에만 정리한다.
+> - `team-cleanup.sh --force` 는 no_kill 마커를 보지 않는다(2026-11-08 실측). Step 3 dry-run 의 kill 예정에 no_kill 대상 pane 이 있으면 Step 5 `--force` 를 실행하지 않고, 그 pane 을 뺀 나머지만 Step 6 절차로 개별 정리한다.
+> - Step 7 은 `no_kill/` 와 `agent_keep/oqa-*` 를 지우지 않는다. `cleanup_agent_roster` 는 프로세스 실존으로 판정하므로 살아 있는 oqa-N 의 agents/ 는 남는다.
+> - 독립 실행(`/oinit` — 강제 초기화·전부 중지)을 사용자가 직접 호출한 경우는 사용자 종료 지시로 본다.
+
 ---
 
 ### Step 0: 스크립트 존재 확인
@@ -394,6 +399,7 @@ Fallback_동작:
 # UUID 디렉토리는 ofinish Step 4에서 일괄 삭제 (여기서 삭제 금지)
 # Step 4/5에서 정리되지 않은 팀별 잔류 파일만 정리
 대상: agents/, evidence/, panes/, compact/, agent_keep/ (팀별 개별 파일)
+제외: no_kill/ 전체, agent_keep/oqa-*, 살아 있는 no_kill 대상의 agents/ (상단 no_kill·oqa 보존 절 — 사용자 종료 지시 전까지 보존)
 
 ★7-A. agents/ + inboxes 양쪽 base 정리 (F-ROSTER-1 — 2026-09-13 신설, 생략 금지)★
   명령: bash -c 'export ROSTER_EMIT_TASKSTOP=1; source ${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/agent_roster_cleanup.sh; cleanup_agent_roster "${UUID}" "${TEAM_NAME}"'

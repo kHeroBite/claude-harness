@@ -1,6 +1,6 @@
 ---
 name: orole
-description: 세션 롤 할당·조회·인계·수신 스킬. '/orole [롤[:영역]]' 으로 이 세션의 롤(전체/기획/프론트엔드/백엔드/시험/인프라)과 영역을 정하고, 롤 밖 요청은 같은 프로젝트의 맞는 세션에 인계한다. '/orole', '롤 지정', '롤 변경', '인계', '역할' 요청 시 사용. 파이프라인 state 를 바꾸지 않는 단독 스킬.
+description: 세션 롤 할당·조회·인계·수신 스킬. '/orole [롤[:영역]]' 으로 이 세션의 롤(전체/기획/프론트엔드/백엔드/시험/인프라, AI 프로젝트 전용 호스트)과 영역을 정하고, 롤 밖 요청은 같은 프로젝트의 맞는 세션에 인계한다. '/orole', '롤 지정', '롤 변경', '인계', '역할' 요청 시 사용. 파이프라인 state 를 바꾸지 않는 단독 스킬.
 ---
 
 # orole — 세션 롤 할당·조회·인계
@@ -14,7 +14,7 @@ description: 세션 롤 할당·조회·인계·수신 스킬. '/orole [롤[:영
 LIB: ${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/role_lib.py   # 이하 role_lib
 호출: python3 -B "${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/role_lib.py" <명령> --sid <UUID> ...
 세션_ID: 메인 bash_exec 에는 PIPELINE_UUID·CLAUDE_SESSION_ID 환경변수가 없어 --sid 없이 get·set 을 쓰면 rc=2 SID_MISSING 이다. --sid 값은 hook 이 매 턴 출력하는 `🆔 [UUID]` 의 36자다. 본문의 모든 `role_lib <명령>` 표기에 이 규칙이 적용된다. --sid 를 받지 않는 명령은 norm·list·find·resume-list·menu-items 뿐이며(넣으면 인자 오류) ask-spec·ask-pages·route 는 생략할 수 있다.
-롤_정의: ${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/role_defs.json 한 곳(6롤 고정 — all, plan, front, back, qa, ops)
+롤_정의: ${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/role_defs.json 한 곳(7롤 고정 — all, plan, front, back, qa, ops, host. host 는 `projects:["ai"]` 라 AI 프로젝트에서만 메뉴에 보이고 지정된다. 다른 프로젝트는 6롤이며 host 지정은 rc=2 ROLE_PROJECT_ONLY)
 롤_값_형식: <id>[:<영역>][#<에이전트명>]   # 예 back, back:결제, front#철수, back:결제#철수 (자동 번호 없음, 에이전트명은 /oagent 스킬)
 자기_세션만: 쓰기는 자기 세션 디렉터리와 자기 레지스트리 항목뿐이다. 타 세션 파일은 쓰지 않는다.
 ```
@@ -26,7 +26,7 @@ LIB: ${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/role_lib.py   # 이하 ro
 ```yaml
 1. 현재 롤 확인: role_lib get
 2. 메뉴 정의: role_lib ask-pages --json --sid <UUID>   # menu-items 와 같은 roles 순서로 쪽을 나눈 목록(쪽 분할은 옵션 4개 상한 기계 계산). 이름·순서·쪽 구성의 단일 출처이며 하드코딩하지 않는다.
-3. 첫 쪽부터 AskUserQuestion: header 롤, 질문 문구에 6롤 전체 목록과 "현재 롤: <값>" 표시, 옵션은 해당 쪽의 options.
+3. 첫 쪽부터 AskUserQuestion: header 롤, 질문 문구에 이 프로젝트에서 고를 수 있는 롤 전체 목록(AI 7롤·그 밖 6롤)과 "현재 롤: <값>" 표시, 옵션은 해당 쪽의 options.
 4. 고른 옵션이 kind=next/prev 이면 to 쪽으로 다시 묻는다(쪽 이동은 질문 횟수에 세지 않는다). kind=role 이면 즉시 확정하고 5 영역 단계로 간다. Other 직접 입력은 role_lib norm 으로 정규화해 즉시 확정하며, 목록 밖이면 1쪽을 1회 다시 묻고 그래도 밖이면 all 이다.
 5. 영역: 선택지에 두지 않는다. 필요하면 'Other' 직접 입력으로 `롤:영역`(예 back:결제) 을 받고 role_lib norm 으로 검증한다.
 6. norm 실패: 사유를 보여 주고 1회만 다시 묻는다. 그래도 실패하면 변경 없이 종료한다.
@@ -49,10 +49,10 @@ LIB: ${HARNESS_HOME:-$HOME/.harness}/current/hooks/lib/role_lib.py   # 이하 ro
 
 ## 질문
 
-첫 턴 hook 안내이거나 인자가 목록 밖이면 AskUserQuestion 으로 묻는다(`/orole` 무인자는 위 `## 무인자 — 대화창 질문` 이 우선). 질문 1회당 옵션은 4개 이하이므로 쪽 넘김으로 6롤 모두 버튼으로 닿는다. 직접 입력 없이 버튼만으로 끝난다.
+첫 턴 hook 안내이거나 인자가 목록 밖이면 AskUserQuestion 으로 묻는다(`/orole` 무인자는 위 `## 무인자 — 대화창 질문` 이 우선). 질문 1회당 옵션은 4개 이하이므로 쪽 넘김으로 모든 롤(AI 7롤·그 밖 6롤)이 버튼으로 닿는다. 쪽 구성은 `role_lib ask-pages` 가 정본이며 아래는 다른 프로젝트(6롤) 예시다. AI 프로젝트는 3쪽(전체·기획·프론트엔드·다음 / 백엔드·시험·이전·다음 / 인프라·호스트·이전)이다. 직접 입력 없이 버튼만으로 끝난다.
 
 ```yaml
-1쪽: header 롤, 질문 "이 세션의 롤을 고르세요"(6롤 전체 목록 + 현재 롤 포함), 옵션 4개
+1쪽: header 롤, 질문 "이 세션의 롤을 고르세요"(고를 수 있는 롤 전체 목록 + 현재 롤 포함), 옵션 4개
   전체 · 기획 · 프론트엔드 · 다음 쪽 → 백엔드·시험·인프라   (롤은 즉시 확정, 다음 쪽은 2쪽으로)
 2쪽:
   백엔드 · 시험 · 인프라 · ← 이전 쪽                         (롤은 즉시 확정, 이전 쪽은 1쪽으로)

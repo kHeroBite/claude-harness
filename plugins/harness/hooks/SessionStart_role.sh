@@ -10,10 +10,13 @@ _LIB="$_HD/lib/role_lib.py"
 [ -r "$_LIB" ] || exit 0
 _P=$(printf '%s' "$INPUT" | python3 -c 'import sys,json
 try:
-    d=json.load(sys.stdin); print((d.get("session_id") or "")+" "+(d.get("source") or ""))
+    d=json.load(sys.stdin); print((d.get("session_id") or "")+" "+(d.get("source") or "")+"\n"+(d.get("cwd") or ""))
 except Exception:
     pass' 2>/dev/null)
+_CWD="${_P#*$'\n'}"; [ "$_CWD" = "$_P" ] && _CWD=""
+_P="${_P%%$'\n'*}"
 _SID="${_P%% *}"; _SRC="${_P#* }"
 [ -n "$_SID" ] && [ -n "$_SRC" ] && [ "$_SID" != "$_P" ] || exit 0
-timeout 4 python3 -B "$_LIB" source-mark --sid "$_SID" --source "$_SRC" >/dev/null 2>&1 || true
+[ -n "$_CWD" ] || _CWD="$PWD"
+timeout 4 python3 -B "$_LIB" source-mark --sid "$_SID" --source "$_SRC" --register --cwd "$_CWD" >/dev/null 2>&1 || true
 exit 0
