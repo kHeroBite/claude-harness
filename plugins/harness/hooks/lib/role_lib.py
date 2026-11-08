@@ -180,6 +180,23 @@ def norm_id(text):
     return None
 
 
+def role_singleton(rid):
+    """롤 rid 가 프로젝트당 활성 세션 1개만 허용하는 singleton 롤인가. 정의가 없거나 오류면 False.
+
+    rid 에 ':영역'/'#이름' 이 붙어 와도 id 부분만 쓴다.
+    """
+    try:
+        base = re.split(r"[:#]", str(rid or ""), maxsplit=1)[0].strip().lower()
+        if not base:
+            return False
+        for r in load_defs()["roles"]:
+            if r["id"].lower() == base:
+                return r.get("singleton") is True
+    except Exception:
+        return False
+    return False
+
+
 def role_allowed(rid, project=None):
     """롤 rid 를 project 에서 지정할 수 있는가. projects 필드가 없는 롤은 어디서나 허용한다.
 
@@ -1128,6 +1145,11 @@ def cmd_set(a):
         value = normalize_value(text, root=root, project=project)
         rid0 = split_value(value)[0]
         w = ""
+        if role_singleton(rid0) and (not prev or split_value(prev)[0] != rid0):
+            others = [ident for val, ident in occupied(project, my_key, toks) if split_value(val)[0] == rid0]
+            if others:  # singleton 롤은 이름을 붙여 병행하는 우회도 막는다(NAME_REQUIRED 보다 먼저 판정)
+                raise RoleError("SINGLETON_ROLE %s 롤은 프로젝트당 활성 세션 1개만 허용합니다. 이미 활성: %s"
+                                % (rid0, ", ".join(others)))
         if rid0 != "all" and prev != value:  # 이미 이 값을 쓰는 중인 자기 재지정은 중복으로 보지 않는다
             check_dup(project, value, my_key, toks)
         write_role_files(sid, value, a.base)
@@ -1160,6 +1182,12 @@ def cmd_set(a):
     if w:
         out.append(w)
     print("\n".join(out))
+    return 0
+
+
+def cmd_singleton(a):
+    """singleton 롤 여부 출력(1/0). 항상 rc 0."""
+    print("1" if role_singleton(a.role) else "0")
     return 0
 
 
@@ -2184,6 +2212,8 @@ def build_parser():
     q.add_argument("--cwd")
     q = add("list", cmd_list, sid=False)
     q.add_argument("--json", action="store_true")
+    q = add("singleton", cmd_singleton, sid=False)
+    q.add_argument("--role", required=True)
     q = add("get", cmd_get)
     q.add_argument("--raw", action="store_true")
     q.add_argument("--id-only", action="store_true")

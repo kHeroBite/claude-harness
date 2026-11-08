@@ -44,7 +44,8 @@
       "display": "호스트",
       "aliases": ["host", "호스트", "hub", "허브"],
       "duty": "머신 간 peer host — 세션 레지스트리·포트·전파(AI 전용)",
-      "projects": ["ai"]
+      "projects": ["ai"],
+      "singleton": true
     }
   ]
 }

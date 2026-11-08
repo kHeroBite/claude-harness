@@ -265,9 +265,15 @@ def remote_conflicts(project, value, locals_):
         v = remote_value(s)
         if not same_role(value, v):
             continue
-        if s.get("machine_id") == me and (str(s.get("pid")), str(s.get("pid_start"))) in local_pids:
-            continue  # 같은 머신의 같은 프로세스는 로컬 항목으로 이미 잡았다
-        label = "%s@%s" % (v, re.sub(r"\s", "_", str(s.get("machine_label") or "remote"))[:64])
+        same_machine = s.get("machine_id") == me
+        if same_machine and s.get("pid") is not None:
+            if not pc.pid_alive(s.get("pid"), s.get("pid_start")):
+                log("check", "dead same-machine host entry skip pid=%s" % s.get("pid"))
+                continue  # 같은 머신인데 프로세스가 죽은 host 잔존 항목은 충돌이 아니다
+            if (str(s.get("pid")), str(s.get("pid_start"))) in local_pids:
+                continue  # 같은 머신의 같은 프로세스는 로컬 항목으로 이미 잡았다
+        label = "%s@%s%s" % (v, re.sub(r"\s", "_", str(s.get("machine_label") or "remote"))[:64],
+                             "(같은 머신)" if same_machine and s.get("pid") is not None else "")
         out.append({"kind": "remote", "key": s["session_key"], "value": v, "label": label, "git": s.get("git") or {}})
     return out
 
@@ -899,7 +905,11 @@ def run_remote(a):
     if not same_role(a.role, value):
         raise Fail("대상 롤이 요청과 다르다(%s ≠ %s)" % (value, a.role), RC_MOVE)
     g = s.get("git") if isinstance(s.get("git"), dict) else {}
-    sync_gate(g if g.get("head") else None, a.force_sync, "remote")
+    same_machine = s.get("machine_id") == pc.machine_id()
+    if same_machine:
+        log("presync", "presync same-machine skip")
+    else:
+        sync_gate(g if g.get("head") else None, a.force_sync, "remote")
     # 2) 중지 요청 → 대상이 묶음 업로드 → ack stopped
     #    hub 는 요청자도 등록된 세션이어야 받는다(cc 는 claude 기동 전이라) — 이 프로세스를 요청 롤 값·이름 takeover 의
     #    임시 세션으로 등록했다가 끝에 해제한다(대상 peer_mcp 가 takeover_request 의 role 로 같은 롤인지 확인한다).
@@ -917,7 +927,7 @@ def run_remote(a):
         raise Fail("host 임시 등록 실패(status %s %s)" % (st, obj.get("error", "")), RC_MOVE)
     log("stop", "remote temp-register role=%s" % (rid + (":" + area if area else "")))
     try:
-        return _run_remote_req(a, url, tok, req_key, value, g)
+        return _run_remote_req(a, url, tok, req_key, value, g, same_machine)
     finally:
         pc.http_json(url + "/v1/sessions/unregister", "POST", {"session_key": req_key}, tok, 5)
 
@@ -933,7 +943,7 @@ def _blob_ids(blobs):
     return out
 
 
-def _run_remote_req(a, url, tok, req_key, value, g):
+def _run_remote_req(a, url, tok, req_key, value, g, same_machine=False):
     st, obj = pc.http_json(url + "/v1/takeover", "POST", {"requester_key": req_key, "target_key": a.key}, tok, 10)
     if st == 0:
         raise Fail("host 에 접속하지 못했다", RC_HOST)
@@ -992,7 +1002,11 @@ def _run_remote_req(a, url, tok, req_key, value, g):
     log("stop", "remote gone=%s" % gone)
     if not gone:
         say("⚠️ 대상 세션이 아직 host 목록에 남아 있다(종료 처리 지연일 수 있다)")
-    why = post_sync(a.cwd, str(info.get("git_head") or g.get("head") or ""))
+    if same_machine:
+        log("postsync", "same-machine skip")
+        why = None
+    else:
+        why = post_sync(a.cwd, str(info.get("git_head") or g.get("head") or ""))
     return sid, a.cwd, str(man.get("role") or value), why
 
 

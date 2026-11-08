@@ -8,7 +8,7 @@
 #       → 2.4(디렉터리·롤·프로파일이 아닌 인자는 프로젝트 이름(role_lib project-dir, 루트 CLAUDE_PROJECT_ROOTS)
 #             로 해석해 작업 위치를 먼저 정한 뒤 롤을 판정한다 — 인자 순서 무관. 같은 이름 충돌은 --project)
 #       → 2.5(같은 롤 인계: 같은 프로젝트·롤(·영역)이 이미 동작 중이면 취소 / 인계 / 병행 선택 — peer_takeover.py.
-#             취소 rc 10, 비 tty 기본 병행, CC_TAKEOVER_PICK=cancel|takeover|parallel 주입, CC_TAKEOVER=0 끄기)
+#             취소 rc 10, 비 tty 기본 병행(singleton 롤은 기본 취소·병행 거부), CC_TAKEOVER_PICK=cancel|takeover|parallel 주입, CC_TAKEOVER=0 끄기)
 #       → 2.6(롤 메뉴 줄을 박스 안쪽 폭에 맞춰 …로 줄임(_fit_cols), 머리줄 `[계정 X] · 프로젝트 Y`,
 #             롤 예약에 --holder-pid(cc pid, 시험 주입 CC_HOLDER_PID) 전달, 공식 `claude --mcp-config` 로 peer MCP 를 세션마다 붙임(CC_PEER_MCP=0 끄기))
 # 사용: cc [작업디렉터리|프로젝트] [계정] [롤[:영역]] [--role 롤] [--profile 계정] [--project 프로젝트] [--continue]
@@ -399,7 +399,7 @@ _ask_agent_name() {
 # 같은 롤 인계 점검(롤 확정 뒤·롤 기록·cas 기동 전): 같은 프로젝트에 같은 롤(·영역)이 이미 동작 중이면
 #   취소 / 인계(그 세션을 중지시키고 대화·세션 정보를 받아 여기서 이어 가기) / 병행(기존 에이전트명 흐름) 중에서 고른다.
 #   판정·중지·이관·동기화는 peer_takeover.py 가 한다(로컬 role_registry live ∪ host 목록). 도구가 없거나 판정 실패면 조용히 지나간다.
-#   비 tty 기본은 병행(기존 동작 그대로). 시험 주입 CC_TAKEOVER_PICK=cancel|takeover|parallel, 끄기 CC_TAKEOVER=0.
+#   비 tty 기본은 병행(기존 동작 그대로, singleton 롤(role_lib singleton)은 병행 없이 취소 기본). 시험 주입 CC_TAKEOVER_PICK=cancel|takeover|parallel, 끄기 CC_TAKEOVER=0.
 #   취소는 rc 10. 인계 실패는 peer_takeover 의 rc 로 끝낸다(20 중지 실패·30 동기화 차단·31 사후 ff 실패·40 이관 실패·3 host 없음).
 _takeover_path() {
     local c
@@ -410,7 +410,7 @@ _takeover_path() {
     return 1
 }
 _takeover_gate() {
-    local pt proj out line kind key label pick="" rc=0 l
+    local pt proj out line kind key label pick="" rc=0 l single=0
     [[ "${CC_TAKEOVER:-1}" == "0" ]] && return 0
     [[ -n "$ROLE_VALUE" && "${ROLE_VALUE%%[:#]*}" != "all" && -f "$ROLE_LIB" ]] || return 0
     pt="$(_takeover_path)" || return 0
@@ -420,16 +420,29 @@ _takeover_gate() {
     line="$(printf '%s\n' "$out" | grep -m1 '^CONFLICT ' || true)"
     [[ -n "$line" ]] || return 0
     read -r _ kind key label <<< "$line"
+    single="$(python3 -B "$ROLE_LIB" singleton --role "${ROLE_VALUE%%[:#]*}" 2>/dev/null || true)"
+    [[ "$single" == "1" ]] || single=0
     echo "⚠️  같은 롤(${ROLE_VALUE})이 이미 동작 중입니다: ${label} (${kind})" >&2
     if [[ -n "${CC_TAKEOVER_PICK:-}" ]]; then
         pick="$CC_TAKEOVER_PICK"
         echo "   선택: ${pick}  (주입)" >&2
     elif [[ -t 0 && -t 1 ]]; then
-        echo "   [1] 취소   [2] 인계 — 그 세션을 중지하고 대화·세션 정보를 받아 여기서 이어 가기   [3] 병행 — 새 세션 추가" >&2
-        IFS= read -r -p "   선택 (기본 3): " l </dev/tty || l=""
-        case "$l" in 1|c|cancel|취소) pick=cancel ;; 2|t|takeover|인계) pick=takeover ;; *) pick=parallel ;; esac
+        if [[ "$single" == "1" ]]; then
+            echo "   [1] 취소   [2] 인계 — 그 세션을 중지하고 대화·세션 정보를 받아 여기서 이어 가기" >&2
+            echo "   (이 롤은 병행 불가 — 동시에 한 세션만 둘 수 있습니다)" >&2
+            IFS= read -r -p "   선택 (기본 1): " l </dev/tty || l=""
+            case "$l" in 2|t|takeover|인계) pick=takeover ;; *) pick=cancel ;; esac
+        else
+            echo "   [1] 취소   [2] 인계 — 그 세션을 중지하고 대화·세션 정보를 받아 여기서 이어 가기   [3] 병행 — 새 세션 추가" >&2
+            IFS= read -r -p "   선택 (기본 3): " l </dev/tty || l=""
+            case "$l" in 1|c|cancel|취소) pick=cancel ;; 2|t|takeover|인계) pick=takeover ;; *) pick=parallel ;; esac
+        fi
     else
-        pick=parallel
+        if [[ "$single" == "1" ]]; then pick=cancel; else pick=parallel; fi
+    fi
+    if [[ "$single" == "1" && "$pick" == "parallel" ]]; then
+        echo "   이 롤은 병행 불가 — 병행을 거부합니다." >&2
+        exit 10
     fi
     case "$pick" in
         cancel)
