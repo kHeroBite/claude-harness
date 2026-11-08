@@ -1050,6 +1050,16 @@ def _bind_server(bind, port_spec):
     return make_server(bind, int(port_spec))
 
 
+def _tunnel_sup(home, port, log):
+    """역터널 감독자 생성. 어떤 예외도 hub 를 죽이지 않는다."""
+    try:
+        import peer_tunnel
+        return peer_tunnel.Supervisor(home, port, log) if peer_tunnel.enabled() else None
+    except Exception as e:
+        log("TUNNEL init_failed %s" % type(e).__name__)
+        return None
+
+
 def cmd_serve(a):
     home = pc.hub_home()
     pc.ensure_dir(home)
@@ -1100,6 +1110,7 @@ def cmd_serve(a):
             "machine_id": hub.machine_id, "owner": a.owner or ""}
     pc.atomic_write_json(pc.hub_json_path(home), info, mode=0o600)
     hub.log("START port=%d bind=%s grace=%s" % (port, bind, grace))
+    sup = _tunnel_sup(home, port, hub.log)
     stop = {"flag": False, "why": "signal"}
 
     def _sig(signum, frame):
@@ -1121,10 +1132,14 @@ def cmd_serve(a):
             if pc.now() - last_blob_sweep > 300:
                 hub.sweep_blobs()
                 last_blob_sweep = pc.now()
+            if sup:
+                sup.tick()
             if hub.should_exit():
                 stop["why"] = "grace"
                 break
     finally:
+        if sup:
+            sup.stop()
         with hub.mu:
             hub.save()
         cur = pc.read_json(pc.hub_json_path(home), {}) or {}
