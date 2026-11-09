@@ -445,6 +445,42 @@ Iron_Law: 실패하는 테스트 없이 프로덕션 코드 작성 금지
 5. **시험 문서**: o3+ 새 기능이면 시험계획·케이스를 만들거나 고친다. 결과서(`test_report`)는 회차 요약·남은 FAIL·증거 위치만 쓴다.
 6. **보존 판정 기록**: 남긴 자산은 result json 에 `reusable_assets:[{path,area,reason:"K1|K2|K3 …"}]` 로 적는다. 없으면 `"reusable_assets": []` 와 `"reusable_assets_note": "해당 없음"` 을 적는다. 판정 기준은 `ocanon/references/ASSET_RULES.md` 다.
 
+## 시험 산출물 수명 (임시 루트 · 마지막 정리)
+
+시험이 만든 스크립트 결과·산출물·임시파일은 otest 마지막에 정리한다. 판정은 `${HARNESS_HOME:-$HOME/.harness}/current/scripts/test_artifacts.py` 한 곳에 있고, 기본은 dry-run 이며 `--apply` 일 때만 삭제한다.
+
+```yaml
+begin (시험 시작 전 1회):
+  mcp__oio__bash_exec(command='python3 -B ${HARNESS_HOME:-$HOME/.harness}/current/scripts/test_artifacts.py begin --uuid ${UUID} --project "<프로젝트 루트>"')
+  효과: 세션 전용 임시 루트(WSL /tmp/otest-<uuid 앞 8자>, Windows TEMP 아래 otest-<uuid 앞 8자>)와 ledger 를 만든다.
+  begin 을 잊어도 sweep 은 이름 규칙과 pipeline_start_time 으로 동작한다.
+
+run (시험 명령 래핑):
+  mcp__oio__bash_exec(command='python3 -B ${HARNESS_HOME:-$HOME/.harness}/current/scripts/test_artifacts.py run --uuid ${UUID} -- <시험 명령>')
+  효과: TMPDIR·TEMP·TMP 를 세션 임시 루트로 돌려 실행하고 rc 를 그대로 돌려준다. 시험 스크립트가 임시파일을 공유 TEMP 가 아니라 세션 루트에 쌓게 하는 것이 목적이다.
+  고정 경로에 직접 만드는 산출물은 register 로 등록한다.
+    python3 -B ${HARNESS_HOME:-$HOME/.harness}/current/scripts/test_artifacts.py register --uuid ${UUID} <경로…>
+
+sweep (otest 마지막 — 결과 파일 저장·완료 통보 직전):
+  mcp__oio__bash_exec(command='python3 -B ${HARNESS_HOME:-$HOME/.harness}/current/scripts/test_artifacts.py sweep --uuid ${UUID} --project "<프로젝트 루트>" --apply --budget 60')
+  끝줄: TEST_ARTIFACTS removed=<n> bytes=<n> remaining=<n> unowned_new=<n>
+  삭제 대상(이 셋만): ① 세션 임시 루트 ② register 로 등록한 경로 ③ 자기 worktree 안 git 미추적 1회성 패턴(test-results·playwright-report·.pytest_cache·htmlcov·__pycache__·*.tmp·otest_*)이면서 사이클 시작 이후 생성분.
+  보고만(삭제 안 함): 공유 TEMP·/tmp 의 미등록 신규 항목(unowned_new). 타 세션·도구 것일 수 있으므로 지우지 않고 결과 파일에 적어 사용자에게 알린다.
+  remaining>0 이면 같은 명령을 한 번 더 실행한다. 그래도 남으면 결과 파일에 남은 경로를 적고 진행한다(파이프라인 차단 금지).
+  스크립트 부재·rc≠0 은 결과 파일에 1줄 기록하고 진행한다(fail-open).
+
+보존 (sweep 이 건드리지 않는다):
+  - 증거: $HOME/.claude/session-env/${UUID}/ 아래 evidence·logs·work·plans
+  - 정본: plan/ · test_root · tools_root · .claude/ · .git
+  - 위 3절 "정본 참조" 의 reusable_assets 로 test_root 에 남긴 자산
+
+역할 분담 (정리는 3중, 모두 같은 스크립트):
+  1. otest 마지막(이 절) — 시험 직후 자기 산출물 정리
+  2. odone_cleanup — 프로젝트 작업트리 임시파일 정리 시 sweep 한 번 더(누락분 회수)
+  3. ofinish 4-0a — harness_cleanup.py --scope self 가 sweep 을 자동 호출(최종 안전망)
+  역라우팅으로 otest 를 다시 돌리면 다음 마지막 단계에서 다시 sweep 한다. ROOF 진행 중에는 ofinish 쪽 삭제가 0건이므로 otest 마지막 sweep 이 유일한 정리 지점이다.
+```
+
 ## 결과 파일 저장
 
 ```yaml

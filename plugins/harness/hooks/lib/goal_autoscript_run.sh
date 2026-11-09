@@ -186,7 +186,8 @@ _gas_eval_core() {
 #   호출부(grep 실측): PreToolUse_done_gate.sh·PreToolUse_oto_completion_guard.sh·PreToolUse_goal_autoscript_guard.sh 가
 #   gas_eval <script> <sd> 5 를 직접 부른다 → 분기를 gas_eval 내부(래퍼)에 두어 호출부를 고치지 않고 전부 받는다.
 #   규약: timeout_sec(정수 6~GAS_LONG_MAX=600) + cache_inputs(절대경로 정규 파일 1~50개) 둘 다 있어야 긴 항목이다.
-#     timeout_sec 만 있고 cache_inputs 가 없거나 범위 밖이면 선언 오류 = 판정불가(kind=input, 무조건 차단).
+#     cache_inputs 키가 아예 없으면(timeout_sec 만 있어도) 긴 항목이 아니다 — timeout_sec 를 무시하고 종전 5초 방식으로 판정한다.
+#     cache_inputs 키가 있는데 형식이 틀리거나 timeout_sec 가 범위 밖이면 선언 오류 = 판정불가(kind=input, 무조건 차단).
 #   기록: <sd>/logs/gas_cache/<key>.res (1행 "rc=<0|1|timeout|noscript|input> epoch=<s> elapsed=<s> id=<ID>"),
 #         실행 중 표식 <key>.run (1행 "pid epoch" — 기동한 쪽(gas_eval)이 $! 로 tmp→mv), 로그 <key>.log.
 #         CLI 는 .res 를 먼저 원자적으로 쓰고 .run 을 나중에 지운다(c217_gate 의 _sb_settle 규약).
@@ -201,7 +202,8 @@ _GAS_SELF="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[
 gas_long_spec() {
   local _it="$1" _t _p
   GAS_LONG_T=""
-  printf '%s' "$_it" | jq -e 'has("timeout_sec")' >/dev/null 2>&1 || return 1
+  # [2026-11-09] cache_inputs 키가 아예 없으면 긴 항목이 아니다(rc1 = 종전 5초 방식). 키가 있는데 형식이 틀리면 아래에서 선언 오류(rc3)로 차단한다.
+  printf '%s' "$_it" | jq -e 'has("timeout_sec") and has("cache_inputs")' >/dev/null 2>&1 || return 1
   _t=$(printf '%s' "$_it" | jq -r 'if (.timeout_sec|type)=="number" and (.timeout_sec==(.timeout_sec|floor)) then (.timeout_sec|tostring) else "" end' 2>/dev/null)
   if [[ ! "$_t" =~ ^[0-9]+$ ]] || (( _t < 6 || _t > GAS_LONG_MAX )); then
     GAS_DETAIL="timeout_sec 선언 오류: 6~${GAS_LONG_MAX} 정수여야 함"; GAS_UNDET_KIND=input
@@ -296,7 +298,7 @@ gas_eval() {
   # GAS_GOAL_FILE: goal 파일 경로(셸 전역, export 금지). 미설정이면 종전대로 <sd>/goal.json (K1/D-9 — 보관본 판정)
   _gf="${GAS_GOAL_FILE:-$_sd/goal.json}"
   if [[ -z "${_GAS_NOLONG:-}" && -n "$_s" && -n "$_sd" && -f "$_gf" ]] && command -v jq >/dev/null 2>&1; then
-    _it=$(jq -c --arg s "$_s" '[(.acceptance // [])[] | select(((.auto_script // "") == $s) and has("timeout_sec"))][0] // empty' "$_gf" 2>/dev/null)
+    _it=$(jq -c --arg s "$_s" '[(.acceptance // [])[] | select(((.auto_script // "") == $s) and has("timeout_sec") and has("cache_inputs"))][0] // empty' "$_gf" 2>/dev/null)
     if [[ -n "$_it" ]]; then
       _gas_long_eval "$_it" "$_sd"
       return $?

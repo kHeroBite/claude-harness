@@ -1080,14 +1080,14 @@ for r in rows:
     _resolve_role
 }
 
-# 재개 메뉴(계정 메뉴와 같은 모양): ① 가장 최근 대화 이어서 · 롤(·영역)별 최신 세션(미리보기) · ＋ 새 세션(롤 메뉴)
+# 재개 메뉴(계정 메뉴와 같은 모양): ① 가장 최근 대화 이어서 · 롤 무관 최신순 대화(한도 9건 안의 같은 롤 여러 대화 모두, 미리보기) · ＋ 새 세션(롤 메뉴)
 _resume_menu() {
     local acc_filter="" rows_json="" cwd_json="" items i=0 _sid _val _l1 _l2 _l3
     local -a sids=() vals=() q=()
     # ccc <계정>(--profile 동반)이면 그 계정 기록만, 계정 메뉴에서 고른 경우는 계정 무관(대화 기록은 계정 공유)
     [[ -n "$FORCED_PROFILE" ]] && acc_filter="$FORCED_PROFILE"
     if [[ -f "$ROLE_LIB" && -n "$PROJECT" ]]; then
-        q=(resume-list --project "$PROJECT" --per-role --json --limit 9)
+        q=(resume-list --project "$PROJECT" --json --limit 9)
         [[ -n "$acc_filter" ]] && q+=(--profile "$acc_filter")
         rows_json=$(python3 -B "$ROLE_LIB" "${q[@]}" --preview 2>/dev/null) \
             || rows_json=$(python3 -B "$ROLE_LIB" "${q[@]}" 2>/dev/null) || rows_json="[]"

@@ -18,7 +18,9 @@
 
 승인은 메인 트랜스크립트 원본만 근거로 삼는다. 판별·소비 헬퍼는 askq_approval.py 를 재사용하고 그 파일은 고치지 않는다.
 팀원은 트랜스크립트를 보지 않고 리드의 승인 기록을 읽기만 한다.
-쿨타임: 계속 답은 주 키가 바뀌어도 COOLDOWN_SEC(3600초) 안이고 단계가 같거나 더 깊은 단계에서 받은 것이면 다시 묻지 않는다(중단은 대상 아님).
+쿨타임: 계속 답은 같은 계정이면 주 키가 바뀌어도 COOLDOWN_SEC(86400초, 1일) 안이고 단계가 같거나 더 깊은 단계에서 받은 것이면 다시 묻지 않는다.
+        주 키가 WEEK_KEY_TOL(86400초) 안에서 흔들리면 같은 주로 보고 계정 기록 없이도 기존 답을 그대로 인정한다.
+        계정이 바뀌면 이전 계정의 계속 답은 인정하지 않고 다시 묻는다(중단은 대상 아님). 계정은 계정 id(이메일 해시 16자)로만 기록한다(weekly_gate/continue_accounts.log).
 
 시험·실측용 환경변수:
   WLG_THRESHOLDS=25,22  임계값 덮어쓰기(기본 30,20,10 — 2개 이상 N개 목록, 남은 비율 기준)
@@ -28,6 +30,7 @@
   WLG_TEST_DELAY=초     코어 시작 시 지연(시간 예산 시험)
 """
 import datetime
+import hashlib
 import json
 import math
 import os
@@ -45,7 +48,9 @@ LABEL_STOP = "중단"
 DEFAULT_THRESHOLDS = (30.0, 20.0, 10.0)
 TTL_SEC = 1800
 UNVERIFIED_TTL_SEC = 3600
-COOLDOWN_SEC = 3600
+COOLDOWN_SEC = 86400
+WEEK_KEY_TOL = 86400  # 같은 세션에서 주 키(resets_at)가 흔들리는 폭(실측 3600초)을 같은 주로 보는 허용치
+ACCOUNTS_LOG = "continue_accounts.log"
 MAX_RESET_AHEAD = 8 * 86400
 NTFY_WAIT_SEC = 2.5
 SWITCH_NAME = "DISABLE_WEEKLY_LIMIT_GATE"
@@ -116,14 +121,14 @@ def read_usage(cfg, now):
 
 
 def read_records(cpath, week):
-    """이번 주 키의 승인 기록 [(단계, continue|stop, 답 epoch)]."""
+    """이번 주 키(±WEEK_KEY_TOL 초 허용)의 승인 기록 [(단계, continue|stop, 답 epoch)]."""
     recs = []
     try:
         with open(cpath, encoding="utf-8", errors="replace") as f:
             for ln in f:
                 p = ln.rstrip("\n").split("\t")
                 m = TARGET_RE.fullmatch(p[1]) if len(p) >= 2 else None
-                if m and int(m.group(3)) == week:
+                if m and abs(int(m.group(3)) - week) <= WEEK_KEY_TOL:
                     recs.append((float(m.group(1)), m.group(2), int(m.group(4))))
     except FileNotFoundError:
         pass
@@ -145,10 +150,56 @@ def read_records_all(cpath):
     return recs
 
 
-def cooldown_pass(all_recs, stage, now):
-    """계속 기록 중 단계 <= stage 이고 답 후 COOLDOWN_SEC 안인 것의 최댓값이 주 키 무관 stop·void 최댓값보다 크면 True.
+def account_id(cfg):
+    """.usage_cache.json 의 account_email 을 소문자·공백제거 뒤 sha256 앞 16자 hex 로 만든 계정 id. 없거나 읽기 실패면 빈 문자열.
+    이메일 원문은 어떤 파일·로그·알림에도 남기지 않는다."""
+    try:
+        with open(os.path.join(cfg, ".usage_cache.json"), encoding="utf-8") as f:
+            email = json.load(f).get("account_email")
+        if not isinstance(email, str):
+            return ""
+        email = "".join(email.lower().split())
+        return hashlib.sha256(email.encode("utf-8")).hexdigest()[:16] if email else ""
+    except Exception:
+        return ""
+
+
+def read_continue_accounts(gate):
+    """{계속 답 epoch: 계정 id}. 파일이 없거나 깨진 줄은 건너뛴다."""
+    out = {}
+    try:
+        with open(os.path.join(gate, ACCOUNTS_LOG), encoding="utf-8", errors="replace") as f:
+            for ln in f:
+                p = ln.split()
+                if len(p) == 2 and p[0].isdigit() and re.fullmatch(r"[0-9a-f]{16}", p[1]):
+                    out[int(p[0])] = p[1]
+    except OSError:
+        pass
+    return out
+
+
+def log_continue_accounts(gate, rows, acct):
+    """계속 답마다 "<epoch> <계정 id>" 한 줄을 남긴다. 실패해도 게이트 판정은 계속한다."""
+    if not acct:
+        return
+    try:
+        with open(os.path.join(gate, ACCOUNTS_LOG), "a", encoding="utf-8") as f:
+            for _tid, _stage, label, epoch, _expired in rows:
+                if label == LABEL_CONTINUE:
+                    f.write("%d %s\n" % (epoch, acct))
+    except OSError:
+        pass
+
+
+def cooldown_pass(all_recs, stage, now, acct="", accounts=None):
+    """같은 계정의 계속 기록 중 단계 <= stage 이고 답 후 COOLDOWN_SEC 안인 것의 최댓값이 주 키 무관 stop·void 최댓값보다 크면 True.
+    계정 id 가 비었거나 해당 답의 계정 id 와 다르거나 기록이 없으면 그 계속 답은 세지 않는다(다시 묻는다).
     시계 오차는 미래 60초까지만 인정한다. 중단은 쿨타임 대상이 아니다."""
-    conts = [e for a, k, e in all_recs if k == "continue" and a <= stage and -60 <= now - e <= COOLDOWN_SEC]
+    if not acct:
+        return False
+    accounts = accounts or {}
+    conts = [e for a, k, e in all_recs if k == "continue" and a <= stage and -60 <= now - e <= COOLDOWN_SEC
+             and accounts.get(e) == acct]
     if not conts:
         return False
     last_reset = max((e for _, k, e in all_recs if k in ("stop", "void")), default=-1)
@@ -536,12 +587,14 @@ def main():
         return
 
     cpath = askq._consumed_path(lead)
+    acct = account_id(cfg)
     last_prompt = _mtime_int(os.path.join(sdir, "last_prompt_epoch"))
     unverified = None
     # 메인은 계속 기록이 있어도 먼저 읽는다. 그 뒤에 받은 중단 답을 놓치면 안 된다.
     if role == "main":
         rows, unverified = scan_answers(lead, sid, inp.get("transcript_path"), thresholds, cpath, now)
         if rows:
+            log_continue_accounts(gate, rows, acct)
             record_answers(rows, cpath, week, last_prompt)
         if not unverified:
             try:
@@ -550,8 +603,8 @@ def main():
                 pass
     # 판정 직전에 읽는다. 병렬 호출이 스캔·기록 사이에 먼저 남긴 답도 이 호출의 판정에 반영한다.
     verdict = decide(read_records(cpath, week), stage, last_prompt)
-    if verdict == "ask" and cooldown_pass(read_records_all(cpath), stage, now):
-        verdict = "pass"  # 주 키가 바뀌어도 쿨타임 안의 계속 답은 다시 묻지 않는다
+    if verdict == "ask" and cooldown_pass(read_records_all(cpath), stage, now, acct, read_continue_accounts(gate)):
+        verdict = "pass"  # 주 키가 바뀌어도 같은 계정의 쿨타임 안 계속 답은 다시 묻지 않는다
     if verdict == "pass":
         return
     if role == "main":

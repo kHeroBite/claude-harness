@@ -73,6 +73,7 @@ invocation:
 odone_cleanup 담당:
   - 프로젝트 작업트리 안의 에러 추적/디버그 로그 파일 삭제 (세션 work/ 는 ofinish Step 4 가 승격 뒤 정리하므로 건드리지 않는다)
   - 임시 작업 파일 정리
+  - 시험 산출물 누락분 회수 1줄: python3 -B ${HARNESS_HOME:-$HOME/.harness}/current/scripts/test_artifacts.py sweep --uuid ${UUID} --project "<프로젝트 루트>" --apply --budget 30 (otest 마지막 sweep 의 보강. 기본 정리는 otest 가 하고 ofinish 4-0a 가 최종 안전망이다. 증거·plan/·test_root 는 건드리지 않고, 스크립트 부재·rc≠0 은 기록만 하고 진행한다)
 
 세션 디렉토리 정리는 ofinish에서 수행 (M-12 책임 분리):
   - $HOME/.claude/session-env/${UUID}/ 디렉토리 및 하위 파일 (team_name, classification 등)

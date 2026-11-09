@@ -1,9 +1,9 @@
 {
   "schema": 1,
-  "version": "1.3.16",
-  "source_commit": "e9a96352b5ca705f345c974b772f3790564649ba",
-  "built_at": "2026-11-08T22:54:38Z",
-  "summary": "import 로컬 앞섬 same 처리(서버 인계 conflict 해소)·인스턴스 플랜 오살 방지·진입 보관기 루트 AC 보관·ofinish 계획 전용 경로·oplan_debate spawn 정합",
+  "version": "1.3.17",
+  "source_commit": "ca39139ed439cc96bd51e9eb932bbd4173e114df",
+  "built_at": "2026-11-09T06:30:08Z",
+  "summary": "주간 한도 게이트 같은 세션 재질문 제거(주 키 ±1일 허용·계속 답 쿨타임 1일·같은 계정), 재개 메뉴 롤당 1건 축약 제거, done_gate 긴 항목 판정 보정, otest 산출물 정리 절차(sweep) 문서·harness_cleanup 연동",
   "breaking": false,
   "requires": [
     {
@@ -132,7 +132,7 @@
   "post_actions": [
     {
       "kind": "restart_cc",
-      "text": "cc 를 재시작하면 새 conv_share import 판정이 적용된다"
+      "text": "주간 한도 게이트·cc 재개 메뉴 변경은 새로 시작한 cc 세션부터 적용됩니다"
     }
   ],
   "history": [
@@ -306,6 +306,17 @@
         {
           "kind": "restart_cc",
           "text": "cc 를 재시작해야 새 peer_mcp·주간 한도 게이트가 적용된다"
+        }
+      ]
+    },
+    {
+      "version": "1.3.16",
+      "breaking": false,
+      "summary": "import 로컬 앞섬 same 처리(서버 인계 conflict 해소)·인스턴스 플랜 오살 방지·진입 보관기 루트 AC 보관·ofinish 계획 전용 경로·oplan_debate spawn 정합",
+      "post_actions": [
+        {
+          "kind": "restart_cc",
+          "text": "cc 를 재시작하면 새 conv_share import 판정이 적용된다"
         }
       ]
     }

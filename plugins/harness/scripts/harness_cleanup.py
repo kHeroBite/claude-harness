@@ -65,6 +65,14 @@ TMP_DAYS = 7
 PROMOTE_MAX_BYTES = 512 * 1024
 ARCHIVE_KINDS = ("plan", "dev", "test", "lesson", "request")
 
+# self 모드 끝의 otest 산출물 sweep(test_artifacts.py) — 예산 max(최소, min(남은 예산, 최대)), 무제한이면 최대
+TEST_ARTIFACTS_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test_artifacts.py")
+TEST_ARTIFACTS_MIN_SEC = 8
+TEST_ARTIFACTS_MAX_SEC = 20
+TEST_ARTIFACTS_TIMEOUT_PAD = 5
+TEST_ARTIFACTS_LINE_RE = re.compile(
+    r"^TEST_ARTIFACTS removed=(\d+) bytes=(\d+) remaining=(\d+) unowned_new=(\d+)\s*$")
+
 LOG_MAX_BYTES = 1024 * 1024
 LOG_KEEP_BYTES = 200 * 1024
 DAY = 86400
@@ -662,6 +670,67 @@ def run_self(ctx):
         item = ctx.add("self", path, kind, tree_bytes(path), lmtime(path), reason, "delete")
         ctx.delete(item, sdir)
 
+    # 4) otest 사이클 산출물 sweep — 진행 중 보호를 통과한 경우에만, 예산 초과여도 최소 시간은 보장
+    run_test_artifacts_sweep(ctx, project)
+
+
+def test_artifacts_budget(ctx):
+    """sweep 예산(초). --budget 0(무제한)이면 최대값, 아니면 max(최소, min(남은 예산, 최대))."""
+    if ctx.budget.sec <= 0:
+        return float(TEST_ARTIFACTS_MAX_SEC)
+    남은 = ctx.budget.sec - (time.monotonic() - ctx.budget.t0)
+    return float(max(TEST_ARTIFACTS_MIN_SEC, min(남은, TEST_ARTIFACTS_MAX_SEC)))
+
+
+def run_test_artifacts_sweep(ctx, project):
+    """test_artifacts.py sweep 을 1회 부른다. 실패는 ctx.err 만 남기고 계속한다(fail-open).
+
+    dry-run 이면 --apply 없이 불러 결과를 요약에만 싣는다. config-dir 은 session-base 의 부모로
+    맞춘다(test_artifacts 의 ledger·wt_lib 가 같은 session-env 를 보게 하는 정합). session-base 이름이
+    session-env 가 아니면 다른 세션 디렉터리를 가리킬 수 있으므로 부르지 않는다.
+    """
+    a = ctx.args
+    script = a.test_artifacts
+    if not script:
+        ctx.skip("test_artifacts", "test_artifacts_disabled")
+        return
+    if os.path.basename(a.session_base) != "session-env":
+        ctx.skip(a.session_base, "test_artifacts_session_base_not_session-env")
+        return
+    if not os.path.isfile(script):
+        ctx.err("test_artifacts_sweep: script_missing: %s" % script)
+        return
+    config_dir = os.path.dirname(a.session_base)
+    budget = int(test_artifacts_budget(ctx))  # 정수 초 — sweep 의 --budget 이 int 로 받아도 통과
+    cmd = [sys.executable, "-B", script, "sweep", "--uuid", a.uuid, "--project", project,
+           "--config-dir", config_dir, "--budget", str(budget)]
+    if ctx.apply:
+        cmd.append("--apply")
+    env = dict(os.environ, CLAUDE_CONFIG_DIR=config_dir)
+    info = {"apply": ctx.apply, "budget_sec": budget, "rc": None,
+            "removed": None, "bytes": None, "remaining": None, "unowned_new": None}
+    ctx.report["test_artifacts"] = info
+    try:
+        res = subprocess.run(cmd, capture_output=True, text=True, env=env,
+                             timeout=budget + TEST_ARTIFACTS_TIMEOUT_PAD)
+    except subprocess.TimeoutExpired:
+        ctx.err("test_artifacts_sweep: timeout %.0fs" % (budget + TEST_ARTIFACTS_TIMEOUT_PAD))
+        return
+    except (OSError, ValueError) as e:
+        ctx.err("test_artifacts_sweep: %s: %s" % (type(e).__name__, e))
+        return
+    info["rc"] = res.returncode
+    for line in reversed((res.stdout or "").splitlines()):
+        m = TEST_ARTIFACTS_LINE_RE.fullmatch(line.strip())
+        if m:
+            info["removed"], info["bytes"], info["remaining"], info["unowned_new"] = (int(x) for x in m.groups())
+            break
+    if res.returncode != 0:
+        tail = ((res.stderr or res.stdout or "").strip().splitlines() or [""])[-1][:300]
+        ctx.err("test_artifacts_sweep: rc=%d %s" % (res.returncode, tail))
+    elif info["removed"] is None:
+        ctx.err("test_artifacts_sweep: summary_line_missing")
+
 
 # ─────────────────────────── sessions 모드 ───────────────────────────
 def session_deletables(sdir, purge_plans):
@@ -917,6 +986,10 @@ def print_summary(ctx):
     for k in sorted(r["totals"]):
         t = r["totals"][k]
         print("%-22s %8d %10s" % (k, t["count"], human(t["bytes"])))
+    ta = r.get("test_artifacts")
+    if ta:
+        print("test_artifacts removed=%s remaining=%s unowned_new=%s bytes=%s rc=%s"
+              % (ta["removed"], ta["remaining"], ta["unowned_new"], ta["bytes"], ta["rc"]))
     top = sorted(r["candidates"], key=lambda c: c["bytes"], reverse=True)[:20]
     if top:
         print("상위 %d건:" % len(top))
@@ -978,6 +1051,8 @@ def build_parser():
     p.add_argument("--marker", default=os.path.join(home, ".claude", "logs", "harness_cleanup_auto.enabled"))
     p.add_argument("--log-file", default=os.path.join(home, ".claude", "logs", "harness_cleanup.log"))
     p.add_argument("--now", type=float)
+    p.add_argument("--test-artifacts", default=TEST_ARTIFACTS_SCRIPT,
+                   help="self 모드 끝에 부를 test_artifacts.py 경로(빈 문자열이면 sweep 생략)")
     return p
 
 
@@ -998,7 +1073,8 @@ def run(ctx):
     ctx.report["scopes"] = scopes
     fns = {"self": run_self, "sessions": run_sessions, "repo": run_repo, "tmp": run_tmp}
     for s in scopes:
-        if ctx.out_of_time():
+        # self 는 내부 루프가 예산을 스스로 지키고, 끝의 test_artifacts sweep 은 예산 초과여도 최소 시간을 보장한다
+        if s != "self" and ctx.out_of_time():
             break
         fns[s](ctx)
     if a.enable_auto and ctx.apply and not ctx.report["errors"]:

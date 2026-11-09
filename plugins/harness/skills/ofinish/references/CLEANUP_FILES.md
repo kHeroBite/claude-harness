@@ -15,13 +15,15 @@
   - 자기 세션 plans/: mtime 7일 초과 + (승격 완료 또는 승격 대상 아님)인 파일만 지운다.
   - 자기 세션 logs/prev_cycle/: 최신 3개만 남긴다. logs/ 일반 파일은 남긴다.
   - 자기 세션이 진행 중(state 가 PLAN·DEV·TEST·DONE 이거나 status 에 ROOF·구 RALPH)이면 승격만 하고 삭제는 0건이다.
+  - 시험 산출물: 4-0a 가 test_artifacts.py sweep 을 자동 호출해 세션 전용 임시 루트·등록 경로·자기 worktree 1회성 패턴을 지운다. 증거·plan/·test_root 는 보존하고 공유 TEMP 의 미등록 항목은 보고만 한다.
   - 죽은 세션(4-0b): 등록부 pid 생존 집합에 없음 + 트리 mtime 30일 이상인 세션의 허용 목록 하위 항목만 지운다.
     사용자가 dry-run 을 확인하고 승인한 뒤 생긴 표식 파일이 있을 때만 수행하며, 표식이 없으면 no-op 이다.
   → 과거 계획·교훈은 세션 디렉터리 대신 <프로젝트>/.claude/archive/INDEX.jsonl 을 Grep 해 참조한다.
 명령: |
-  # ── Step 4-0a: 승격 + 자기 세션 정리 (fail-open, 실행 예산 15초) ──
+  # ── Step 4-0a: 승격 + 자기 세션 정리 + 시험 산출물 sweep (fail-open, 실행 예산 25초) ──
+  # harness_cleanup.py --scope self 는 끝에서 test_artifacts.py sweep 을 자동 호출한다(최소 8초 보장, 실패는 fail-open). 별도 명령이 필요 없다. 자기 세션이 진행 중이면 삭제가 0건이라 sweep 도 호출하지 않는다.
   # <프로젝트 루트> 는 메인이 git -C <cwd> rev-parse --show-toplevel 로 얻고, 실패하면 cwd 를 쓴다. ${UUID} 는 실제 값으로 치환한다.
-  mcp__oio__bash_exec(command='python3 -B ${HARNESS_HOME:-$HOME/.harness}/current/scripts/harness_cleanup.py --scope self --uuid ${UUID} --project "<프로젝트 루트>" --promote --apply --budget 15 --fail-open', timeout_ms=30000)
+  mcp__oio__bash_exec(command='python3 -B ${HARNESS_HOME:-$HOME/.harness}/current/scripts/harness_cleanup.py --scope self --uuid ${UUID} --project "<프로젝트 루트>" --promote --apply --budget 25 --fail-open', timeout_ms=45000)
   # ── Step 4-0b: 죽은 세션 자동 회수 (승인 표식 없으면 auto_disabled 로 no-op, 실행 예산 20초) ──
   mcp__oio__bash_exec(command='python3 -B ${HARNESS_HOME:-$HOME/.harness}/current/scripts/harness_cleanup.py --scope sessions --uuid ${UUID} --apply --auto --budget 20 --max-dirs 300 --fail-open', timeout_ms=40000)
   # 4-0a·4-0b 는 rc·timeout·스크립트 부재와 무관하게 아래 4-1 로 진행한다(파이프라인 차단 금지). 4-0a 가 work/ 를 승격한 뒤에 4-1 이 work/ 를 지우므로 순서를 바꾸지 않는다.
